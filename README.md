@@ -245,11 +245,20 @@ for cache hits, so do not budget read quota assuming cached reads are free —
 | History   | None by itself                     | None                                |
 | Read cost | Counts against the KV allowance    | Free — it is part of the deployment |
 
-Environment variables are deployment configuration rather than data. Changing
-one means redeploying, there is no history, and a value edited in the dashboard
-can be overwritten by a later `wrangler deploy` that does not carry it. Use a
-variable for a table that changes with the code, and KV for one edited at
-runtime by an operator or a panel.
+Environment variables are deployment configuration rather than data: changing
+one means redeploying, and there is no history.
+
+Editing one in the dashboard is also unsafe by default. Cloudflare's Wrangler
+docs state: "If you change your environment variables in the Cloudflare
+dashboard, Wrangler will override them the next time you deploy." So with CI
+deploying on every push, a hand-edited config silently reverts. Setting
+`keep_vars = true` in the Wrangler configuration opts out of that, which makes
+dashboard editing viable — at the cost of the Wrangler config no longer being
+the source of truth for those values.
+
+Use a variable for a table that changes together with the code, and KV for one
+edited at runtime by an operator or a panel. Layering both, as above, gets the
+useful half of each.
 
 ### Wire format version
 
