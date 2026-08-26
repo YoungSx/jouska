@@ -1,0 +1,40 @@
+name: Deploy
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+# 一个 tag 只部署一次；重复打同名 tag 不会排队。
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  deploy-worker:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+
+      - run: npm ci
+
+      # Worker 的 index.ts 通过 `import 'jouska'` 引用库，而 jouska 的
+      # exports 指向 ./dist/index.js——wrangler 打包前必须先产出 dist。
+      - run: npm run build -w jouska
+
+      # 只部署参考 Worker；库本身暂不发包。
+      - uses: cloudflare/wrangler-action@v4
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          workingDirectory: workers/reverse-proxy
+          command: deploy
