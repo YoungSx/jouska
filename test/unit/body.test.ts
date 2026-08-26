@@ -21,14 +21,16 @@ const run = (chunks: readonly string[], replacements: { from: string; to: string
 
 describe('textReplaceStream', () => {
   it('replaces within a single chunk', async () => {
-    expect(await run(['a origin.test b'], [{ from: 'origin.test', to: 'p.dev' }]))
-      .toBe('a p.dev b');
+    expect(await run(['a origin.test b'], [{ from: 'origin.test', to: 'p.dev' }])).toBe(
+      'a p.dev b',
+    );
   });
 
   it('replaces a match split across chunks', async () => {
     // 'origin.test' is cut in half — the naive per-chunk approach misses this.
-    expect(await run(['x ori', 'gin.test y'], [{ from: 'origin.test', to: 'p.dev' }]))
-      .toBe('x p.dev y');
+    expect(await run(['x ori', 'gin.test y'], [{ from: 'origin.test', to: 'p.dev' }])).toBe(
+      'x p.dev y',
+    );
   });
 
   it('replaces a match split one byte at a time', async () => {
@@ -51,7 +53,9 @@ describe('textReplaceStream', () => {
         controller.close();
       },
     });
-    const out = await collect(stream.pipeThrough(textReplaceStream([{ from: 'origin.test', to: 'p.dev' }])));
+    const out = await collect(
+      stream.pipeThrough(textReplaceStream([{ from: 'origin.test', to: 'p.dev' }])),
+    );
     expect(out).toBe('前缀 p.dev 后缀');
   });
 
@@ -66,13 +70,27 @@ describe('textReplaceStream', () => {
   it('does not cascade: replaced output is not re-scanned', async () => {
     // A single pass means rules cannot chain into each other, which keeps a
     // config like {a->b, b->c} from silently turning every `a` into `c`.
-    expect(await run(['one'], [{ from: 'one', to: 'two' }, { from: 'two', to: 'three' }]))
-      .toBe('two');
+    expect(
+      await run(
+        ['one'],
+        [
+          { from: 'one', to: 'two' },
+          { from: 'two', to: 'three' },
+        ],
+      ),
+    ).toBe('two');
   });
 
   it('prefers the earlier rule when two match at the same position', async () => {
-    expect(await run(['abc'], [{ from: 'ab', to: 'X' }, { from: 'abc', to: 'Y' }]))
-      .toBe('Xc');
+    expect(
+      await run(
+        ['abc'],
+        [
+          { from: 'ab', to: 'X' },
+          { from: 'abc', to: 'Y' },
+        ],
+      ),
+    ).toBe('Xc');
   });
 });
 
@@ -97,7 +115,9 @@ describe('htmlRewriter', () => {
   };
 
   it('rewrites href and src hosts', async () => {
-    const out = await rewrite('<a href="https://origin.test/x">l</a><img src="https://origin.test/i.png">');
+    const out = await rewrite(
+      '<a href="https://origin.test/x">l</a><img src="https://origin.test/i.png">',
+    );
     expect(out).toContain('https://p.dev/x');
     expect(out).toContain('https://p.dev/i.png');
     expect(out).not.toContain('origin.test');

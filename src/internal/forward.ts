@@ -25,13 +25,22 @@ export interface ForwardOptions {
  * Only idempotent methods retry: a request with a body cannot be replayed
  * anyway, since its stream is consumed by the first attempt.
  */
-export const forward = async ({ route, target, request, fetchImpl }: ForwardOptions): Promise<Response> => {
+export const forward = async ({
+  route,
+  target,
+  request,
+  fetchImpl,
+}: ForwardOptions): Promise<Response> => {
   const url = new URL(request.url);
   const attempts = isRetryable(request.method) ? route.retries + 1 : 1;
   let lastError: unknown;
 
   for (let attempt = 0; attempt < attempts; attempt += 1) {
     try {
+      // Attempts are deliberately sequential: running them in parallel would
+      // fire N simultaneous upstream requests, which is both wasteful and
+      // counter to the 6-connection-per-request cap.
+      // oxlint-disable-next-line no-await-in-loop
       return await proxy(target, {
         raw: request,
         // Workers allows only 6 outbound connections per request; one upstream

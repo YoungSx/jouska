@@ -1,0 +1,34 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Cancel superseded runs on the same ref so CI does not queue behind itself.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+
+      # `npm ci` installs exactly what the lockfile pins, so CI and local
+      # runs resolve identical dependency trees.
+      - run: npm ci
+
+      # The same gate developers run locally: lint, format, types, tests.
+      # Tests execute inside workerd via @cloudflare/vitest-pool-workers.
+      - run: npm run check

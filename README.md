@@ -16,13 +16,13 @@ uncompressed.
 
 What veilo adds is everything `hono/proxy` deliberately leaves out:
 
-| Concern | Where it lives |
-| --- | --- |
-| Route table matching (host, path, method) | `src/router.ts` |
-| Upstream deadlines and bounded retries | `src/internal/forward.ts` |
-| `Location` / `Set-Cookie` rewriting | `src/internal/headers.ts` |
-| Streaming body rewriting | `src/internal/body.ts` |
-| Config schema and validation | `src/config.ts` |
+| Concern                                   | Where it lives            |
+| ----------------------------------------- | ------------------------- |
+| Route table matching (host, path, method) | `src/router.ts`           |
+| Upstream deadlines and bounded retries    | `src/internal/forward.ts` |
+| `Location` / `Set-Cookie` rewriting       | `src/internal/headers.ts` |
+| Streaming body rewriting                  | `src/internal/body.ts`    |
+| Config schema and validation              | `src/config.ts`           |
 
 ## Usage
 
@@ -56,19 +56,19 @@ Routes are evaluated in order and the first match wins.
 
 ## Route options
 
-| Option | Default | Meaning |
-| --- | --- | --- |
-| `match.host` | — | Host to match. `*.example.com` matches subdomains, not the apex. |
-| `match.path` | — | Path prefix, matched on segment boundaries. |
-| `match.methods` | all | Restrict the route to specific methods. |
-| `upstream` | required | `host` or `host/base/path`. No scheme. |
-| `stripPrefix` | `false` | Remove the matched prefix before forwarding. |
-| `timeoutMs` | `10000` | Per-attempt upstream deadline. |
-| `retries` | `0` | Extra attempts. Only idempotent methods retry. |
-| `rewriteHeaders` | `true` | Rewrite `Location` and `Set-Cookie` onto the proxy. |
-| `bodyRewrite` | off | Streaming body rewriting; see below. |
-| `blockCountries` | `[]` | ISO 3166-1 alpha-2 codes refused with 403. |
-| `upstreamHeaders` | `{}` | Headers injected into the upstream request. |
+| Option            | Default  | Meaning                                                          |
+| ----------------- | -------- | ---------------------------------------------------------------- |
+| `match.host`      | —        | Host to match. `*.example.com` matches subdomains, not the apex. |
+| `match.path`      | —        | Path prefix, matched on segment boundaries.                      |
+| `match.methods`   | all      | Restrict the route to specific methods.                          |
+| `upstream`        | required | `host` or `host/base/path`. No scheme.                           |
+| `stripPrefix`     | `false`  | Remove the matched prefix before forwarding.                     |
+| `timeoutMs`       | `10000`  | Per-attempt upstream deadline.                                   |
+| `retries`         | `0`      | Extra attempts. Only idempotent methods retry.                   |
+| `rewriteHeaders`  | `true`   | Rewrite `Location` and `Set-Cookie` onto the proxy.              |
+| `bodyRewrite`     | off      | Streaming body rewriting; see below.                             |
+| `blockCountries`  | `[]`     | ISO 3166-1 alpha-2 codes refused with 403.                       |
+| `upstreamHeaders` | `{}`     | Headers injected into the upstream request.                      |
 
 `bodyRewrite` accepts `rewriteLinks` (default `true`), `contentTypes`
 (default `['text/html']`), and `replace` (literal `from`/`to` pairs). HTML goes
@@ -79,13 +79,49 @@ replacer that handles matches straddling chunk boundaries.
 Replacements are applied in a single pass, so rules never cascade into one
 another: `{a→b, b→c}` will not turn `a` into `c`.
 
+## Guards
+
+Guards run cheapest-first, so a request that will be refused never reaches the
+upstream: country and IP checks are local, rate limiting costs one binding call,
+forwarding costs a network round trip.
+
+`cors` accepts `origins`, `allowMethods`, `allowHeaders`, `exposeHeaders`,
+`credentials`, and `maxAge`. Omitting `origins` reflects whatever origin the
+caller sent, which is what makes credentialed requests work — the spec forbids
+`*` alongside `Access-Control-Allow-Credentials`, and browsers reject the whole
+response when both appear. Preflights are answered without contacting the
+upstream.
+
+`rateLimit` needs a `binding` name and an optional `by` strategy:
+
+| `by`           | Bucket                                                               |
+| -------------- | -------------------------------------------------------------------- |
+| `ip` (default) | Per caller, per route.                                               |
+| `path`         | Per caller, per path — one endpoint cannot exhaust another's budget. |
+| `route`        | One shared bucket for the whole route.                               |
+
+Declare the binding in your wrangler config:
+
+```jsonc
+{
+  "ratelimits": [
+    { "name": "RL", "namespace_id": "1001", "simple": { "limit": 100, "period": 60 } },
+  ],
+}
+```
+
+`period` accepts only `10` or `60` seconds — a platform constraint, not a
+choice. Counting is per-location rather than globally exact — the documented trade-off
+of the native binding, and adequate for abuse control. A missing binding is
+reported as a 500 rather than silently admitting traffic.
+
 ## Errors
 
-| Status | Meaning |
-| --- | --- |
-| 403 | Request origin is in `blockCountries`. |
-| 502 | Upstream unreachable after all attempts. |
-| 504 | Upstream exceeded `timeoutMs`. |
+| Status | Meaning                                  |
+| ------ | ---------------------------------------- |
+| 403    | Request origin is in `blockCountries`.   |
+| 502    | Upstream unreachable after all attempts. |
+| 504    | Upstream exceeded `timeoutMs`.           |
 
 ## Platform constraints this design respects
 
@@ -100,9 +136,13 @@ These are Workers limits, not choices, and they shape the architecture:
 ## Development
 
 ```sh
-npm run check   # typecheck + tests
+npm run check   # lint + format + typecheck + tests
 npm test        # tests only
+npm run format  # apply formatting
 ```
+
+CI runs that same `npm run check`, so there is no gate that passes locally but
+fails upstream.
 
 Tests run inside `workerd`, the same runtime Cloudflare runs in production, via
 `@cloudflare/vitest-pool-workers`. Integration tests proxy to a controlled

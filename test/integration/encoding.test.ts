@@ -19,14 +19,21 @@ describe('upstream encoding assumptions', () => {
       });
     };
     const app = new Hono();
-    app.use('*', veilo({
-      config: defineConfig({ routes: [{ match: { path: '/p' }, upstream: 'o.test', bodyRewrite: {} }] }),
-      fetchImpl: upstream,
-    }));
+    app.use(
+      '*',
+      veilo({
+        config: defineConfig({
+          routes: [{ match: { path: '/p' }, upstream: 'o.test', bodyRewrite: {} }],
+        }),
+        fetchImpl: upstream,
+      }),
+    );
 
-    const res = await app.request(new Request('https://p.dev/p', {
-      headers: { 'accept-encoding': 'gzip, br' },
-    }));
+    const res = await app.request(
+      new Request('https://p.dev/p', {
+        headers: { 'accept-encoding': 'gzip, br' },
+      }),
+    );
     expect(seen).toBeNull();
     expect(await res.text()).toContain('https://p.dev/x');
   });
@@ -34,13 +41,20 @@ describe('upstream encoding assumptions', () => {
   it('drops content-encoding and content-length from the response', async () => {
     const upstream: typeof fetch = async () =>
       new Response('plain text pretending to be gzip', {
-        headers: { 'content-type': 'text/html', 'content-encoding': 'gzip', 'content-length': '31' },
+        headers: {
+          'content-type': 'text/html',
+          'content-encoding': 'gzip',
+          'content-length': '31',
+        },
       });
     const app = new Hono();
-    app.use('*', veilo({
-      config: defineConfig({ routes: [{ match: { path: '/p' }, upstream: 'o.test' }] }),
-      fetchImpl: upstream,
-    }));
+    app.use(
+      '*',
+      veilo({
+        config: defineConfig({ routes: [{ match: { path: '/p' }, upstream: 'o.test' }] }),
+        fetchImpl: upstream,
+      }),
+    );
     const res = await app.request('https://p.dev/p');
     expect(res.headers.get('content-encoding')).toBeNull();
     expect(res.headers.get('content-length')).toBeNull();

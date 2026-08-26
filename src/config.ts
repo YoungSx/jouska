@@ -39,6 +39,44 @@ const bodyRewrite = z.object({
   contentTypes: z.array(z.string().min(1)).default(['text/html']),
 });
 
+/**
+ * CORS is delegated to `hono/cors`; these fields mirror its options. `origin`
+ * defaults to reflecting the caller so credentialed requests work: the spec
+ * forbids `*` alongside `Access-Control-Allow-Credentials`, and browsers reject
+ * the whole response when both appear.
+ */
+const cors = z.object({
+  /** Allowed origins. Omit to reflect whatever origin the caller sent. */
+  origins: z.array(z.string().min(1)).nonempty().optional(),
+  allowMethods: z.array(z.string().min(1)).nonempty().optional(),
+  allowHeaders: z.array(z.string().min(1)).default([]),
+  exposeHeaders: z.array(z.string().min(1)).default([]),
+  credentials: z.boolean().default(false),
+  maxAge: z.number().int().nonnegative().optional(),
+});
+
+/** IP rules are delegated to `hono/ip-restriction`; entries may be IPs or CIDRs. */
+const ipRules = z
+  .object({
+    allow: z.array(z.string().min(1)).default([]),
+    deny: z.array(z.string().min(1)).default([]),
+  })
+  .refine((r) => r.allow.length > 0 || r.deny.length > 0, {
+    message: 'ip requires at least one allow or deny entry',
+  });
+
+/**
+ * Rate limiting uses Cloudflare's native binding, so no KV or Durable Object is
+ * involved. Counting is per-location rather than globally exact, which is the
+ * documented trade-off and is adequate for abuse control.
+ */
+const rateLimit = z.object({
+  /** Name of the `ratelimit` binding in wrangler config. */
+  binding: z.string().min(1),
+  /** What to count by. `ip` is the common choice; `route` limits the whole route. */
+  by: z.enum(['ip', 'path', 'route']).default('ip'),
+});
+
 const route = z.object({
   match,
   upstream,
@@ -56,6 +94,12 @@ const route = z.object({
   blockCountries: z.array(z.string().length(2)).default([]),
   /** Headers injected into the upstream request. */
   upstreamHeaders: z.record(z.string(), z.string()).default({}),
+  /** CORS handling. Omit to leave the upstream's own CORS headers untouched. */
+  cors: cors.optional(),
+  /** IP allow/deny rules. Omit to admit every address. */
+  ip: ipRules.optional(),
+  /** Rate limiting via the native Cloudflare binding. Omit to disable. */
+  rateLimit: rateLimit.optional(),
 });
 
 export const configSchema = z.object({
@@ -64,6 +108,8 @@ export const configSchema = z.object({
 
 export type Config = z.output<typeof configSchema>;
 export type Route = z.output<typeof route>;
+export type CorsConfig = z.output<typeof cors>;
+export type RateLimitConfig = z.output<typeof rateLimit>;
 export type RouteInput = z.input<typeof route>;
 export type ConfigInput = z.input<typeof configSchema>;
 

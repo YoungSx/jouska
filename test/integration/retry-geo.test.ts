@@ -67,18 +67,27 @@ describe('country blocking', () => {
   };
 
   it('refuses a blocked country', async () => {
-    const app = appWith([{ match: { path: '/x' }, upstream: 'o.test', blockCountries: ['CU'] }], ok);
+    const app = appWith(
+      [{ match: { path: '/x' }, upstream: 'o.test', blockCountries: ['CU'] }],
+      ok,
+    );
     expect((await withCountry(app, 'CU')).status).toBe(403);
   });
 
   it('admits other countries', async () => {
-    const app = appWith([{ match: { path: '/x' }, upstream: 'o.test', blockCountries: ['CU'] }], ok);
+    const app = appWith(
+      [{ match: { path: '/x' }, upstream: 'o.test', blockCountries: ['CU'] }],
+      ok,
+    );
     expect((await withCountry(app, 'US')).status).toBe(200);
   });
 
   it('admits a request with no country signal', async () => {
     // Fail-open: an unknown origin must not be mistaken for a blocked one.
-    const app = appWith([{ match: { path: '/x' }, upstream: 'o.test', blockCountries: ['CU'] }], ok);
+    const app = appWith(
+      [{ match: { path: '/x' }, upstream: 'o.test', blockCountries: ['CU'] }],
+      ok,
+    );
     expect((await withCountry(app)).status).toBe(200);
   });
 });

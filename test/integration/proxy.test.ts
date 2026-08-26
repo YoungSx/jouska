@@ -38,7 +38,10 @@ const upstream: typeof fetch = async (input) => {
         headers: { 'content-type': 'image/png' },
       });
     case '/redirect':
-      return new Response(null, { status: 302, headers: { location: 'https://origin.test/landed' } });
+      return new Response(null, {
+        status: 302,
+        headers: { location: 'https://origin.test/landed' },
+      });
     case '/cookies': {
       const headers = new Headers({ 'content-type': 'text/plain' });
       headers.append('set-cookie', 'a=1; Domain=origin.test; Path=/');
@@ -92,7 +95,12 @@ describe('forwarding', () => {
 
   it('injects configured upstream headers', async () => {
     const withHeader = appWith([
-      { match: { path: '/api' }, upstream: 'origin.test', stripPrefix: true, upstreamHeaders: { 'x-injected': 'yes' } },
+      {
+        match: { path: '/api' },
+        upstream: 'origin.test',
+        stripPrefix: true,
+        upstreamHeaders: { 'x-injected': 'yes' },
+      },
     ]);
     const body = (await (await get(withHeader, '/api/echo')).json()) as Record<string, string>;
     expect(body.injected).toBe('yes');
@@ -100,7 +108,9 @@ describe('forwarding', () => {
 
   it('passes binary bodies through untouched', async () => {
     const res = await get(app, '/api/binary');
-    expect(new Uint8Array(await res.arrayBuffer())).toEqual(new Uint8Array([0x89, 0x50, 0x4e, 0x47]));
+    expect(new Uint8Array(await res.arrayBuffer())).toEqual(
+      new Uint8Array([0x89, 0x50, 0x4e, 0x47]),
+    );
   });
 
   it('falls through to the app when no route matches', async () => {
@@ -119,14 +129,24 @@ describe('header rewriting', () => {
 
   it('rescopes every cookie to the proxy host', async () => {
     const res = await get(app, '/api/cookies');
-    expect(res.headers.getSetCookie()).toEqual(['a=1; Domain=p.dev; Path=/', 'b=2; Domain=p.dev; HttpOnly']);
+    expect(res.headers.getSetCookie()).toEqual([
+      'a=1; Domain=p.dev; Path=/',
+      'b=2; Domain=p.dev; HttpOnly',
+    ]);
   });
 
   it('leaves headers alone when rewriting is off', async () => {
     const raw = appWith([
-      { match: { path: '/api' }, upstream: 'origin.test', stripPrefix: true, rewriteHeaders: false },
+      {
+        match: { path: '/api' },
+        upstream: 'origin.test',
+        stripPrefix: true,
+        rewriteHeaders: false,
+      },
     ]);
-    expect((await get(raw, '/api/redirect')).headers.get('location')).toBe('https://origin.test/landed');
+    expect((await get(raw, '/api/redirect')).headers.get('location')).toBe(
+      'https://origin.test/landed',
+    );
   });
 });
 
@@ -149,7 +169,9 @@ describe('body rewriting', () => {
         bodyRewrite: { contentTypes: ['text/css'] },
       },
     ]);
-    expect(await (await get(app, '/api/css')).text()).toBe('body{background:url(https://p.dev/bg.png)}');
+    expect(await (await get(app, '/api/css')).text()).toBe(
+      'body{background:url(https://p.dev/bg.png)}',
+    );
   });
 
   it('never rewrites a type outside the allow-list', async () => {
@@ -166,7 +188,11 @@ describe('body rewriting', () => {
         match: { path: '/api' },
         upstream: 'origin.test',
         stripPrefix: true,
-        bodyRewrite: { rewriteLinks: false, contentTypes: ['text/css'], replace: [{ from: 'background', to: 'color' }] },
+        bodyRewrite: {
+          rewriteLinks: false,
+          contentTypes: ['text/css'],
+          replace: [{ from: 'background', to: 'color' }],
+        },
       },
     ]);
     expect(await (await get(app, '/api/css')).text()).toContain('color:url');
@@ -187,13 +213,13 @@ describe('failure handling', () => {
     ]);
     const res = await get(app, '/api/slow');
     expect(res.status).toBe(504);
-    expect((await res.json() as Record<string, string>).error).toBe('upstream_timeout');
+    expect(((await res.json()) as Record<string, string>).error).toBe('upstream_timeout');
   });
 
   it('reports an unreachable upstream as 502', async () => {
     const app = appWith([{ match: { path: '/api' }, upstream: 'origin.test', stripPrefix: true }]);
     const res = await get(app, '/api/boom');
     expect(res.status).toBe(502);
-    expect((await res.json() as Record<string, string>).error).toBe('upstream_unreachable');
+    expect(((await res.json()) as Record<string, string>).error).toBe('upstream_unreachable');
   });
 });

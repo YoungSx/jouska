@@ -1,5 +1,13 @@
 import type { Config, Route } from './config';
 
+/**
+ * A stable label for a route, derived from what it matches rather than a
+ * user-maintained id. Used to namespace rate-limit buckets so two routes never
+ * share a budget by accident.
+ */
+export const routeId = (route: Route): string =>
+  `${route.match.host ?? '*'}${route.match.path ?? '/*'}`;
+
 export interface Match {
   route: Route;
   /** The path prefix that matched, or '' when the route matched on host only. */

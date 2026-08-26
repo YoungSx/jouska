@@ -1,10 +1,15 @@
 import { describe, expect, it } from 'vitest';
-import { rewriteLocation, rewriteResponseHeaders, rewriteSetCookie } from '../../src/internal/headers';
+import {
+  rewriteLocation,
+  rewriteResponseHeaders,
+  rewriteSetCookie,
+} from '../../src/internal/headers';
 
 describe('rewriteLocation', () => {
   it('moves an upstream absolute redirect onto the proxy', () => {
-    expect(rewriteLocation('https://origin.test/next?a=1', 'origin.test', 'https://p.dev'))
-      .toBe('https://p.dev/next?a=1');
+    expect(rewriteLocation('https://origin.test/next?a=1', 'origin.test', 'https://p.dev')).toBe(
+      'https://p.dev/next?a=1',
+    );
   });
 
   it('leaves relative locations untouched', () => {
@@ -12,8 +17,9 @@ describe('rewriteLocation', () => {
   });
 
   it('leaves third-party redirects untouched', () => {
-    expect(rewriteLocation('https://other.test/x', 'origin.test', 'https://p.dev'))
-      .toBe('https://other.test/x');
+    expect(rewriteLocation('https://other.test/x', 'origin.test', 'https://p.dev')).toBe(
+      'https://other.test/x',
+    );
   });
 
   it('survives an unparseable value', () => {
@@ -23,8 +29,9 @@ describe('rewriteLocation', () => {
 
 describe('rewriteSetCookie', () => {
   it('rewrites the Domain attribute', () => {
-    expect(rewriteSetCookie('id=1; Domain=origin.test; Path=/; HttpOnly', 'p.dev'))
-      .toBe('id=1; Domain=p.dev; Path=/; HttpOnly');
+    expect(rewriteSetCookie('id=1; Domain=origin.test; Path=/; HttpOnly', 'p.dev')).toBe(
+      'id=1; Domain=p.dev; Path=/; HttpOnly',
+    );
   });
 
   it('matches the attribute case-insensitively', () => {
