@@ -78,6 +78,12 @@ const rateLimit = z.object({
 });
 
 const route = z.object({
+  /**
+   * Stable handle for this route. Only needed when merging a code-defined table
+   * with a remote one: same id means the code version wins. Routes without an
+   * id are never merged, only appended.
+   */
+  id: z.string().min(1).optional(),
   match,
   upstream,
   /** Strip the matched path prefix before forwarding. */

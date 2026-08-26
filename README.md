@@ -87,6 +87,43 @@ replacer that handles matches straddling chunk boundaries.
 Replacements are applied in a single pass, so rules never cascade into one
 another: `{a→b, b→c}` will not turn `a` into `c`.
 
+## Config precedence
+
+A route table can be written in code or stored remotely (KV, D1, an admin
+panel). `resolveConfig` combines them, and **code always wins**:
+
+```ts
+import { resolveConfig, veilo } from 'veilo';
+
+export default {
+  async fetch(request, env) {
+    const config = resolveConfig({
+      code: { routes: [{ id: 'core', match: { path: '/api' }, upstream: 'api.example.com' }] },
+      remote: await env.CONFIG.get('routes', 'json'),
+      merge: 'byId',
+      onRemoteError: (error) => console.error('remote config rejected', error),
+    });
+    const app = new Hono();
+    app.use('*', veilo({ config }));
+    return app.fetch(request, env);
+  },
+};
+```
+
+Code wins by design: the code-defined table lives in git, is reviewable and
+revertable, and keeps working when the remote store is unreachable or has been
+filled with something broken. Runtime config offers none of that.
+
+| `merge`             | Behaviour                                                                               |
+| ------------------- | --------------------------------------------------------------------------------------- |
+| `replace` (default) | A code table replaces the remote one wholesale. Predictable.                            |
+| `byId`              | Routes merge by `id`; code wins ties and is ordered first. Remote-only routes are kept. |
+
+Failure handling is asymmetric on purpose: invalid **code** config throws,
+because that is a programming error and should fail loudly; invalid **remote**
+config is discarded and reported through `onRemoteError`, so a corrupt table
+cannot take the proxy down.
+
 ## Guards
 
 Guards run cheapest-first, so a request that will be refused never reaches the
