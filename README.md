@@ -378,6 +378,12 @@ npm run format  # apply formatting
 CI runs that same `npm run check`, so there is no gate that passes locally but
 fails upstream.
 
+Publishing is deliberately blocked: `scripts.prepublishOnly` exits non-zero
+because the package name is not final. Note that `"private": true` would not be
+enough on its own — npm only honours it inside workspaces. When publishing is
+turned on, replace that script with `npm run check` so a release cannot ship
+something CI would reject.
+
 Tests run inside `workerd`, the same runtime Cloudflare runs in production, via
 `@cloudflare/vitest-pool-workers`. Integration tests proxy to a controlled
 in-process upstream rather than the public network, so they are deterministic
