@@ -108,7 +108,25 @@ const route = z.object({
   rateLimit: rateLimit.optional(),
 });
 
+/**
+ * Wire-format version of the config document.
+ *
+ * This exists so a stored config written by an older (or newer) version of
+ * veilo is recognised rather than silently reinterpreted. Without it, a future
+ * change to the route shape would make an old document parse into something
+ * subtly different instead of failing loudly.
+ *
+ * Bump this only for changes an older reader cannot handle. Adding an optional
+ * field is backward compatible and does not need a bump.
+ */
+export const CONFIG_VERSION = 1;
+
 export const configSchema = z.object({
+  /**
+   * Omitted means version 1, so documents written before versioning existed
+   * stay valid and hand-written configs need not carry boilerplate.
+   */
+  version: z.literal(CONFIG_VERSION).default(CONFIG_VERSION),
   routes: z.array(route).nonempty(),
 });
 

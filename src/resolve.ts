@@ -58,7 +58,7 @@ const parseRemote = (
 const mergeById = (code: Config, remote: Config): Config => {
   const codeIds = new Set(code.routes.map((r) => r.id).filter((id) => id !== undefined));
   const surviving = remote.routes.filter((r) => r.id === undefined || !codeIds.has(r.id));
-  return { routes: [...code.routes, ...surviving] as Config['routes'] };
+  return { version: code.version, routes: [...code.routes, ...surviving] as Config['routes'] };
 };
 
 /**

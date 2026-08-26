@@ -172,6 +172,26 @@ The staleness this introduces is bounded by `ttlMs`. KV is eventually consistent
 regardless, so a write already takes time to propagate; the TTL makes that
 existing delay explicit rather than adding a new one.
 
+### Wire format version
+
+A stored config document carries a `version`, so a document written by a
+different version of veilo is recognised rather than silently reinterpreted:
+
+```json
+{
+  "version": 1,
+  "routes": [{ "id": "core", "match": { "path": "/api" }, "upstream": "api.example.com" }]
+}
+```
+
+Omitting `version` means 1, so hand-written configs and documents predating
+versioning stay valid. A version this build cannot read is rejected — remote
+config is discarded and reported via `onRemoteError`, code config throws.
+`CONFIG_VERSION` is exported so a control plane can stamp documents it writes.
+
+The version is bumped only for changes an older reader cannot handle; adding an
+optional field is backward compatible and does not need one.
+
 ### Which store
 
 Match the store to the access pattern rather than putting everything in one
