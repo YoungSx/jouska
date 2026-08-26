@@ -4,6 +4,7 @@ on:
   push:
     tags:
       - 'v*'
+  workflow_dispatch:
 
 # 一个 tag 只部署一次；重复打同名 tag 不会排队。
 concurrency:
