@@ -1,0 +1,8 @@
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  // Test-only: @cloudflare/vitest-pool-workers reads the compatibility date
+  // from here to configure the workerd isolate. The library ships no Worker
+  // of its own, so there is deliberately no `main`.
+  "name": "jouska",
+  "compatibility_date": "2026-08-15",
+}

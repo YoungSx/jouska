@@ -1,0 +1,59 @@
+{
+  "name": "jouska",
+  "version": "0.0.0",
+  "description": "Reverse-proxy middleware for Hono on Cloudflare Workers.",
+  "license": "MIT",
+  "author": "Shangxin <shangxin@outlook.com>",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/YoungSx/jouska.git",
+    "directory": "packages/jouska"
+  },
+  "bugs": {
+    "url": "https://github.com/YoungSx/jouska/issues"
+  },
+  "homepage": "https://github.com/YoungSx/jouska#readme",
+  "keywords": [
+    "hono",
+    "cloudflare-workers",
+    "reverse-proxy",
+    "middleware",
+    "edge"
+  ],
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist",
+    "!dist/**/*.map"
+  ],
+  "sideEffects": false,
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "prepublishOnly": "node -e \"console.error('publishing is disabled: the package name is not final yet \u2014 see scripts.prepublishOnly'); process.exit(1)\""
+  },
+  "peerDependencies": {
+    "hono": "^4.13.5"
+  },
+  "dependencies": {
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-pool-workers": "^0.22.0",
+    "@cloudflare/workers-types": "^5.20260826.1",
+    "vitest": "^4.1.11",
+    "wrangler": "^4.126.0",
+    "hono": "^4.13.5"
+  }
+}

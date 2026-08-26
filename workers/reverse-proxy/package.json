@@ -1,0 +1,24 @@
+{
+  "name": "@jouska/reverse-proxy",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Reference Cloudflare Worker assembling jouska.",
+  "license": "MIT",
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "vitest run",
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy"
+  },
+  "dependencies": {
+    "hono": "^4.13.5",
+    "jouska": "*"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-pool-workers": "^0.22.0",
+    "@cloudflare/workers-types": "^5.20260826.1",
+    "vitest": "^4.1.11",
+    "wrangler": "^4.126.0"
+  }
+}

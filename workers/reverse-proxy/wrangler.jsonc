@@ -1,7 +1,7 @@
 {
-  "$schema": "node_modules/wrangler/config-schema.json",
+  "$schema": "../../node_modules/wrangler/config-schema.json",
   "name": "jouska",
-  "main": "worker/index.ts",
+  "main": "index.ts",
   "compatibility_date": "2026-08-15",
   // Gives the deployment a <name>.<subdomain>.workers.dev URL.
   "workers_dev": true,

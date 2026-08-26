@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from 'vitest';
-import worker, { __resetConfigCache } from '../../worker/index';
+import worker, { __resetConfigCache } from './index.js';
 
 /**
  * Covers the reference Worker's own wiring: config sourcing, the isolate cache,

@@ -1,3 +1,4 @@
+/* oxlint-disable no-await-in-loop -- sequential awaits are the behavior under test (one KV read per TTL window) */
 import { describe, expect, it } from 'vitest';
 import { createConfigCache } from '../../src/cache';
 import { defineConfig, type Config } from '../../src/config';

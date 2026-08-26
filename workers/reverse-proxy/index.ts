@@ -23,7 +23,7 @@ import {
   type ConfigCache,
   type ConfigSource,
   type KVReader,
-} from '../src/index.js';
+} from 'jouska';
 
 interface Env {
   /** Optional KV namespace holding the route table under CONFIG_KEY. */
