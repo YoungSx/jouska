@@ -24,6 +24,14 @@ What veilo adds is everything `hono/proxy` deliberately leaves out:
 | Streaming body rewriting                  | `src/internal/body.ts`    |
 | Config schema and validation              | `src/config.ts`           |
 
+## Install
+
+```sh
+npm i veilo hono
+```
+
+`hono` is a peer dependency, so your app controls its version.
+
 ## Usage
 
 ```ts
@@ -136,8 +144,9 @@ These are Workers limits, not choices, and they shape the architecture:
 ## Development
 
 ```sh
-npm run check   # lint + format + typecheck + tests
+npm run check   # lint + format + typecheck + tests + build
 npm test        # tests only
+npm run build   # emit dist/
 npm run format  # apply formatting
 ```
 

@@ -2,8 +2,8 @@
   "compilerOptions": {
     "target": "ES2022",
     "lib": ["ES2022"],
-    "module": "ESNext",
-    "moduleResolution": "bundler",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
     "types": ["@cloudflare/workers-types", "@cloudflare/vitest-pool-workers/types"],
     "strict": true,
     "noUncheckedIndexedAccess": true,
@@ -11,7 +11,8 @@
     "verbatimModuleSyntax": true,
     "skipLibCheck": true,
     "declaration": true,
-    "emitDeclarationOnly": true,
+    "declarationMap": true,
+    "sourceMap": true,
     "outDir": "dist",
     "rootDir": "src"
   },

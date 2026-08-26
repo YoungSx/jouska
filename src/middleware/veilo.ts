@@ -1,10 +1,10 @@
 import type { Context, MiddlewareHandler } from 'hono';
-import type { Config } from '../config';
-import { htmlRewriter, shouldRewrite, textReplaceStream } from '../internal/body';
-import { forward } from '../internal/forward';
-import { checkRateLimit, corsMiddleware, ipMiddleware } from '../internal/guards';
-import { rewriteResponseHeaders } from '../internal/headers';
-import { matchRoute, resolveUpstreamUrl, routeId, type Match } from '../router';
+import type { Config } from '../config.js';
+import { htmlRewriter, shouldRewrite, textReplaceStream } from '../internal/body.js';
+import { forward } from '../internal/forward.js';
+import { checkRateLimit, corsMiddleware, ipMiddleware } from '../internal/guards.js';
+import { rewriteResponseHeaders } from '../internal/headers.js';
+import { matchRoute, resolveUpstreamUrl, routeId, type Match } from '../router.js';
 
 export interface VeiloOptions {
   config: Config;

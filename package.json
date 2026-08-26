@@ -2,30 +2,54 @@
   "name": "veilo",
   "version": "0.0.0",
   "description": "Reverse-proxy middleware for Hono on Cloudflare Workers.",
-  "main": "index.js",
+  "license": "MIT",
+  "author": "Shangxin <shangxin@outlook.com>",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/YoungSx/veilo.git"
+  },
+  "bugs": {
+    "url": "https://github.com/YoungSx/veilo/issues"
+  },
+  "homepage": "https://github.com/YoungSx/veilo#readme",
+  "keywords": [
+    "hono",
+    "cloudflare-workers",
+    "reverse-proxy",
+    "middleware",
+    "edge"
+  ],
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist",
+    "!dist/**/*.map"
+  ],
+  "sideEffects": false,
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
+    "build": "tsc -p tsconfig.json",
     "lint": "oxlint",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test": "vitest run",
     "test:watch": "vitest",
-    "check": "npm run lint && npm run format:check && npm run typecheck && npm run test"
+    "check": "npm run lint && npm run format:check && npm run typecheck && npm run test && npm run build",
+    "prepublishOnly": "npm run check"
   },
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/YoungSx/veilo.git"
+  "peerDependencies": {
+    "hono": "^4.13.5"
   },
-  "keywords": [],
-  "author": "",
-  "license": "MIT",
-  "type": "module",
-  "bugs": {
-    "url": "https://github.com/YoungSx/veilo/issues"
-  },
-  "homepage": "https://github.com/YoungSx/veilo#readme",
   "dependencies": {
-    "hono": "^4.13.5",
     "zod": "^4.4.3"
   },
   "devDependencies": {
@@ -37,7 +61,6 @@
     "vitest": "^4.1.11",
     "wrangler": "^4.126.0"
   },
-  "private": true,
   "allowScripts": {
     "esbuild@0.28.1": true,
     "workerd@1.20260815.1": true,

@@ -1,4 +1,4 @@
-import type { Config, Route } from './config';
+import type { Config, Route } from './config.js';
 
 /**
  * A stable label for a route, derived from what it matches rather than a

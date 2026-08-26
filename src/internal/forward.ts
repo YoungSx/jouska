@@ -1,5 +1,5 @@
 import { proxy } from 'hono/proxy';
-import type { Route } from '../config';
+import type { Route } from '../config.js';
 
 /** Methods safe to replay after a failure. */
 const IDEMPOTENT = new Set(['GET', 'HEAD', 'OPTIONS', 'TRACE']);

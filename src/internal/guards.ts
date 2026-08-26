@@ -2,7 +2,7 @@ import { cors as honoCors } from 'hono/cors';
 import { getConnInfo } from 'hono/cloudflare-workers';
 import { ipRestriction } from 'hono/ip-restriction';
 import type { Context, MiddlewareHandler } from 'hono';
-import type { CorsConfig, RateLimitConfig, Route } from '../config';
+import type { CorsConfig, RateLimitConfig, Route } from '../config.js';
 
 /**
  * Thin adapters that translate route config into Hono's own middleware.

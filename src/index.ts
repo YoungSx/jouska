@@ -1,4 +1,4 @@
-export { configSchema, defineConfig } from './config';
-export type { Config, ConfigInput, Route, RouteInput } from './config';
-export { veilo } from './middleware/veilo';
-export type { VeiloOptions } from './middleware/veilo';
+export { configSchema, defineConfig } from './config.js';
+export type { Config, ConfigInput, Route, RouteInput } from './config.js';
+export { veilo } from './middleware/veilo.js';
+export type { VeiloOptions } from './middleware/veilo.js';
