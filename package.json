@@ -1,0 +1,36 @@
+{
+  "name": "veilo",
+  "version": "0.0.0",
+  "description": "Reverse-proxy middleware for Hono on Cloudflare Workers.",
+  "main": "index.js",
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "check": "npm run typecheck && npm run test"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/YoungSx/veilo.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "MIT",
+  "type": "module",
+  "bugs": {
+    "url": "https://github.com/YoungSx/veilo/issues"
+  },
+  "homepage": "https://github.com/YoungSx/veilo#readme",
+  "dependencies": {
+    "hono": "^4.13.5",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-pool-workers": "^0.22.0",
+    "@cloudflare/workers-types": "^5.20260826.1",
+    "typescript": "^5.9.3",
+    "vitest": "^4.1.11",
+    "wrangler": "^4.126.0"
+  },
+  "private": true
+}
