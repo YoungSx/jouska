@@ -19,6 +19,7 @@ const upstream: typeof fetch = async (input) => {
           path: url.pathname + url.search,
           host: request.headers.get('host'),
           forwardedHost: request.headers.get('x-forwarded-host'),
+          forwardedFor: request.headers.get('x-forwarded-for'),
           injected: request.headers.get('x-injected'),
           body: await request.text(),
         }),
@@ -32,6 +33,14 @@ const upstream: typeof fetch = async (input) => {
     case '/css':
       return new Response('body{background:url(https://origin.test/bg.png)}', {
         headers: { 'content-type': 'text/css' },
+      });
+    case '/csp':
+      return new Response('<html><body><img src="https://origin.test/x.png"></body></html>', {
+        headers: {
+          'content-type': 'text/html',
+          'content-security-policy': "default-src 'self'; img-src https://origin.test",
+          'content-security-policy-report-only': "default-src 'self'",
+        },
       });
     case '/binary':
       return new Response(new Uint8Array([0x89, 0x50, 0x4e, 0x47]), {
@@ -93,17 +102,38 @@ describe('forwarding', () => {
     expect(body.forwardedHost).toBe('p.dev');
   });
 
-  it('injects configured upstream headers', async () => {
+  it('forwards cf-connecting-ip as x-forwarded-for, overwriting a forged value', async () => {
+    const res = await get(app, '/api/echo', {
+      headers: { 'cf-connecting-ip': '203.0.113.10', 'x-forwarded-for': '1.1.1.1' },
+    });
+    const body = (await res.json()) as Record<string, string>;
+    expect(body.forwardedFor).toBe('203.0.113.10');
+  });
+
+  it('omits x-forwarded-for when cf-connecting-ip is absent', async () => {
+    const body = (await (await get(app, '/api/echo')).json()) as Record<string, string>;
+    expect(body.forwardedFor).toBeNull();
+  });
+
+  it('lets upstreamHeaders set arbitrary headers but not override forwarded ones', async () => {
     const withHeader = appWith([
       {
         match: { path: '/api' },
         upstream: 'origin.test',
         stripPrefix: true,
-        upstreamHeaders: { 'x-injected': 'yes' },
+        // A user trying to forge XFF or Host via upstreamHeaders must lose to
+        // the values jouska sets: their position after the spread is wrong.
+        upstreamHeaders: { 'x-injected': 'yes', host: 'evil.test', 'x-forwarded-for': '9.9.9.9' },
       },
     ]);
-    const body = (await (await get(withHeader, '/api/echo')).json()) as Record<string, string>;
+    const body = (await (
+      await get(withHeader, '/api/echo', {
+        headers: { 'cf-connecting-ip': '203.0.113.10' },
+      })
+    ).json()) as Record<string, string>;
     expect(body.injected).toBe('yes');
+    expect(body.host).toBe('origin.test');
+    expect(body.forwardedFor).toBe('203.0.113.10');
   });
 
   it('passes binary bodies through untouched', async () => {
@@ -203,6 +233,24 @@ describe('body rewriting', () => {
       { match: { path: '/api' }, upstream: 'origin.test', stripPrefix: true, bodyRewrite: {} },
     ]);
     expect((await get(app, '/api/page')).headers.get('content-length')).toBeNull();
+  });
+
+  it('strips CSP headers when the body is rewritten', async () => {
+    const app = appWith([
+      { match: { path: '/api' }, upstream: 'origin.test', stripPrefix: true, bodyRewrite: {} },
+    ]);
+    const res = await get(app, '/api/csp');
+    expect(res.headers.get('content-security-policy')).toBeNull();
+    expect(res.headers.get('content-security-policy-report-only')).toBeNull();
+    // The rewrite itself still happened: the img src now points at the proxy.
+    expect(await res.text()).toContain('https://p.dev/x.png');
+  });
+
+  it('leaves CSP intact when body rewriting is off', async () => {
+    const app = appWith([{ match: { path: '/api' }, upstream: 'origin.test', stripPrefix: true }]);
+    expect((await get(app, '/api/csp')).headers.get('content-security-policy')).toBe(
+      "default-src 'self'; img-src https://origin.test",
+    );
   });
 });
 

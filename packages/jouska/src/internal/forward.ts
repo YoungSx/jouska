@@ -32,6 +32,12 @@ export const forward = async ({
   fetchImpl,
 }: ForwardOptions): Promise<Response> => {
   const url = new URL(request.url);
+  // Cloudflare writes the visitor's real TCP source address into
+  // `cf-connecting-ip`, which a client cannot forge. We forward it as
+  // `x-forwarded-for`, overwriting any value the client sent: an untrusted
+  // XFF chain is worse than none, and appending to it only helps if the
+  // upstream knows to trust the rightmost entry — most don't.
+  const clientIp = request.headers.get('cf-connecting-ip');
   const attempts = isRetryable(request.method) ? route.retries + 1 : 1;
   let lastError: unknown;
 
@@ -51,6 +57,7 @@ export const forward = async ({
           host: target.host,
           'x-forwarded-host': url.host,
           'x-forwarded-proto': url.protocol.replace(':', ''),
+          ...(clientIp !== null ? { 'x-forwarded-for': clientIp } : {}),
         },
         ...(fetchImpl ? { customFetch: fetchImpl } : {}),
       });
@@ -58,5 +65,8 @@ export const forward = async ({
       lastError = error;
     }
   }
+  // Note: only network failures and timeouts throw. An HTTP 5xx from the
+  // upstream is a normal Response and is never retried — replaying it would
+  // pile load onto a struggling origin for no expected benefit.
   throw lastError;
 };
