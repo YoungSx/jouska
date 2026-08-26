@@ -172,6 +172,74 @@ The staleness this introduces is bounded by `ttlMs`. KV is eventually consistent
 regardless, so a write already takes time to propagate; the TTL makes that
 existing delay explicit rather than adding a new one.
 
+### Where the document lives
+
+`fromKV` and `fromEnvVar` read the document; `firstAvailable` layers them.
+
+**KV** — one key holding one JSON document. In the Cloudflare dashboard this is
+a text box containing the JSON, so it can be read and edited by hand. Unwritten
+fields take their defaults, so a stored document stays short:
+
+```json
+{
+  "version": 1,
+  "routes": [
+    {
+      "id": "openai",
+      "match": { "path": "/openai" },
+      "upstream": "api.openai.com",
+      "stripPrefix": true
+    }
+  ]
+}
+```
+
+**Environment variable** — the same document, as a `vars` entry. Both shapes a
+Worker can receive are accepted, because they are not interchangeable: a JSON
+object declared in wrangler config arrives already parsed, while a variable
+added by hand in the dashboard can only ever be a string.
+
+```jsonc
+{
+  "vars": {
+    "VEILO_CONFIG": {
+      "version": 1,
+      "routes": [{ "match": { "path": "/openai" }, "upstream": "api.openai.com" }],
+    },
+  },
+}
+```
+
+Layer them so a runtime edit wins and the deployment carries a fallback:
+
+```ts
+const source = firstAvailable(
+  [fromKV(env.CONFIG, 'routes', { cacheTtlSeconds: 300 }), fromEnvVar(env, 'VEILO_CONFIG')],
+  (error, index) => console.error(`config source ${index} failed`, error),
+);
+const cache = createConfigCache({
+  load: async () => resolveConfig({ code: { routes: [...] }, remote: await source() }),
+});
+```
+
+A source that throws is treated as absent, so one broken store cannot mask a
+working one; the error reaches the callback.
+
+#### KV or an environment variable
+
+|           | KV                                 | Environment variable                |
+| --------- | ---------------------------------- | ----------------------------------- |
+| Editing   | Write the key; live within `ttlMs` | Redeploy the Worker                 |
+| Dashboard | Text box, editable                 | Editable, but see below             |
+| History   | None by itself                     | None                                |
+| Read cost | Counts against the KV allowance    | Free — it is part of the deployment |
+
+Environment variables are deployment configuration rather than data. Changing
+one means redeploying, there is no history, and a value edited in the dashboard
+can be overwritten by a later `wrangler deploy` that does not carry it. Use a
+variable for a table that changes with the code, and KV for one edited at
+runtime by an operator or a panel.
+
 ### Wire format version
 
 A stored config document carries a `version`, so a document written by a

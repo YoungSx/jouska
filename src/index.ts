@@ -3,6 +3,8 @@ export type { CacheOptions, ConfigCache } from './cache.js';
 export { CONFIG_VERSION, configSchema, defineConfig } from './config.js';
 export type { Config, ConfigInput, ConfigMeta, Route, RouteInput } from './config.js';
 export { resolveConfig } from './resolve.js';
+export { firstAvailable, fromEnvVar, fromKV } from './sources.js';
+export type { ConfigSource, KVReader, KVSourceOptions } from './sources.js';
 export type { MergeStrategy, ResolveOptions } from './resolve.js';
 export { veilo } from './middleware/veilo.js';
 export type { VeiloOptions } from './middleware/veilo.js';
