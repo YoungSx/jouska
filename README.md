@@ -124,6 +124,70 @@ because that is a programming error and should fail loudly; invalid **remote**
 config is discarded and reported through `onRemoteError`, so a corrupt table
 cannot take the proxy down.
 
+## Reading config from a store
+
+Reading the config store on every request does not survive the free tier. KV
+allows **100,000 reads per day**, so a site serving two requests per second
+exhausts the allowance in half a day, after which reads fail and the proxy goes
+down with them.
+
+`createConfigCache` keeps the resolved config in isolate memory, turning "one
+read per request" into "one read per isolate per TTL":
+
+```ts
+import { createConfigCache, resolveConfig, veilo } from 'veilo';
+import { Hono } from 'hono';
+
+const cache = createConfigCache({
+  ttlMs: 60_000,
+  onReloadError: (error) => console.error('config reload failed', error),
+  load: async () =>
+    resolveConfig({
+      code: { routes: [{ id: 'core', match: { path: '/api' }, upstream: 'api.example.com' }] },
+      remote: await CONFIG_KV.get('routes', 'json'),
+      merge: 'byId',
+    }),
+});
+
+export default {
+  async fetch(request, env) {
+    const app = new Hono();
+    app.use('*', veilo({ config: await cache.get() }));
+    return app.fetch(request, env);
+  },
+};
+```
+
+| Approach          | KV reads per day  | Free tier supports    |
+| ----------------- | ----------------- | --------------------- |
+| Read per request  | one per request   | ~100k requests        |
+| 60s isolate cache | ~1440 per isolate | effectively unbounded |
+
+Two behaviours are load-bearing: concurrent cache misses share a single load
+(otherwise a cold burst issues one read per request, defeating the cache), and a
+failed refresh keeps serving the previous config (a briefly unreachable store
+must not take the proxy down).
+
+The staleness this introduces is bounded by `ttlMs`. KV is eventually consistent
+regardless, so a write already takes time to propagate; the TTL makes that
+existing delay explicit rather than adding a new one.
+
+### Which store
+
+Match the store to the access pattern rather than putting everything in one
+place:
+
+| Data              | Store            | Why                                                                  |
+| ----------------- | ---------------- | -------------------------------------------------------------------- |
+| Route table       | KV, one JSON key | Read-mostly, whole-document reads, editable as text in the dashboard |
+| Audit trail       | D1               | Append-only, queried by time, needs history                          |
+| Traffic stats     | Analytics Engine | Write-heavy; does not consume KV or D1 quota                         |
+| Panel credentials | Secrets Store    | Injected at deploy, zero runtime reads                               |
+
+Do not put the route table in D1: each request would cost a SQL query, and a
+table of N routes costs N row reads per request against the 5M/day free
+allowance — it runs out sooner than KV does.
+
 ## Guards
 
 Guards run cheapest-first, so a request that will be refused never reaches the
