@@ -17,7 +17,12 @@ import type { Config } from './config.js';
 export interface CacheOptions {
   /** Loads and validates config. Called at most once per TTL per isolate. */
   load: () => Promise<Config>;
-  /** How long a loaded config is served before reloading. */
+  /**
+   * How long a loaded config is served before reloading. Defaults to 60 seconds
+   * to match the platform: Cloudflare documents that a KV write may take "up to
+   * 60 seconds or more" to become visible elsewhere, so a shorter TTL buys
+   * little real freshness while multiplying reads.
+   */
   ttlMs?: number;
   /** Injectable clock, for tests. */
   now?: () => number;

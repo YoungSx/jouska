@@ -50,10 +50,16 @@ export interface KVReader {
 
 export interface KVSourceOptions {
   /**
-   * Seconds the value may be served from Cloudflare's edge cache. A cache hit
-   * does not count against the KV read allowance, so this compounds with
-   * `createConfigCache` to keep reads near zero. Bounded by how stale the
-   * config may be.
+   * Seconds the value may be served from Cloudflare's edge cache. Must be at
+   * least 30; KV's own default is 60.
+   *
+   * This reduces latency, not billed operations: Cloudflare documents that all
+   * KV operations incur charges and carves out no exception for cache hits, so
+   * do not budget read quota on the assumption that cached reads are free.
+   * Read amplification is what `createConfigCache` is for.
+   *
+   * Raising it also widens the staleness window, since KV writes already take
+   * up to 60 seconds or more to propagate.
    */
   cacheTtlSeconds?: number;
 }
@@ -63,11 +69,19 @@ export interface KVSourceOptions {
  * `type: 'json'` makes KV parse it, so a malformed document surfaces here
  * rather than as a confusing validation error later.
  */
+/** KV rejects a cacheTtl below this, so catch it at construction not at runtime. */
+const MIN_CACHE_TTL_SECONDS = 30;
+
 export const fromKV = (
   namespace: KVReader,
   key: string,
   { cacheTtlSeconds }: KVSourceOptions = {},
 ): ConfigSource => {
+  if (cacheTtlSeconds !== undefined && cacheTtlSeconds < MIN_CACHE_TTL_SECONDS) {
+    throw new RangeError(
+      `fromKV: cacheTtlSeconds must be at least ${MIN_CACHE_TTL_SECONDS}, got ${cacheTtlSeconds}`,
+    );
+  }
   return async () =>
     namespace.get(key, {
       type: 'json',

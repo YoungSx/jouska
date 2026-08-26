@@ -168,9 +168,14 @@ Two behaviours are load-bearing: concurrent cache misses share a single load
 failed refresh keeps serving the previous config (a briefly unreachable store
 must not take the proxy down).
 
-The staleness this introduces is bounded by `ttlMs`. KV is eventually consistent
-regardless, so a write already takes time to propagate; the TTL makes that
-existing delay explicit rather than adding a new one.
+The staleness this introduces is bounded by `ttlMs`, which defaults to 60
+seconds. That default is chosen to match the platform: KV is eventually
+consistent, and Cloudflare documents that a write may take "up to 60 seconds or
+more" to become visible in other locations. So a shorter TTL buys little real
+freshness while multiplying reads — the propagation delay dominates either way.
+
+End to end, a config change goes live within roughly `ttlMs` plus KV's own
+propagation, so budget on the order of two minutes rather than instantly.
 
 ### Where the document lives
 
@@ -224,6 +229,12 @@ const cache = createConfigCache({
 
 A source that throws is treated as absent, so one broken store cannot mask a
 working one; the error reaches the callback.
+
+`cacheTtlSeconds` sets how long KV may serve the value from the edge cache
+(minimum 30, KV's own default 60). It lowers latency but not billed operations:
+Cloudflare states that all KV operations incur charges and makes no exception
+for cache hits, so do not budget read quota assuming cached reads are free —
+`createConfigCache` is what reduces the number of reads.
 
 #### KV or an environment variable
 

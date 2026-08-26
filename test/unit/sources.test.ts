@@ -148,3 +148,22 @@ describe('firstAvailable', () => {
     expect(consulted).toBe(false);
   });
 });
+
+describe('fromKV cacheTtl validation', () => {
+  it('rejects a cacheTtl below the KV minimum at construction', () => {
+    // KV refuses anything under 30, so failing here beats failing in production.
+    expect(() => fromKV({ get: async () => null }, 'routes', { cacheTtlSeconds: 10 })).toThrow(
+      RangeError,
+    );
+  });
+
+  it('accepts the minimum', () => {
+    expect(() =>
+      fromKV({ get: async () => null }, 'routes', { cacheTtlSeconds: 30 }),
+    ).not.toThrow();
+  });
+
+  it('accepts an omitted cacheTtl', () => {
+    expect(() => fromKV({ get: async () => null }, 'routes')).not.toThrow();
+  });
+});
