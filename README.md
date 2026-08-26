@@ -78,6 +78,17 @@ Routes are evaluated in order and the first match wins.
 | `blockCountries`  | `[]`     | ISO 3166-1 alpha-2 codes refused with 403.                       |
 | `upstreamHeaders` | `{}`     | Headers injected into the upstream request.                      |
 
+Every forwarded request carries `Host` (set to the upstream), `X-Forwarded-Host`
+(the original host), `X-Forwarded-Proto`, and `X-Forwarded-For`. The last is
+derived from Cloudflare's `cf-connecting-ip` and **overwrites** any value the
+client sent, so the upstream sees the real visitor address rather than a forged
+chain. Values set in `upstreamHeaders` cannot override these — they are applied
+after the spread, by design.
+
+Retries replay only **network failures and timeouts**. An HTTP 5xx is a normal
+response and is returned as-is on the first attempt: replaying it would pile
+load onto a struggling origin for no expected benefit.
+
 `bodyRewrite` accepts `rewriteLinks` (default `true`), `contentTypes`
 (default `['text/html']`), and `replace` (literal `from`/`to` pairs). HTML goes
 through the native `HTMLRewriter`, which rewrites URL-bearing attributes and
@@ -86,6 +97,14 @@ replacer that handles matches straddling chunk boundaries.
 
 Replacements are applied in a single pass, so rules never cascade into one
 another: `{a→b, b→c}` will not turn `a` into `c`.
+
+When body rewriting is active, `Content-Security-Policy` and
+`Content-Security-Policy-Report-Only` headers are stripped from the response.
+An upstream CSP references the upstream's own origin in directives like
+`img-src` or `connect-src`; once those URLs are rewritten onto the proxy, the
+policy would block the page from loading its own rewritten resources. Rewriting
+CSP itself is a separate grammar with its own footguns, so it is dropped rather
+than half-fixed — the proxy has already taken responsibility for the body's URLs.
 
 ## Config precedence
 

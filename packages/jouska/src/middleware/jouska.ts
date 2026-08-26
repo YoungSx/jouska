@@ -126,6 +126,14 @@ const proxyRequest = async (
 
   // Length changes once the body is rewritten; a stale value breaks the client.
   headers.delete('content-length');
+  // A CSP policy from the upstream references its own origin in directives
+  // like `img-src` or `connect-src`. Once links are rewritten onto the proxy,
+  // those rules actively block the page from loading its own rewritten
+  // resources. Rather than parse and rewrite CSP (a separate grammar with
+  // its own footguns), drop it: the proxy has already taken responsibility
+  // for the body's URLs.
+  headers.delete('content-security-policy');
+  headers.delete('content-security-policy-report-only');
   const proxyHost = new URL(proxyOrigin).host;
   const base = new Response(upstream.body, {
     status: upstream.status,
