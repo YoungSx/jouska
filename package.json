@@ -37,5 +37,10 @@
     "vitest": "^4.1.11",
     "wrangler": "^4.126.0"
   },
-  "private": true
+  "private": true,
+  "allowScripts": {
+    "esbuild@0.28.1": true,
+    "workerd@1.20260815.1": true,
+    "workerd@1.20260825.1": true
+  }
 }
