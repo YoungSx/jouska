@@ -121,17 +121,40 @@ const route = z.object({
  */
 export const CONFIG_VERSION = 1;
 
+/**
+ * Provenance for a stored config document: who wrote it and when.
+ *
+ * Written by whatever wrote the document (typically an admin panel) and carried
+ * through unchanged. Deliberately inert — no proxying decision reads these
+ * fields, because config that quietly changes behaviour is a hidden control
+ * surface. It exists so an operator can answer "who changed this and when"
+ * without a separate lookup.
+ */
+const meta = z.object({
+  /** ISO 8601 timestamp of the write. */
+  updatedAt: z.string().min(1).optional(),
+  /** Identifier of whoever made the change, in whatever form the writer uses. */
+  updatedBy: z.string().min(1).optional(),
+  /** Monotonic counter or content hash, for the writer's own change tracking. */
+  revision: z.union([z.number().int().nonnegative(), z.string().min(1)]).optional(),
+  /** Free-form note, e.g. a change reason. */
+  note: z.string().optional(),
+});
+
 export const configSchema = z.object({
   /**
    * Omitted means version 1, so documents written before versioning existed
    * stay valid and hand-written configs need not carry boilerplate.
    */
   version: z.literal(CONFIG_VERSION).default(CONFIG_VERSION),
+  /** Optional provenance. Validated for shape, then carried through untouched. */
+  meta: meta.optional(),
   routes: z.array(route).nonempty(),
 });
 
 export type Config = z.output<typeof configSchema>;
 export type Route = z.output<typeof route>;
+export type ConfigMeta = z.output<typeof meta>;
 export type CorsConfig = z.output<typeof cors>;
 export type RateLimitConfig = z.output<typeof rateLimit>;
 export type RouteInput = z.input<typeof route>;

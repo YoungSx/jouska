@@ -68,3 +68,52 @@ describe('version handling in resolveConfig', () => {
     expect(config.version).toBe(CONFIG_VERSION);
   });
 });
+
+describe('config metadata', () => {
+  const withMeta = {
+    routes: [{ match: { path: '/a' }, upstream: 'r.test' }],
+    meta: { updatedAt: '2026-08-26T09:00:00Z', updatedBy: 'panel@example.com', revision: 7 },
+  };
+
+  it('carries provenance through unchanged', () => {
+    const config = resolveConfig({ remote: withMeta });
+    expect(config.meta).toEqual({
+      updatedAt: '2026-08-26T09:00:00Z',
+      updatedBy: 'panel@example.com',
+      revision: 7,
+    });
+  });
+
+  it('accepts a string revision as well as a number', () => {
+    expect(
+      defineConfig({ routes: [...routes], meta: { revision: 'sha256:abc' } }).meta?.revision,
+    ).toBe('sha256:abc');
+  });
+
+  it('leaves meta undefined when absent', () => {
+    expect(defineConfig({ routes: [...routes] }).meta).toBeUndefined();
+  });
+
+  it('rejects a malformed meta block', () => {
+    // @ts-expect-error exercising runtime validation
+    expect(() => defineConfig({ routes: [...routes], meta: { updatedAt: 42 } })).toThrow();
+  });
+
+  it('keeps the remote meta when merging, since code changes live in git', () => {
+    const config = resolveConfig({
+      code: { routes: [{ id: 'c', match: { path: '/a' }, upstream: 'code.test' }] },
+      remote: { ...withMeta, routes: [{ id: 'r', match: { path: '/b' }, upstream: 'r.test' }] },
+      merge: 'byId',
+    });
+    expect(config.meta?.updatedBy).toBe('panel@example.com');
+  });
+
+  it('does not influence routing', () => {
+    // Metadata must stay inert: identical route tables must resolve identically
+    // whether or not provenance is attached.
+    const table = [{ match: { path: '/a' }, upstream: 'o.test' }];
+    const bare = defineConfig({ routes: [...table] });
+    const tagged = defineConfig({ routes: [...table], meta: { note: 'anything' } });
+    expect(tagged.routes).toEqual(bare.routes);
+  });
+});

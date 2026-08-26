@@ -192,6 +192,22 @@ config is discarded and reported via `onRemoteError`, code config throws.
 The version is bumped only for changes an older reader cannot handle; adding an
 optional field is backward compatible and does not need one.
 
+An optional `meta` block records who wrote the document and when:
+
+```json
+{
+  "version": 1,
+  "meta": { "updatedAt": "2026-08-26T09:00:00Z", "updatedBy": "panel@example.com", "revision": 7 },
+  "routes": [{ "id": "core", "match": { "path": "/api" }, "upstream": "api.example.com" }]
+}
+```
+
+It is validated for shape and then carried through untouched. No proxying
+decision reads it — config that quietly changes behaviour would be a hidden
+control surface. It exists so an operator can answer "who changed this and when"
+without a separate lookup. On a `byId` merge the remote block is kept, since
+code changes are tracked by git rather than by these fields.
+
 ### Which store
 
 Match the store to the access pattern rather than putting everything in one

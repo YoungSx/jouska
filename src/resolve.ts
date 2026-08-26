@@ -58,7 +58,14 @@ const parseRemote = (
 const mergeById = (code: Config, remote: Config): Config => {
   const codeIds = new Set(code.routes.map((r) => r.id).filter((id) => id !== undefined));
   const surviving = remote.routes.filter((r) => r.id === undefined || !codeIds.has(r.id));
-  return { version: code.version, routes: [...code.routes, ...surviving] as Config['routes'] };
+  return {
+    version: code.version,
+    // Provenance describes a runtime write, which only the remote document has:
+    // code changes are tracked by git, not by these fields. Keeping the remote
+    // meta lets an operator still see who last edited the stored half.
+    ...(remote.meta !== undefined ? { meta: remote.meta } : {}),
+    routes: [...code.routes, ...surviving] as Config['routes'],
+  };
 };
 
 /**
