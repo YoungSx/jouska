@@ -112,7 +112,7 @@ const route = z.object({
  * Wire-format version of the config document.
  *
  * This exists so a stored config written by an older (or newer) version of
- * veilo is recognised rather than silently reinterpreted. Without it, a future
+ * jouska is recognised rather than silently reinterpreted. Without it, a future
  * change to the route shape would make an old document parse into something
  * subtly different instead of failing loudly.
  *

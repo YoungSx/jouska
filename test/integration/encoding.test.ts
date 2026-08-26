@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { describe, expect, it } from 'vitest';
 import { defineConfig } from '../../src/config';
-import { veilo } from '../../src/middleware/veilo';
+import { jouska } from '../../src/middleware/jouska';
 
 /**
  * Body rewriting assumes bodies arrive uncompressed, because `hono/proxy`
@@ -21,7 +21,7 @@ describe('upstream encoding assumptions', () => {
     const app = new Hono();
     app.use(
       '*',
-      veilo({
+      jouska({
         config: defineConfig({
           routes: [{ match: { path: '/p' }, upstream: 'o.test', bodyRewrite: {} }],
         }),
@@ -50,7 +50,7 @@ describe('upstream encoding assumptions', () => {
     const app = new Hono();
     app.use(
       '*',
-      veilo({
+      jouska({
         config: defineConfig({ routes: [{ match: { path: '/p' }, upstream: 'o.test' }] }),
         fetchImpl: upstream,
       }),

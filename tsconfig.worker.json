@@ -1,0 +1,15 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    // The Worker is deployed by wrangler, which does its own bundling, so this
+    // config exists purely to type-check it.
+    "noEmit": true,
+    // Inherited rootDir/outDir only make sense for the library build.
+    "rootDir": ".",
+    "outDir": null,
+    "declaration": false,
+    "declarationMap": false,
+    "sourceMap": false
+  },
+  "include": ["worker/**/*.ts", "src/**/*.ts"]
+}

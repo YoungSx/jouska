@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { describe, expect, it } from 'vitest';
 import { defineConfig, type ConfigInput } from '../../src/config';
-import { veilo } from '../../src/middleware/veilo';
+import { jouska } from '../../src/middleware/jouska';
 
 /**
  * A controlled upstream. Everything runs inside workerd, so these exercise the
@@ -67,7 +67,7 @@ const upstream: typeof fetch = async (input) => {
 
 const appWith = (routes: ConfigInput['routes']) => {
   const app = new Hono();
-  app.use('*', veilo({ config: defineConfig({ routes }), fetchImpl: upstream }));
+  app.use('*', jouska({ config: defineConfig({ routes }), fetchImpl: upstream }));
   app.get('/local', (c) => c.text('handled locally'));
   return app;
 };

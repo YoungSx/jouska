@@ -1,8 +1,29 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
-  // Test-only: @cloudflare/vitest-pool-workers reads the compatibility date
-  // from here to configure the workerd isolate. This library ships no Worker
-  // of its own, so there is deliberately no `main`.
-  "name": "veilo",
+  "name": "jouska",
+  "main": "worker/index.ts",
   "compatibility_date": "2026-08-15",
+  // Gives the deployment a <name>.<subdomain>.workers.dev URL.
+  "workers_dev": true,
+  "observability": { "enabled": true },
+
+  // Route table for deployments without a KV namespace. Replace the upstream, or
+  // bind a KV namespace and store the document there instead.
+  "vars": {
+    "JOUSKA_CONFIG": {
+      "version": 1,
+      "routes": [
+        {
+          "id": "example",
+          "match": { "path": "/" },
+          "upstream": "example.com",
+          "rewriteHeaders": true,
+        },
+      ],
+    },
+  },
+
+  // Uncomment and fill in a namespace id to serve the route table from KV,
+  // which is editable at runtime without redeploying.
+  // "kv_namespaces": [{ "binding": "CONFIG", "id": "<namespace-id>" }],
 }

@@ -1,13 +1,13 @@
 import { Hono } from 'hono';
 import { describe, expect, it } from 'vitest';
 import { defineConfig, type ConfigInput } from '../../src/config';
-import { veilo } from '../../src/middleware/veilo';
+import { jouska } from '../../src/middleware/jouska';
 
 const reached: typeof fetch = async () => new Response('upstream reached');
 
 const appWith = (routes: ConfigInput['routes']) => {
   const app = new Hono();
-  app.use('*', veilo({ config: defineConfig({ routes }), fetchImpl: reached }));
+  app.use('*', jouska({ config: defineConfig({ routes }), fetchImpl: reached }));
   return app;
 };
 
@@ -41,7 +41,7 @@ describe('CORS', () => {
     const app = new Hono();
     app.use(
       '*',
-      veilo({
+      jouska({
         config: defineConfig({
           routes: [{ match: { path: '/x' }, upstream: 'o.test', cors: { allowMethods: ['POST'] } }],
         }),
@@ -117,7 +117,7 @@ describe('IP restriction', () => {
     const app = new Hono();
     app.use(
       '*',
-      veilo({
+      jouska({
         config: defineConfig({
           routes: [{ match: { path: '/x' }, upstream: 'o.test', ip: { deny: ['198.51.100.7'] } }],
         }),
@@ -148,7 +148,7 @@ describe('rate limiting', () => {
 
   const appWithLimiter = (routes: ConfigInput['routes'], binding: unknown) => {
     const app = new Hono();
-    app.use('*', veilo({ config: defineConfig({ routes }), fetchImpl: reached }));
+    app.use('*', jouska({ config: defineConfig({ routes }), fetchImpl: reached }));
     return (request: Request) => app.fetch(request, { RL: binding });
   };
 
@@ -179,7 +179,7 @@ describe('rate limiting', () => {
     const app = new Hono();
     app.use(
       '*',
-      veilo({
+      jouska({
         config: defineConfig({
           routes: [
             { match: { path: '/x' }, upstream: 'o.test', rateLimit: { binding: 'RL', by: 'path' } },
@@ -210,7 +210,7 @@ describe('rate limiting', () => {
     const app = new Hono();
     app.use(
       '*',
-      veilo({
+      jouska({
         config: defineConfig({
           routes: [{ match: { path: '/x' }, upstream: 'o.test', rateLimit: { binding: 'ABSENT' } }],
         }),
@@ -232,7 +232,7 @@ describe('rate limiting', () => {
     const app = new Hono();
     app.use(
       '*',
-      veilo({
+      jouska({
         config: defineConfig({
           routes: [{ match: { path: '/x' }, upstream: 'o.test', rateLimit: { binding: 'RL' } }],
         }),

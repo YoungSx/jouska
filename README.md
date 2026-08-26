@@ -1,4 +1,4 @@
-# veilo
+# jouska
 
 Reverse-proxy middleware for [Hono](https://hono.dev) on Cloudflare Workers.
 
@@ -8,13 +8,13 @@ in-page links all point back at your own hostname.
 
 ## Why a middleware, not a framework
 
-Routing and middleware pipelines are solved problems, so veilo does not
+Routing and middleware pipelines are solved problems, so jouska does not
 reimplement them — it plugs into Hono. Likewise, request forwarding builds on
 `hono/proxy`, which already handles hop-by-hop header stripping, `duplex: 'half'`
 for streamed bodies, and dropping `accept-encoding` so upstream bodies arrive
 uncompressed.
 
-What veilo adds is everything `hono/proxy` deliberately leaves out:
+What jouska adds is everything `hono/proxy` deliberately leaves out:
 
 | Concern                                   | Where it lives            |
 | ----------------------------------------- | ------------------------- |
@@ -27,7 +27,7 @@ What veilo adds is everything `hono/proxy` deliberately leaves out:
 ## Install
 
 ```sh
-npm i veilo hono
+npm i jouska hono
 ```
 
 `hono` is a peer dependency, so your app controls its version.
@@ -36,7 +36,7 @@ npm i veilo hono
 
 ```ts
 import { Hono } from 'hono';
-import { defineConfig, veilo } from 'veilo';
+import { defineConfig, jouska } from 'jouska';
 
 const config = defineConfig({
   routes: [
@@ -52,7 +52,7 @@ const config = defineConfig({
 });
 
 const app = new Hono();
-app.use('*', veilo({ config }));
+app.use('*', jouska({ config }));
 
 // Unmatched requests fall through, so your own handlers still work.
 app.get('/health', (c) => c.text('ok'));
@@ -93,7 +93,7 @@ A route table can be written in code or stored remotely (KV, D1, an admin
 panel). `resolveConfig` combines them, and **code always wins**:
 
 ```ts
-import { resolveConfig, veilo } from 'veilo';
+import { resolveConfig, jouska } from 'jouska';
 
 export default {
   async fetch(request, env) {
@@ -104,7 +104,7 @@ export default {
       onRemoteError: (error) => console.error('remote config rejected', error),
     });
     const app = new Hono();
-    app.use('*', veilo({ config }));
+    app.use('*', jouska({ config }));
     return app.fetch(request, env);
   },
 };
@@ -135,7 +135,7 @@ down with them.
 read per request" into "one read per isolate per TTL":
 
 ```ts
-import { createConfigCache, resolveConfig, veilo } from 'veilo';
+import { createConfigCache, resolveConfig, jouska } from 'jouska';
 import { Hono } from 'hono';
 
 const cache = createConfigCache({
@@ -152,7 +152,7 @@ const cache = createConfigCache({
 export default {
   async fetch(request, env) {
     const app = new Hono();
-    app.use('*', veilo({ config: await cache.get() }));
+    app.use('*', jouska({ config: await cache.get() }));
     return app.fetch(request, env);
   },
 };
@@ -207,7 +207,7 @@ added by hand in the dashboard can only ever be a string.
 ```jsonc
 {
   "vars": {
-    "VEILO_CONFIG": {
+    "JOUSKA_CONFIG": {
       "version": 1,
       "routes": [{ "match": { "path": "/openai" }, "upstream": "api.openai.com" }],
     },
@@ -219,7 +219,7 @@ Layer them so a runtime edit wins and the deployment carries a fallback:
 
 ```ts
 const source = firstAvailable(
-  [fromKV(env.CONFIG, 'routes', { cacheTtlSeconds: 300 }), fromEnvVar(env, 'VEILO_CONFIG')],
+  [fromKV(env.CONFIG, 'routes', { cacheTtlSeconds: 300 }), fromEnvVar(env, 'JOUSKA_CONFIG')],
   (error, index) => console.error(`config source ${index} failed`, error),
 );
 const cache = createConfigCache({
@@ -263,7 +263,7 @@ useful half of each.
 ### Wire format version
 
 A stored config document carries a `version`, so a document written by a
-different version of veilo is recognised rather than silently reinterpreted:
+different version of jouska is recognised rather than silently reinterpreted:
 
 ```json
 {
@@ -392,7 +392,7 @@ and exercise the real `HTMLRewriter`, streams, and `AbortSignal`.
 ## Prior art
 
 Route-table design informed by [reflare](https://github.com/latticehr/reflare)
-and Proxyflare, both unmaintained. veilo shares no code with either.
+and Proxyflare, both unmaintained. jouska shares no code with either.
 
 ## License
 

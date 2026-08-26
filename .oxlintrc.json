@@ -5,13 +5,22 @@
     "suspicious": "error",
     "perf": "warn"
   },
-  "env": { "worker": true, "es2022": true },
+  "env": {
+    "worker": true,
+    "es2022": true
+  },
   "ignorePatterns": ["dist", "node_modules"],
   "overrides": [
     {
       "files": ["test/**/*.ts"],
       "rules": {
         "unicorn/consistent-function-scoping": "off"
+      }
+    },
+    {
+      "files": ["worker/**/*.ts"],
+      "rules": {
+        "no-underscore-dangle": "off"
       }
     }
   ]

@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { describe, expect, it } from 'vitest';
 import { defineConfig, type ConfigInput } from '../../src/config';
-import { veilo } from '../../src/middleware/veilo';
+import { jouska } from '../../src/middleware/jouska';
 
 /** Fails the first `failures` attempts, then succeeds. Counts every attempt. */
 const flakyUpstream = (failures: number) => {
@@ -18,7 +18,7 @@ const flakyUpstream = (failures: number) => {
 
 const appWith = (routes: ConfigInput['routes'], fetchImpl: typeof fetch) => {
   const app = new Hono();
-  app.use('*', veilo({ config: defineConfig({ routes }), fetchImpl }));
+  app.use('*', jouska({ config: defineConfig({ routes }), fetchImpl }));
   return app;
 };
 

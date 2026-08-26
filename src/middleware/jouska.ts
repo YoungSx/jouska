@@ -6,7 +6,7 @@ import { checkRateLimit, corsMiddleware, ipMiddleware } from '../internal/guards
 import { rewriteResponseHeaders } from '../internal/headers.js';
 import { matchRoute, resolveUpstreamUrl, routeId, type Match } from '../router.js';
 
-export interface VeiloOptions {
+export interface JouskaOptions {
   config: Config;
   /** Overridable for tests; defaults to the runtime `fetch`. */
   fetchImpl?: typeof fetch;
@@ -21,7 +21,7 @@ const country = (request: Request): string | undefined =>
  * on a match, forwards it upstream and rewrites the response. On no match it
  * calls `next()`, so an app can mix proxied routes with its own handlers.
  */
-export const veilo = ({ config, fetchImpl }: VeiloOptions): MiddlewareHandler => {
+export const jouska = ({ config, fetchImpl }: JouskaOptions): MiddlewareHandler => {
   return async (c, next) => {
     const match = matchRoute(config, c.req.raw);
     if (match === undefined) {
