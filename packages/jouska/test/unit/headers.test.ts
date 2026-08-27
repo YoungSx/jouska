@@ -111,6 +111,22 @@ describe('upstreamHostMatcher', () => {
     expect(match('totally-unrelated.co.uk')).toBe(false);
   });
 
+  it('does not treat an empty label as a subdomain', () => {
+    // `endsWith('.origin.test')` alone accepted all of these. They are reachable:
+    // verified in workerd, `new URL('https://..origin.test/x').hostname` is
+    // `..origin.test` verbatim, and a `Location` or `Set-Cookie` naming such a
+    // host arrives here. Calling it a subdomain would rescope that cookie onto
+    // the proxy for a name the upstream's registrant does not own.
+    const match = upstreamHostMatcher('origin.test');
+    for (const host of ['.origin.test', '..origin.test', 'a..origin.test']) {
+      expect(match(host), host).toBe(false);
+    }
+    // The rows that must keep matching, so the guard cannot pass by rejecting all.
+    expect(match('origin.test')).toBe(true);
+    expect(match('www.origin.test')).toBe(true);
+    expect(match('cdn.a.origin.test')).toBe(true);
+  });
+
   it('ignores a trailing dot on either side', () => {
     expect(upstreamHostMatcher('origin.test.')('origin.test')).toBe(true);
     expect(upstreamHostMatcher('origin.test')('www.origin.test.')).toBe(true);
