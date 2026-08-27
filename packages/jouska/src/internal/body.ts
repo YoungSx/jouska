@@ -236,6 +236,21 @@ export const textRewriteStream = (
   // The host pass decides its own boundary, so only the literal needles set this.
   const keep = literalKeep;
 
+  // The carry is bounded, and this is where that is decided, so it is asserted
+  // here rather than left to be inferred. `literalKeep` is one short of the
+  // longest needle because a needle that has arrived whole is replaced rather
+  // than held: only a strict prefix of one can still be waiting. Raise it to the
+  // full length and every chunk retains a byte it had already decided; drop it
+  // and a needle straddling the boundary is split and silently missed. The host
+  // pass adds its own bound (`MAX_AUTHORITY`) inside `rewriteTextUrls`, so the
+  // total held is the sum of two constants and never grows with body size.
+  const longestNeedle = replacements.reduce((n, r) => Math.max(n, r.from.length), 0);
+  if (literalKeep !== Math.max(0, longestNeedle - 1)) {
+    throw new Error(
+      `carry bound broken: literalKeep=${literalKeep}, longest needle=${longestNeedle}`,
+    );
+  }
+
   /**
    * Rewrites `text`, returning what is decided and what must wait.
    *
@@ -382,10 +397,25 @@ export const resolveCharset = (
   return { charset: candidate, transcoded: true };
 };
 
-/** Whether this runtime can decode a charset. workerd ships a full ICU set. */
+/**
+ * Whether a charset label can be decoded, which is not the runtime-capability
+ * question it looks like.
+ *
+ * workerd compiles the full WHATWG encoding set — verified: gbk, gb18030, big5,
+ * shift_jis, euc-jp, euc-kr, koi8-r, iso-2022-jp, macintosh and the windows-*
+ * family all decode, and GBK bytes come back as the right characters. (The
+ * Cloudflare encoding docs describe only "a UTF-8 decoder"; they are wrong.) So
+ * this never fails for lack of an ICU table.
+ *
+ * What it does catch is a label the spec maps to `Replacement` — `iso-2022-kr`,
+ * `hz-gb-2312` and their aliases — which `TextDecoder` refuses with a
+ * `RangeError`. That mapping exists to stop those encodings being used to smuggle
+ * ASCII past a filter, so refusing to serve such a body is the right answer, and
+ * an unrecognised label is refused by the same path. Constructing the decoder is
+ * the only way to ask; the instance itself is discarded.
+ */
 const isSupportedCharset = (charset: string): boolean => {
   try {
-    // Constructing is the only way to ask; the decoder itself is not needed.
     const probe = new TextDecoder(charset);
     return probe.encoding !== '';
   } catch {

@@ -42,9 +42,17 @@ const hostnameOrWildcard = z
  *
  * This is a denylist of literal addresses, not a general private-range check:
  * an upstream given as a DNS name can still resolve to a private address, and
- * no amount of parsing at config time can see that. Cloudflare's own egress
- * controls are the layer that handles resolution-time protection; this catches
- * the literal forms, which is what a mistyped or tampered config looks like.
+ * no amount of parsing at config time can see that.
+ *
+ * Nothing downstream makes up for that. Verified against workerd: the platform
+ * does not filter private egress — a fetch to 169.254.169.254 answers 404, and
+ * 10.0.0.1 times out rather than being refused. Nor can the gap be closed here:
+ * resolving the name first and then pinning the address is impossible, because
+ * `fetch` offers no way to direct a request at a chosen IP while keeping the
+ * hostname for TLS. So a DNS name that resolves to a private address at request
+ * time is an accepted limitation of running on Workers, not something this
+ * check merely defers. What it does cover is every literal form, which is what
+ * a mistyped or tampered config looks like.
  */
 const FORBIDDEN_UPSTREAM_HOSTS = new Set([
   // Loopback. Numeric forms are caught by range check, these are the names.
@@ -105,18 +113,14 @@ const isForbiddenHost = (host: string): boolean => {
   if (FORBIDDEN_UPSTREAM_HOSTS.has(bare)) {
     return true;
   }
-  // IPv6 arrives bracketed from the parser. Loopback and link-local only: the
-  // full IPv6 private space needs prefix arithmetic this does not attempt.
-  if (bare.startsWith('[')) {
-    const inner = bare.slice(1, -1);
-    return (
-      inner === '::1' ||
-      inner === '::' ||
-      inner.startsWith('fe80:') ||
-      inner.startsWith('fc') ||
-      inner.startsWith('fd')
-    );
-  }
+  // IPv6 needs no branch here: the `upstream` pattern admits neither brackets
+  // nor a bare `::`, so a literal address reaches this function in dotted-quad
+  // form or not at all. There used to be a check for `::1`, `fe80:` and `fc`/`fd`
+  // prefixes; it was unreachable, and reachable it would have been worse than
+  // nothing, since it saw none of `::ffff:127.0.0.1`, `64:ff9b::a9fe:a9fe`,
+  // `2002:7f00:1::` or `2001:0::` — the mapped, NAT64, 6to4 and Teredo spellings
+  // of exactly the addresses it meant to refuse. Refusing every IPv6 literal at
+  // the pattern is the position that can be proved.
   const parts = bare.split('.');
   if (parts.length !== 4 || !parts.every((p) => /^\d{1,3}$/.test(p))) {
     return false;
@@ -130,6 +134,12 @@ const isForbiddenHost = (host: string): boolean => {
  * scheme is a separate route field, because embedding it here would make the
  * value ambiguous with a path (`//` is both a scheme separator and an empty
  * first segment).
+ *
+ * IPv6 literals are refused: the pattern allows no brackets and no `:` outside a
+ * numeric port. That is deliberate. Classifying an IPv6 address as private takes
+ * prefix arithmetic over the mapped, NAT64, 6to4 and Teredo forms, and a partial
+ * attempt at it would admit the loopback and metadata addresses it was written
+ * to exclude. An IPv6-only upstream must therefore be reached by name.
  */
 const upstream = z
   .string()
