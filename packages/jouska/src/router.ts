@@ -48,7 +48,16 @@ const hostMatches = (pattern: string, host: string): boolean => {
     // includes the leading dot, so 'example.com'.endsWith('.example.com')
     // is false, while 'a.example.com'.endsWith('.example.com') is true.
     const suffix = pattern.slice(1); // '.example.com', already lowercased
-    return host.endsWith(suffix) && host.length > suffix.length;
+    if (!host.endsWith(suffix) || host.length <= suffix.length) {
+      return false;
+    }
+    // What the '*' consumed has to be a real subdomain, not merely non-empty.
+    // A length check alone accepted '..example.com', whose leading label is
+    // empty — verified in workerd, the URL parser keeps that hostname verbatim,
+    // so it arrives here rather than being rejected upstream. Requiring every
+    // label to be non-empty is the check that says what was meant.
+    const consumed = host.slice(0, host.length - suffix.length);
+    return consumed.split('.').every((label) => label !== '');
   }
   return pattern === host;
 };

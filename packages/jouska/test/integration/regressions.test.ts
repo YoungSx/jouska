@@ -672,6 +672,27 @@ describe('config refuses what it cannot honour', () => {
     expect(() => defineConfig({ routes: [{ match: { path: '/' }, upstream }] })).toThrow();
   });
 
+  it.each([
+    ['[::1]', 'bracketed loopback'],
+    ['[::1]:8080', 'bracketed loopback with a port'],
+    ['[fc00::1]', 'a unique-local address'],
+    ['[fe80::1]', 'a link-local address'],
+    ['[::ffff:127.0.0.1]', 'loopback in IPv4-mapped form'],
+    ['[64:ff9b::a9fe:a9fe]', 'the metadata endpoint via NAT64'],
+    ['[2002:7f00:1::]', 'loopback via 6to4'],
+    ['::1', 'an unbracketed loopback'],
+    ['fc00::1', 'an unbracketed unique-local address'],
+  ])('refuses the IPv6 literal %s (%s)', (upstream) => {
+    // Every one of these is refused by the `upstream` pattern, before any
+    // address classification runs. There used to be a bracket branch in
+    // `isForbiddenHost` intended to catch some of them; it was unreachable for
+    // exactly this reason, and it recognised only `::1`, `fe80:` and `fc`/`fd`
+    // prefixes — so the mapped, NAT64 and 6to4 rows here would have passed it.
+    // Refusing the whole family at the pattern is what can be proved, and this
+    // pins it so widening the pattern cannot quietly reopen the hole.
+    expect(() => defineConfig({ routes: [{ match: { path: '/' }, upstream }] })).toThrow();
+  });
+
   it('still admits a public address that merely looks unusual', () => {
     // `010.0.0.1` is octal for 8.0.0.1, which is routable. Refusing it would be
     // a false positive, and the check is meant to follow the parser, not guess.

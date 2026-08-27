@@ -25,6 +25,29 @@ describe('matchRoute', () => {
     expect(matchRoute(config, req('https://example.com/'))).toBeUndefined();
   });
 
+  it('refuses the empty-label host a wildcard route appears to cover', () => {
+    // `.example.com` parses: `new URL('https://.example.com/x').hostname` is
+    // `.example.com` verbatim, so this host is reachable, not hypothetical.
+    // It must not match `*.example.com` — there is no subdomain, and treating
+    // the empty label as one would route a host nobody registered.
+    //
+    // This is pinned because the obvious alternatives get it wrong. Verified in
+    // workerd: `URLPattern` with `{hostname: '*.example.com'}` returns true for
+    // both `.example.com` and `..example.com`, MDN's `{*.}?example.com` leaks the
+    // same way, and `wildcard-match` also admits it. The `host.length >
+    // suffix.length` guard in `hostMatches` is the whole difference.
+    const config = defineConfig({
+      routes: [{ match: { host: '*.example.com' }, upstream: 'origin.test' }],
+    });
+    for (const host of ['.example.com', '..example.com', '...example.com', 'a..example.com']) {
+      expect(matchRoute(config, req(`https://${host}/x`)), host).toBeUndefined();
+    }
+    // The cases that must keep working, so the guard cannot be satisfied by
+    // rejecting everything.
+    expect(matchRoute(config, req('https://a.example.com/x'))).toBeDefined();
+    expect(matchRoute(config, req('https://a.b.example.com/x'))).toBeDefined();
+  });
+
   it('ignores the port when comparing hosts', () => {
     const config = defineConfig({
       routes: [{ match: { host: 'p.dev' }, upstream: 'origin.test' }],
