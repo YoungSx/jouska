@@ -1,31 +1,10 @@
 import type { Route } from '../config.js';
+import { HOP_BY_HOP, stripConnectionNamed } from './hop.js';
 
 /** Methods safe to replay after a failure. */
 const IDEMPOTENT = new Set(['GET', 'HEAD', 'OPTIONS', 'TRACE']);
 
 export const isRetryable = (method: string): boolean => IDEMPOTENT.has(method.toUpperCase());
-
-/**
- * Hop-by-hop headers, which describe a single connection and must not be
- * forwarded (RFC 9110 §7.6.1).
- *
- * `upgrade` is absent deliberately: a WebSocket handshake needs it to reach the
- * upstream, and Workers terminates the connection itself, so forwarding it is
- * how the upgrade is proxied at all rather than a protocol violation. It is
- * removed explicitly when the route has `websocket: false`.
- */
-const HOP_BY_HOP = [
-  'connection',
-  'keep-alive',
-  'proxy-authenticate',
-  'proxy-authorization',
-  'te',
-  'trailer',
-  'transfer-encoding',
-] as const;
-
-/** A header name is a token; anything else could smuggle a second header. */
-const TOKEN = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
 
 /**
  * Builds the outbound headers.
@@ -51,15 +30,7 @@ export const buildUpstreamHeaders = (
 
   // A client-supplied Connection header names further headers to drop. Honour
   // it before stripping, so a smuggled `Connection: X-Secret` cannot survive.
-  const connection = headers.get('connection');
-  if (connection !== null) {
-    for (const name of connection.split(',')) {
-      const trimmed = name.trim();
-      if (TOKEN.test(trimmed)) {
-        headers.delete(trimmed);
-      }
-    }
-  }
+  stripConnectionNamed(headers);
   for (const name of HOP_BY_HOP) {
     headers.delete(name);
   }
