@@ -102,3 +102,43 @@ describe('resolveConfig failure handling', () => {
     expect(config.routes[0]!.timeoutMs).toBe(10_000);
   });
 });
+
+describe('remote config cannot widen what code refuses', () => {
+  it('rejects a stored route whose upstream resolves to a private address', () => {
+    // KV is the runtime-editable half, so it is the entry point that matters: a
+    // stored table is exactly where a tampered upstream would arrive.
+    let reported: unknown;
+    const config = resolveConfig({
+      code: { routes: [{ id: 'api', match: { path: '/api' }, upstream: 'api.example.com' }] },
+      // 2852039166 is 169.254.169.254 written as one decimal.
+      remote: {
+        version: 1,
+        routes: [{ id: 'evil', match: { path: '/' }, upstream: '2852039166' }],
+      },
+      merge: 'byId',
+      onRemoteError: (error) => {
+        reported = error;
+      },
+    });
+    expect(reported).toBeDefined();
+    // The whole remote document is discarded, so the proxy keeps serving code.
+    expect(config.routes.map((route) => route.upstream)).toEqual(['api.example.com']);
+  });
+
+  it('keeps each half of a byId merge on its own defaults', () => {
+    const config = resolveConfig({
+      code: {
+        defaults: { timeoutMs: 1_000 },
+        routes: [{ id: 'a', match: { path: '/a' }, upstream: 'a.test' }],
+      },
+      remote: {
+        version: 1,
+        defaults: { timeoutMs: 9_999 },
+        routes: [{ id: 'b', match: { path: '/b' }, upstream: 'b.test' }],
+      },
+      merge: 'byId',
+    });
+    expect(config.routes.find((r) => r.id === 'a')?.timeoutMs).toBe(1_000);
+    expect(config.routes.find((r) => r.id === 'b')?.timeoutMs).toBe(9_999);
+  });
+});

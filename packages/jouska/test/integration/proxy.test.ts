@@ -115,25 +115,39 @@ describe('forwarding', () => {
     expect(body.forwardedFor).toBeNull();
   });
 
-  it('lets upstreamHeaders set arbitrary headers but not override forwarded ones', async () => {
+  it('lets upstreamHeaders set arbitrary headers', async () => {
     const withHeader = appWith([
       {
         match: { path: '/api' },
         upstream: 'origin.test',
         stripPrefix: true,
-        // A user trying to forge XFF or Host via upstreamHeaders must lose to
-        // the values jouska sets: their position after the spread is wrong.
-        upstreamHeaders: { 'x-injected': 'yes', host: 'evil.test', 'x-forwarded-for': '9.9.9.9' },
+        upstreamHeaders: { 'x-injected': 'yes' },
       },
     ]);
     const body = (await (
-      await get(withHeader, '/api/echo', {
-        headers: { 'cf-connecting-ip': '203.0.113.10' },
-      })
+      await get(withHeader, '/api/echo', { headers: { 'cf-connecting-ip': '203.0.113.10' } })
     ).json()) as Record<string, string>;
     expect(body.injected).toBe('yes');
     expect(body.host).toBe('origin.test');
     expect(body.forwardedFor).toBe('203.0.113.10');
+  });
+
+  it('refuses upstreamHeaders that would forge a forwarding header', () => {
+    // Previously these were silently overridden, which only worked because of
+    // where the spread happened. A config that cannot take effect should say so.
+    for (const name of ['host', 'x-forwarded-for', 'X-Forwarded-Host', 'x-forwarded-proto']) {
+      expect(() =>
+        defineConfig({
+          routes: [
+            {
+              match: { path: '/api' },
+              upstream: 'origin.test',
+              upstreamHeaders: { [name]: 'evil' },
+            },
+          ],
+        }),
+      ).toThrow();
+    }
   });
 
   it('passes binary bodies through untouched', async () => {

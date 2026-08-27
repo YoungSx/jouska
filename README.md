@@ -9,20 +9,19 @@ in-page links all point back at your own hostname.
 ## Why a middleware, not a framework
 
 Routing and middleware pipelines are solved problems, so jouska does not
-reimplement them — it plugs into Hono. Likewise, request forwarding builds on
-`hono/proxy`, which already handles hop-by-hop header stripping, `duplex: 'half'`
-for streamed bodies, and dropping `accept-encoding` so upstream bodies arrive
-uncompressed.
+reimplement them — it plugs into Hono, and delegates CORS, CIDR matching and
+rate limiting to Hono's own middleware and Cloudflare's native binding.
 
-What jouska adds is everything `hono/proxy` deliberately leaves out:
+What it does own is the proxying itself:
 
-| Concern                                   | Where it lives            |
-| ----------------------------------------- | ------------------------- |
-| Route table matching (host, path, method) | `src/router.ts`           |
-| Upstream deadlines and bounded retries    | `src/internal/forward.ts` |
-| `Location` / `Set-Cookie` rewriting       | `src/internal/headers.ts` |
-| Streaming body rewriting                  | `src/internal/body.ts`    |
-| Config schema and validation              | `src/config.ts`           |
+| Concern                                         | Where it lives            |
+| ----------------------------------------------- | ------------------------- |
+| Route table matching (host, path, method)       | `src/router.ts`           |
+| Header forwarding, deadlines, bounded retries   | `src/internal/forward.ts` |
+| `Location` / `Set-Cookie` / validator rewriting | `src/internal/headers.ts` |
+| Streaming body rewriting                        | `src/internal/body.ts`    |
+| Geo, IP and rate-limit guards                   | `src/internal/guards.ts`  |
+| Config schema, normalisation and validation     | `src/config.ts`           |
 
 ## Install
 
@@ -64,47 +63,144 @@ Routes are evaluated in order and the first match wins.
 
 ## Route options
 
-| Option            | Default  | Meaning                                                          |
-| ----------------- | -------- | ---------------------------------------------------------------- |
-| `match.host`      | —        | Host to match. `*.example.com` matches subdomains, not the apex. |
-| `match.path`      | —        | Path prefix, matched on segment boundaries.                      |
-| `match.methods`   | all      | Restrict the route to specific methods.                          |
-| `upstream`        | required | `host` or `host/base/path`. No scheme.                           |
-| `stripPrefix`     | `false`  | Remove the matched prefix before forwarding.                     |
-| `timeoutMs`       | `10000`  | Per-attempt upstream deadline.                                   |
-| `retries`         | `0`      | Extra attempts. Only idempotent methods retry.                   |
-| `rewriteHeaders`  | `true`   | Rewrite `Location` and `Set-Cookie` onto the proxy.              |
-| `bodyRewrite`     | off      | Streaming body rewriting; see below.                             |
-| `blockCountries`  | `[]`     | ISO 3166-1 alpha-2 codes refused with 403.                       |
-| `upstreamHeaders` | `{}`     | Headers injected into the upstream request.                      |
+| Option                 | Default  | Meaning                                                               |
+| ---------------------- | -------- | --------------------------------------------------------------------- |
+| `id`                   | —        | Stable handle. Used for `byId` merges and rate-limit buckets.         |
+| `match.host`           | —        | Host to match. `*.example.com` matches subdomains, not the apex.      |
+| `match.path`           | —        | Path prefix, matched on segment boundaries.                           |
+| `match.methods`        | all      | Restrict the route to specific methods.                               |
+| `upstream`             | required | `host`, `host:port` or `host/base/path`. No scheme.                   |
+| `scheme`               | `https`  | Scheme used to reach the upstream.                                    |
+| `allowPrivateUpstream` | off      | Permit a loopback, private or metadata upstream.                      |
+| `stripPrefix`          | `false`  | Remove the matched prefix before forwarding.                          |
+| `timeoutMs`            | `10000`  | Per-attempt upstream deadline.                                        |
+| `totalTimeoutMs`       | `30000`  | Ceiling on all attempts combined, including backoff.                  |
+| `retries`              | `0`      | Extra attempts. Only idempotent methods retry.                        |
+| `retryBackoffMs`       | `100`    | Delay before the first retry, doubled for each subsequent one.        |
+| `rewriteHeaders`       | `true`   | Rewrite `Location`, `Refresh` and `Set-Cookie` onto the proxy.        |
+| `manualRedirect`       | `true`   | Ask for the redirect instead of following it upstream.                |
+| `websocket`            | `true`   | Forward WebSocket upgrades.                                           |
+| `bodyRewrite`          | off      | Streaming body rewriting; see below.                                  |
+| `blockCountries`       | `[]`     | ISO 3166-1 alpha-2 codes refused with 403.                            |
+| `allowCountries`       | —        | When set, only these are admitted. Fails closed on an unknown origin. |
+| `upstreamHeaders`      | `{}`     | Headers injected into the upstream request.                           |
+| `cors`                 | off      | CORS handling; see Guards.                                            |
+| `ip`                   | off      | IP allow/deny rules; see Guards.                                      |
+| `rateLimit`            | off      | Rate limiting via the native binding; see Guards.                     |
 
-Every forwarded request carries `Host` (set to the upstream), `X-Forwarded-Host`
-(the original host), `X-Forwarded-Proto`, and `X-Forwarded-For`. The last is
+A `defaults` block at the top of the table supplies any of the behavioural
+fields for every route that does not state its own, so a table of twenty routes
+need not repeat `timeoutMs` twenty times:
+
+```ts
+defineConfig({
+  defaults: { timeoutMs: 5_000, retries: 2 },
+  routes: [
+    { match: { path: '/a' }, upstream: 'a.example.com' },
+    { match: { path: '/b' }, upstream: 'b.example.com', timeoutMs: 20_000 },
+  ],
+});
+```
+
+A route that states a field keeps its value; `defaults` only fills gaps.
+
+### What is forwarded
+
+The client's own headers are forwarded, minus the hop-by-hop set and anything
+the request's `Connection` header names — those describe a single connection and
+relaying them would be a protocol violation, as well as a way to smuggle a
+header past a middlebox. `accept-encoding` is dropped so bodies arrive
+uncompressed, which is what makes streaming body rewriting possible.
+
+On top of that every forwarded request carries `Host` (set to the upstream),
+`X-Forwarded-Host`, `X-Forwarded-Proto`, and `X-Forwarded-For`. The last is
 derived from Cloudflare's `cf-connecting-ip` and **overwrites** any value the
 client sent, so the upstream sees the real visitor address rather than a forged
-chain. Values set in `upstreamHeaders` cannot override these — they are applied
-after the spread, by design.
+chain; with no `cf-connecting-ip` to trust, the header is removed rather than
+passed through. `upstreamHeaders` may not set any of these four — the config is
+rejected rather than silently ignored.
+
+### Normalisation and matching
+
+Config values are normalised when they are parsed, not when they are compared.
+Hosts, methods and country codes are case-folded once, so
+`blockCountries: ['cu']` blocks `CU` instead of quietly matching nothing.
+
+A path prefix is matched against every spelling an upstream might resolve to the
+same resource — the literal path, its percent-decoded form, with repeated
+separators collapsed, and with path parameters removed. A route matches if any of
+them do, so `/%61dmin`, `//admin` and `/admin;x` cannot slip past a route
+guarding `/admin` and fall through to a permissive one. The literal path is what
+gets forwarded: re-encoding a decoded path is not round-trip safe.
+
+Matching reads the host from the request URL rather than the `Host` header. On
+Workers the URL host is what the platform routed on and cannot be forged.
+
+### Retries and deadlines
 
 Retries replay only **network failures and timeouts**. An HTTP 5xx is a normal
 response and is returned as-is on the first attempt: replaying it would pile
-load onto a struggling origin for no expected benefit.
+load onto a struggling origin for no expected benefit. A client that hangs up is
+not retried either — nobody is waiting — and cancels the upstream request rather
+than leaving it to run out its deadline.
 
-`bodyRewrite` accepts `rewriteLinks` (default `true`), `contentTypes`
-(default `['text/html']`), and `replace` (literal `from`/`to` pairs). HTML goes
-through the native `HTMLRewriter`, which rewrites URL-bearing attributes and
-leaves text nodes alone; other allowed text types go through a streaming
-replacer that handles matches straddling chunk boundaries.
+Attempts back off exponentially from `retryBackoffMs`, and `totalTimeoutMs`
+bounds them all together. Without that ceiling, `retries: 3` with
+`timeoutMs: 30000` could occupy the proxy for two minutes before returning 504.
+
+### Body rewriting
+
+`bodyRewrite` accepts `rewriteLinks` (default `true`), `contentTypes` (default
+`['text/html']`), `rewriteStyles` (default `true`), `replace` (literal
+`from`/`to` pairs), and `fallbackCharset`.
+
+HTML goes through the native `HTMLRewriter`, which rewrites URL-bearing
+attributes — including `srcset`, `imagesrcset`, `ping`, `cite`, `data` and
+`formaction` — and, with `rewriteStyles`, also `url()` references inside
+`<style>` blocks and inline `style` attributes, plus the target of a
+`<meta http-equiv="refresh">`. Text nodes outside `<style>` are left alone:
+rewriting prose or inline script bodies risks corrupting them for no
+navigational benefit. Other allowed text types go through a streaming replacer
+that handles matches straddling chunk boundaries.
+
+Each candidate URL is parsed and its host compared, rather than substituted as a
+substring. Substring replacement rewrote `https://origin.test.evil.com/x` into
+`https://your-proxy.test.evil.com/x`, which both breaks the link and puts the
+proxy's own name inside a domain someone else controls.
 
 Replacements are applied in a single pass, so rules never cascade into one
 another: `{a→b, b→c}` will not turn `a` into `c`.
 
-When body rewriting is active, `Content-Security-Policy` and
-`Content-Security-Policy-Report-Only` headers are stripped from the response.
-An upstream CSP references the upstream's own origin in directives like
+A body whose charset the runtime can decode is transcoded to UTF-8 and its
+`Content-Type` corrected. One it cannot decode is passed through untouched:
+decoding GB2312 bytes as UTF-8 turns every character into U+FFFD, so relaying
+them verbatim is the only safe answer. `fallbackCharset` covers an upstream that
+declares nothing.
+
+Rewriting also drops the headers that describe the body the upstream sent:
+`Content-Length`, and the validators `ETag` and `Last-Modified`. Keeping a
+validator means the client's next request carries `If-None-Match`, the upstream
+answers 304, and the client then serves the **unrewritten** body from its own
+cache — the rewrite silently undone on every subsequent visit. nginx's
+`sub_filter` clears both for the same reason.
+
+`Content-Security-Policy` and `Content-Security-Policy-Report-Only` are dropped
+too. An upstream CSP references the upstream's own origin in directives like
 `img-src` or `connect-src`; once those URLs are rewritten onto the proxy, the
 policy would block the page from loading its own rewritten resources. Rewriting
 CSP itself is a separate grammar with its own footguns, so it is dropped rather
 than half-fixed — the proxy has already taken responsibility for the body's URLs.
+
+Responses that carry no rewritable body are passed through: 204, 304, and 206.
+A 206 is a byte range, so changing its length would contradict the
+`Content-Range` the client is using to assemble the whole resource.
+
+### WebSockets
+
+An upgrade is forwarded with its handshake headers intact and the 101 response is
+relayed as-is. It cannot be rewrapped: `new Response` refuses any status outside
+200–599, and rewrapping would drop the socket even if it did not. Upgrades are
+never retried, since a handshake cannot be replayed.
 
 ## Config precedence
 
@@ -362,18 +458,84 @@ Declare the binding in your wrangler config:
 }
 ```
 
+By default a CORS preflight does not consume budget: a browser issues one per
+cross-origin call, so counting both halves the effective limit for exactly the
+callers behaving correctly. Set `countPreflight: true` to count them.
+
+Buckets are namespaced by the route's `id` when it has one, and otherwise by a
+label derived from what it matches — including its methods, so two routes
+differing only by method do not share a budget.
+
 `period` accepts only `10` or `60` seconds — a platform constraint, not a
 choice. Counting is per-location rather than globally exact — the documented trade-off
 of the native binding, and adequate for abuse control. A missing binding is
 reported as a 500 rather than silently admitting traffic.
 
+## Observability
+
+`onProxy` is called once per proxied request, after the response is decided:
+
+```ts
+app.use(
+  '*',
+  jouska({
+    config,
+    onProxy: (event) => {
+      // Analytics Engine writes are I/O, so do not hold the response for them.
+      c.executionCtx.waitUntil(
+        Promise.resolve(
+          env.STATS.writeDataPoint({
+            blobs: [event.routeId, event.upstream, event.outcome],
+            doubles: [event.status, event.durationMs, event.attempts],
+            indexes: [event.routeId],
+          }),
+        ),
+      );
+    },
+  }),
+);
+```
+
+| Field        | Meaning                                                            |
+| ------------ | ------------------------------------------------------------------ |
+| `routeId`    | The matched route, labelled the way rate-limit buckets are.        |
+| `upstream`   | Authority the request was sent to.                                 |
+| `method`     | Request method.                                                    |
+| `path`       | Path as the client wrote it, before normalisation.                 |
+| `status`     | Status returned to the client, including jouska's own 4xx and 5xx. |
+| `durationMs` | Wall-clock milliseconds from match to response.                    |
+| `attempts`   | Upstream attempts, including the first — so a retry is visible.    |
+| `outcome`    | `ok`, `refused`, `timeout`, `unreachable`, or `client_closed`.     |
+
+A callback rather than a binding, deliberately: writing to Analytics Engine, a
+log line, or nothing at all is a deployment decision. A library that picked one
+would either pull in a binding nobody asked for or invent a config surface for
+something the host already has. Errors thrown from it are swallowed —
+observability must not be able to fail a request.
+
+A guard refusal is reported with `attempts: 0`, so the share of traffic turned
+away before costing a round trip is visible without inferring it.
+
 ## Errors
 
-| Status | Meaning                                  |
-| ------ | ---------------------------------------- |
-| 403    | Request origin is in `blockCountries`.   |
-| 502    | Upstream unreachable after all attempts. |
-| 504    | Upstream exceeded `timeoutMs`.           |
+| Status | Meaning                                                         |
+| ------ | --------------------------------------------------------------- |
+| 403    | Refused by `blockCountries`, `allowCountries`, or an `ip` rule. |
+| 403    | A per-caller rate limit with no identifiable caller.            |
+| 429    | Rate limit exceeded.                                            |
+| 499    | The client hung up before the upstream answered.                |
+| 500    | The `rateLimit` binding named in config is missing.             |
+| 502    | Upstream unreachable after all attempts.                        |
+| 504    | Upstream exceeded `timeoutMs` or `totalTimeoutMs`.              |
+
+499 is nginx's non-standard "client closed request". Nothing is listening for it,
+but it keeps client aborts out of the upstream error rate, where they would look
+like the origin failing.
+
+A missing rate-limit binding is a 500 rather than an open door, and a per-caller
+limit that cannot be keyed is a 403. One shared `unknown` bucket would either let
+a single client exhaust everyone's budget or let an attacker evade the limit by
+suppressing whatever identifies them.
 
 ## Platform constraints this design respects
 

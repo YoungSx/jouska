@@ -20,6 +20,7 @@ describe('defineConfig', () => {
       rewriteLinks: true,
       replace: [],
       contentTypes: ['text/html'],
+      rewriteStyles: true,
     });
   });
 
@@ -100,7 +101,7 @@ describe('guard config', () => {
     const config = defineConfig({
       routes: [{ match: { path: '/a' }, upstream: 'o.test', rateLimit: { binding: 'RL' } }],
     });
-    expect(config.routes[0]!.rateLimit).toEqual({ binding: 'RL', by: 'ip' });
+    expect(config.routes[0]!.rateLimit).toEqual({ binding: 'RL', by: 'ip', countPreflight: false });
   });
 
   it('rejects an unknown rate limit key strategy', () => {
