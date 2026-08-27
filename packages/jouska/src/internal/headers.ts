@@ -7,18 +7,7 @@
  * every cookie.
  */
 
-/** Hop-by-hop headers describe one connection and must not be relayed. */
-const HOP_BY_HOP = [
-  'connection',
-  'keep-alive',
-  'proxy-authenticate',
-  'proxy-authorization',
-  'te',
-  'trailer',
-  'transfer-encoding',
-] as const;
-
-const TOKEN = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
+import { HOP_BY_HOP, stripConnectionNamed } from './hop.js';
 
 /**
  * Whether a host belongs to the upstream.
@@ -204,15 +193,7 @@ export const stripHopByHop = (headers: Headers): Headers => {
     // The length described the encoded form, so it no longer applies.
     out.delete('content-length');
   }
-  const connection = out.get('connection');
-  if (connection !== null) {
-    for (const name of connection.split(',')) {
-      const trimmed = name.trim();
-      if (TOKEN.test(trimmed)) {
-        out.delete(trimmed);
-      }
-    }
-  }
+  stripConnectionNamed(out);
   for (const name of HOP_BY_HOP) {
     out.delete(name);
   }
