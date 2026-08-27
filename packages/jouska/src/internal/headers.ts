@@ -31,9 +31,23 @@ import { HOP_BY_HOP, stripConnectionNamed } from './hop.js';
  */
 export const upstreamHostMatcher = (upstreamHost: string): ((host: string) => boolean) => {
   const bare = upstreamHost.split(':')[0]!.toLowerCase().replace(/\.$/, '');
+  const suffix = `.${bare}`;
   return (host: string): boolean => {
     const candidate = host.split(':')[0]!.toLowerCase().replace(/\.$/, '');
-    return candidate === bare || candidate.endsWith(`.${bare}`);
+    if (candidate === bare) {
+      return true;
+    }
+    if (!candidate.endsWith(suffix)) {
+      return false;
+    }
+    // The part the suffix did not cover has to be one or more real labels.
+    // `endsWith` alone accepted `.origin.test` and `..origin.test`, whose
+    // leading label is empty — verified in workerd, the URL parser keeps such a
+    // hostname verbatim, so it reaches this function. Treating it as a subdomain
+    // would rescope its `Set-Cookie` onto the proxy and rewrite its redirects,
+    // for a host the upstream's registrant does not own.
+    const consumed = candidate.slice(0, candidate.length - suffix.length);
+    return consumed !== '' && consumed.split('.').every((label) => label !== '');
   };
 };
 
