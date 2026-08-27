@@ -25,17 +25,21 @@ import {
   type KVReader,
 } from 'jouska';
 
-interface Env {
+export interface Env {
   /** Optional KV namespace holding the route table under CONFIG_KEY. */
   CONFIG?: KVReader;
   /** Key to read from the KV namespace. Defaults to `routes`. */
   CONFIG_KEY?: string;
   /** Route table as a JSON document, for deployments without KV. */
   JOUSKA_CONFIG?: unknown;
-  /**
-   * Overrides the upstream fetch. Only set by tests, so they can exercise the
-   * wiring against a controlled origin instead of the public network.
-   */
+}
+
+/**
+ * Test-only seam. Kept off `Env` so a production binding cannot supply it: an
+ * environment variable that replaces the upstream fetch would be an arbitrary
+ * request redirector, and there is no reason for it to exist outside tests.
+ */
+export interface TestOverrides {
   UPSTREAM_FETCH?: typeof fetch;
 }
 
@@ -61,29 +65,59 @@ const buildSource = (env: Env): ConfigSource => {
 };
 
 /**
- * Module scope, so the cache survives between requests in the same isolate.
+ * Module scope, so the cache and the assembled app survive between requests in
+ * the same isolate.
  *
- * The loader reads `latestEnv` rather than closing over the `env` of whichever
- * request happened to create the cache. Capturing that first `env` would pin the
- * isolate to it forever: a cold start during a brief KV outage would leave that
- * isolate returning 503 for its whole life, even once the store recovered.
+ * The cache is keyed by the bindings it was built from rather than closing over
+ * whichever `env` happened to arrive first. Capturing that first `env` would pin
+ * the isolate to it: a cold start during a brief KV outage would leave that
+ * isolate serving 503 for its whole life, even once the store recovered. Keying
+ * also means a binding change produces a fresh cache instead of silently reusing
+ * a loader that reads the old namespace.
  */
-let cache: ConfigCache | undefined;
-let latestEnv: Env = {};
+interface CachedState {
+  key: string;
+  cache: ConfigCache;
+}
+
+let state: CachedState | undefined;
+
+/**
+ * The assembled app, rebuilt only when the config changes.
+ *
+ * Rebuilding per request meant allocating a Hono instance and re-registering the
+ * middleware on every hit — pure overhead, since neither depends on the request.
+ */
+let app: Hono | undefined;
+let appConfig: Config | undefined;
+let appFetch: typeof fetch | undefined;
+
+/** Identifies the bindings a loader would read, so a change invalidates it. */
+const bindingKey = (env: Env): string =>
+  JSON.stringify([
+    env.CONFIG !== undefined,
+    env.CONFIG_KEY ?? 'routes',
+    env.JOUSKA_CONFIG !== undefined,
+  ]);
 
 const getConfig = (env: Env): Promise<Config> => {
-  latestEnv = env;
-  cache ??= createConfigCache({
-    load: async () =>
-      resolveConfig({
-        ...(CODE_ROUTES !== undefined ? { code: { routes: CODE_ROUTES } } : {}),
-        remote: await buildSource(latestEnv)(),
-        merge: 'byId',
-        onRemoteError: (error) => console.error('jouska: stored config rejected', error),
+  const key = bindingKey(env);
+  if (state?.key !== key) {
+    state = {
+      key,
+      cache: createConfigCache({
+        load: async () =>
+          resolveConfig({
+            ...(CODE_ROUTES !== undefined ? { code: { routes: CODE_ROUTES } } : {}),
+            remote: await buildSource(env)(),
+            merge: 'byId',
+            onRemoteError: (error) => console.error('jouska: stored config rejected', error),
+          }),
+        onReloadError: (error) => console.error('jouska: config reload failed', error),
       }),
-    onReloadError: (error) => console.error('jouska: config reload failed', error),
-  });
-  return cache.get();
+    };
+  }
+  return state.cache.get();
 };
 
 /**
@@ -92,12 +126,29 @@ const getConfig = (env: Env): Promise<Config> => {
  * changes restart the isolate anyway.
  */
 export const __resetConfigCache = (): void => {
-  cache = undefined;
-  latestEnv = {};
+  state = undefined;
+  app = undefined;
+  appConfig = undefined;
+  appFetch = undefined;
+};
+
+const getApp = (config: Config, fetchImpl: typeof fetch | undefined): Hono => {
+  if (app === undefined || appConfig !== config || appFetch !== fetchImpl) {
+    const next = new Hono();
+    next.use('*', jouska({ config, ...(fetchImpl ? { fetchImpl } : {}) }));
+    app = next;
+    appConfig = config;
+    appFetch = fetchImpl;
+  }
+  return app;
 };
 
 export default {
-  async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+  async fetch(
+    request: Request,
+    env: Env & TestOverrides,
+    ctx: ExecutionContext,
+  ): Promise<Response> {
     let config: Config;
     try {
       config = await getConfig(env);
@@ -107,12 +158,6 @@ export default {
       console.error('jouska: no usable config', error);
       return Response.json({ error: 'config_unavailable' }, { status: 503 });
     }
-
-    const app = new Hono();
-    app.use(
-      '*',
-      jouska({ config, ...(env.UPSTREAM_FETCH ? { fetchImpl: env.UPSTREAM_FETCH } : {}) }),
-    );
-    return app.fetch(request, env, ctx);
+    return getApp(config, env.UPSTREAM_FETCH).fetch(request, env, ctx);
   },
 } satisfies ExportedHandler<Env>;

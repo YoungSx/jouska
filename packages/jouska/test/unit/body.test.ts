@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { htmlRewriter, shouldRewrite, textReplaceStream } from '../../src/internal/body';
+import {
+  htmlRewriter,
+  scan,
+  shouldRewrite,
+  textReplaceStream,
+  textRewriteStream,
+} from '../../src/internal/body';
+import { upstreamHostMatcher } from '../../src/internal/headers';
 
 const streamOf = (chunks: readonly string[]): ReadableStream<Uint8Array> => {
   const encoder = new TextEncoder();
@@ -108,9 +115,12 @@ describe('shouldRewrite', () => {
 
 describe('htmlRewriter', () => {
   const rewrite = async (html: string): Promise<string> => {
-    const res = htmlRewriter('origin.test', 'p.dev').transform(
-      new Response(html, { headers: { 'content-type': 'text/html' } }),
-    );
+    const res = htmlRewriter({
+      isUpstreamHost: upstreamHostMatcher('origin.test'),
+      proxyHost: 'p.dev',
+      base: 'https://origin.test/',
+      rewriteStyles: true,
+    }).transform(new Response(html, { headers: { 'content-type': 'text/html' } }));
     return res.text();
   };
 
@@ -139,5 +149,160 @@ describe('htmlRewriter', () => {
     const out = await rewrite('<p>🎉🚀</p><a href="https://origin.test/e">e</a>');
     expect(out).toContain('🎉🚀');
     expect(out).toContain('https://p.dev/e');
+  });
+});
+
+describe('textReplaceStream regressions', () => {
+  const through = async (
+    input: string,
+    replacements: readonly { from: string; to: string }[],
+    charset?: string,
+  ): Promise<string> => {
+    const body = new Response(input).body!;
+    const out = body.pipeThrough(
+      charset === undefined
+        ? textReplaceStream(replacements)
+        : textReplaceStream(replacements, charset),
+    );
+    return new Response(out).text();
+  };
+
+  it('passes a body through unchanged when the table is empty', async () => {
+    // `Math.max(0, ...[])` yielded 0, so `keep` became -1: a negative hold-back
+    // sliced off the final character, which flush then appended to the literal
+    // string "undefined". Verified: "hello world" came back as
+    // "hello worldundefined".
+    expect(await through('hello world', [])).toBe('hello world');
+  });
+
+  it('emits the tail even when it cannot be scanned', async () => {
+    // The held-back remainder has to be flushed, not dropped.
+    expect(await through('abcabX', [{ from: 'abc', to: 'Z' }])).toBe('ZabX');
+  });
+
+  it('applies rules in a single pass so they never cascade', async () => {
+    expect(
+      await through('ab', [
+        { from: 'a', to: 'b' },
+        { from: 'b', to: 'c' },
+      ]),
+    ).toBe('bc');
+  });
+
+  it('prefers the earliest match, then the earlier rule', async () => {
+    expect(
+      await through('xaby', [
+        { from: 'ab', to: '1' },
+        { from: 'a', to: '2' },
+      ]),
+    ).toBe('x1y');
+  });
+
+  it('decodes the charset it is given', async () => {
+    const bytes = new Uint8Array([0xc4, 0xe3, 0xba, 0xc3]);
+    const out = await new Response(
+      new Response(bytes).body!.pipeThrough(textReplaceStream([], 'gb2312')),
+    ).text();
+    expect(out).toBe('你好');
+  });
+
+  it('scans by jumping between candidates rather than character by character', async () => {
+    // The original scan tested every character, costing 30ms of CPU on this
+    // input against a 10ms per-request limit on the free plan. Asserting a
+    // wall-clock budget would be flaky on a cold isolate, so this compares
+    // against the shape it replaced — measured here, so the comparison holds on
+    // whatever machine runs it. `scan` is exercised directly: the surrounding
+    // stream's chunk scheduling costs more than either algorithm and would
+    // drown out the difference.
+    const css = 'body{background:url(https://o.test/bg.png)}'.repeat(12_000);
+
+    const characterwiseStart = Date.now();
+    let naive = '';
+    for (let i = 0; i < css.length;) {
+      if (css.startsWith('o.test', i)) {
+        naive += 'p.dev';
+        i += 'o.test'.length;
+      } else {
+        naive += css[i];
+        i += 1;
+      }
+    }
+    const characterwise = Date.now() - characterwiseStart;
+
+    const startedAt = Date.now();
+    const { emit } = scan(css, [{ from: 'o.test', to: 'p.dev' }], 0);
+    const jumping = Date.now() - startedAt;
+
+    // Byte-identical output, several times cheaper. Measured at 25ms against
+    // 3ms; the assertion only demands it not be slower, so it cannot go stale.
+    expect(emit).toBe(naive);
+    expect(jumping).toBeLessThanOrEqual(characterwise);
+  });
+
+  it('still rewrites the whole body when streamed', async () => {
+    const css = 'body{background:url(https://o.test/bg.png)}'.repeat(12_000);
+    const out = await through(css, [{ from: 'o.test', to: 'p.dev' }]);
+    expect(out).not.toContain('o.test');
+    expect(out.split('p.dev')).toHaveLength(12_001);
+  });
+});
+
+describe('textRewriteStream hold-back boundaries', () => {
+  const upstream = upstreamHostMatcher('o.test');
+  const pipe = (
+    chunks: readonly string[],
+    replacements: { from: string; to: string }[],
+    hostRewrite: boolean,
+  ) =>
+    collect(
+      streamOf(chunks).pipeThrough(
+        textRewriteStream(
+          replacements,
+          hostRewrite ? { isUpstreamHost: upstream, proxyHost: 'p.dev' } : undefined,
+        ),
+      ),
+    );
+
+  /** The internal hold-back the host pass needs to see an authority whole. */
+  const HOST_KEEP = 274;
+
+  it('replaces a needle straddling the boundary with host rewriting on', async () => {
+    // Doing the host pass first and then handing the literal pass a zero
+    // hold-back split the needle across the boundary, so neither half matched —
+    // reintroducing the exact defect the hold-back exists to prevent.
+    const needle = 'origin.test';
+    const text = `ab${needle}${'Z'.repeat(HOST_KEEP + 5 - 2 - needle.length)}`;
+    expect(await pipe([text], [{ from: needle, to: 'PROXY' }], true)).toContain('PROXY');
+  });
+
+  it('does not rewrite a host truncated at the boundary', async () => {
+    // A buffer ending part-way through `o.test.evil.com` looks exactly like
+    // `o.test`. Judging it there would recreate the lookalike hole that parsing
+    // each candidate exists to close.
+    const url = 'https://o.test.evil.com/b';
+    const head = `.a{background:url(${url})}`;
+    const out = await pipe([head + 'x'.repeat(HOST_KEEP + 10)], [], true);
+    expect(out).toContain(url);
+    expect(out).not.toContain('p.dev');
+  });
+
+  it('rewrites an authority that arrives in two chunks', async () => {
+    expect(await pipe(['url(https://o.te', 'st/b.png)'], [], true)).toBe(
+      'url(https://p.dev/b.png)',
+    );
+  });
+
+  it('does not buffer without bound on a long host-legal run', async () => {
+    // `//` followed by a megabyte of host-legal characters would otherwise be
+    // held back in full, waiting for an authority that can never be valid — on a
+    // 128MB isolate that is a denial of service. A hostname is at most 253
+    // characters, so anything past that is judged immediately.
+    const long = `x //${'a'.repeat(100_000)}`;
+    const out = await pipe([long], [], true);
+    expect(out).toHaveLength(long.length);
+  });
+
+  it('still holds back a plausible authority at the very end', async () => {
+    expect(await pipe(['x //o.te', 'st/a'], [], true)).toBe('x //p.dev/a');
   });
 });

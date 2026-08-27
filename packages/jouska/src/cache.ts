@@ -28,6 +28,17 @@ export interface CacheOptions {
   now?: () => number;
   /** Called when a reload fails while a cached config is still being served. */
   onReloadError?: (error: unknown) => void;
+  /**
+   * How long a failed cold load is remembered before another is attempted.
+   *
+   * Zero by default, so a transient failure is retried immediately and a caller
+   * gets the recovery it expects. Set it when the loader reads a metered store:
+   * with nothing cached to fall back on, a store that is down turns every
+   * request into a fresh read attempt, which burns the read allowance exactly
+   * when the store can least afford it. A second or two is enough — a longer
+   * window would outlast most outages and refuse to serve after recovery.
+   */
+  errorTtlMs?: number;
 }
 
 export interface ConfigCache {
@@ -59,17 +70,36 @@ export const createConfigCache = ({
   ttlMs = 60_000,
   now = Date.now,
   onReloadError,
+  errorTtlMs = 0,
 }: CacheOptions): ConfigCache => {
   let entry: Entry | undefined;
   let inflight: Promise<Config> | undefined;
+  // Incremented by `invalidate`, so a load already in flight when it is called
+  // cannot install its result afterwards. Without this, invalidating during a
+  // load let the value it was meant to discard reappear a moment later.
+  let generation = 0;
+  let failedAt: number | undefined;
 
   const refresh = async (): Promise<Config> => {
     // Collapse concurrent misses onto a single load.
     inflight ??= (async () => {
+      const started = generation;
       try {
         const config = await load();
-        entry = { config, loadedAt: now() };
+        if (started === generation) {
+          entry = { config, loadedAt: now() };
+          failedAt = undefined;
+        }
         return config;
+      } catch (error) {
+        if (started === generation) {
+          // Remember the failure briefly. A cold cache whose loader is failing
+          // would otherwise hit the store once per request — precisely the read
+          // amplification this cache exists to prevent, arriving exactly when
+          // the store is least able to serve it.
+          failedAt = now();
+        }
+        throw error;
       } finally {
         inflight = undefined;
       }
@@ -85,6 +115,14 @@ export const createConfigCache = ({
       }
       if (current === undefined) {
         // Nothing cached: the caller has to wait, and a failure must propagate.
+        if (
+          errorTtlMs > 0 &&
+          failedAt !== undefined &&
+          now() - failedAt < errorTtlMs &&
+          inflight === undefined
+        ) {
+          throw new Error('config load failed recently; not retrying until the error TTL expires');
+        }
         return refresh();
       }
       try {
@@ -97,6 +135,8 @@ export const createConfigCache = ({
     },
     invalidate: () => {
       entry = undefined;
+      failedAt = undefined;
+      generation += 1;
     },
   };
 };

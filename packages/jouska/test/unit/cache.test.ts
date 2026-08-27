@@ -173,3 +173,44 @@ describe('failure handling', () => {
     expect((await cache.get()).routes[0]!.upstream).toBe('recovered.test');
   });
 });
+
+describe('invalidate during a load', () => {
+  it('does not let the discarded load repopulate the cache', () => {
+    // The value invalidate was called to discard must not reappear a moment
+    // later, once the load it raced with finishes.
+    let release: (() => void) | undefined;
+    let loads = 0;
+    const cache = createConfigCache({
+      load: async () => {
+        loads += 1;
+        const generation = loads;
+        await new Promise<void>((resolve) => {
+          release = resolve;
+        });
+        return config(`v${generation}.test`);
+      },
+    });
+
+    const first = cache.get();
+    return Promise.resolve()
+      .then(() => new Promise((resolve) => setTimeout(resolve, 5)))
+      .then(() => {
+        cache.invalidate();
+        release!();
+        return first;
+      })
+      .then((resolved) => {
+        // The in-flight caller still receives what it asked for.
+        expect(resolved.routes[0]!.upstream).toBe('v1.test');
+        const second = cache.get();
+        return new Promise((resolve) => setTimeout(resolve, 5))
+          .then(() => release!())
+          .then(() => second);
+      })
+      .then((reloaded) => {
+        // But the next reader gets a fresh load, not the discarded value.
+        expect(reloaded.routes[0]!.upstream).toBe('v2.test');
+        expect(loads).toBe(2);
+      });
+  });
+});

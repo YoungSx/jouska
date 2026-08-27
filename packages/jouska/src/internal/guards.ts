@@ -18,7 +18,7 @@ import type { CorsConfig, RateLimitConfig, Route } from '../config.js';
 export const corsMiddleware = (config: CorsConfig): MiddlewareHandler =>
   honoCors({
     origin: config.origins ?? ((origin) => origin),
-    ...(config.allowMethods ? { allowMethods: config.allowMethods } : {}),
+    ...(config.allowMethods ? { allowMethods: [...config.allowMethods] } : {}),
     allowHeaders: config.allowHeaders,
     exposeHeaders: config.exposeHeaders,
     credentials: config.credentials,
@@ -45,32 +45,49 @@ const isRateLimiter = (value: unknown): value is RateLimiter =>
  * endpoint cannot exhaust another's budget, and `route` shares one bucket
  * across the whole route.
  */
-export const rateLimitKey = (config: RateLimitConfig, c: Context, routeId: string): string => {
-  const ip = c.req.header('cf-connecting-ip') ?? 'unknown';
+export const rateLimitKey = (
+  config: RateLimitConfig,
+  c: Context,
+  routeId: string,
+  clientIp: string | undefined,
+): string => {
   switch (config.by) {
     case 'ip':
-      return `${routeId}:${ip}`;
+      return `${routeId}:${clientIp ?? 'unknown'}`;
     case 'path':
-      return `${routeId}:${ip}:${new URL(c.req.url).pathname}`;
+      return `${routeId}:${clientIp ?? 'unknown'}:${new URL(c.req.url).pathname}`;
     case 'route':
       return routeId;
   }
 };
 
+export type RateLimitVerdict =
+  { ok: true } | { ok: false; reason: 'exceeded' | 'misconfigured' | 'unidentifiable' };
+
 /**
- * Consults the native rate limit binding. Returns `true` when the request may
- * proceed. A missing binding is a configuration error and is reported as such
- * rather than silently admitting traffic.
+ * Consults the native rate limit binding.
+ *
+ * Two failures are refused rather than admitted. A missing binding is a
+ * configuration error, and a per-caller limit with no identifiable caller would
+ * put every such request into one shared `unknown` bucket — which either lets
+ * one client exhaust everyone's budget or, worse, lets an attacker evade the
+ * limit entirely by suppressing whatever identifies them. On Cloudflare
+ * `cf-connecting-ip` is always present, so its absence means the proxy is not
+ * running where it thinks it is.
  */
 export const checkRateLimit = async (
   config: RateLimitConfig,
   c: Context,
   routeId: string,
-): Promise<{ ok: true } | { ok: false; reason: 'exceeded' | 'misconfigured' }> => {
+  clientIp: string | undefined,
+): Promise<RateLimitVerdict> => {
   const binding = (c.env as Record<string, unknown> | undefined)?.[config.binding];
   if (!isRateLimiter(binding)) {
     return { ok: false, reason: 'misconfigured' };
   }
-  const { success } = await binding.limit({ key: rateLimitKey(config, c, routeId) });
+  if (clientIp === undefined && config.by !== 'route') {
+    return { ok: false, reason: 'unidentifiable' };
+  }
+  const { success } = await binding.limit({ key: rateLimitKey(config, c, routeId, clientIp) });
   return success ? { ok: true } : { ok: false, reason: 'exceeded' };
 };

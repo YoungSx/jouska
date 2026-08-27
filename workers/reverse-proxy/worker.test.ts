@@ -94,3 +94,49 @@ describe('reference worker', () => {
     expect(seenKey).toBe('custom-routes');
   });
 });
+
+describe('isolate reuse', () => {
+  beforeEach(() => __resetConfigCache());
+
+  it('reads the store once for many requests', async () => {
+    // This ratio is what keeps the proxy inside the free tier's 100k daily KV
+    // reads: one read per isolate per TTL, not one per request.
+    let reads = 0;
+    const env = {
+      CONFIG: {
+        get: async () => {
+          reads += 1;
+          return table;
+        },
+      },
+      UPSTREAM_FETCH: upstream,
+    };
+    for (let i = 0; i < 5; i += 1) {
+      // eslint-disable-next-line no-await-in-loop
+      await worker.fetch(new Request('https://p.dev/api/x'), env, ctx);
+    }
+    expect(reads).toBe(1);
+  });
+
+  it('does not reuse a cache built from different bindings', async () => {
+    // Closing over the first request's env would pin the isolate to it, so a
+    // cold start during a brief outage would leave it broken for its whole life.
+    const first = {
+      CONFIG: { get: async () => table },
+      UPSTREAM_FETCH: upstream,
+    };
+    const second = {
+      CONFIG: {
+        get: async () => ({
+          version: 1,
+          routes: [{ match: { path: '/other' }, upstream: 'b.test' }],
+        }),
+      },
+      CONFIG_KEY: 'other-key',
+      UPSTREAM_FETCH: upstream,
+    };
+    expect((await worker.fetch(new Request('https://p.dev/api/x'), first, ctx)).status).toBe(200);
+    // The second table does not route /api, so a 404 proves the reload happened.
+    expect((await worker.fetch(new Request('https://p.dev/api/x'), second, ctx)).status).toBe(404);
+  });
+});

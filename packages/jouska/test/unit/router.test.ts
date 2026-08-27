@@ -55,7 +55,7 @@ describe('resolveUpstreamUrl', () => {
   const resolve = (route: Parameters<typeof defineConfig>[0]['routes'][number], url: string) => {
     const config = defineConfig({ routes: [route] });
     const request = req(url);
-    return resolveUpstreamUrl(matchRoute(config, request)!, request).toString();
+    return resolveUpstreamUrl(matchRoute(config, request)!, new URL(request.url)).toString();
   };
 
   it('preserves the path by default', () => {

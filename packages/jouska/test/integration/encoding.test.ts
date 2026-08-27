@@ -56,6 +56,9 @@ describe('upstream encoding assumptions', () => {
       }),
     );
     const res = await app.request('https://p.dev/p');
+    // The upstream declared an encoding it did not apply. Forwarding either
+    // header would make the client decode bytes that are not compressed, or
+    // trust a length that no longer describes the body.
     expect(res.headers.get('content-encoding')).toBeNull();
     expect(res.headers.get('content-length')).toBeNull();
   });
