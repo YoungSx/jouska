@@ -574,14 +574,40 @@ const applyDefaults = (
   });
 };
 
-export const configSchema = z.preprocess(captureStatedKeys, documentSchema).transform((doc) => ({
-  version: doc.version,
-  ...(doc.meta !== undefined ? { meta: doc.meta } : {}),
-  routes: applyDefaults(doc.routes, doc[STATED_KEYS_FIELD], doc.defaults) as [
-    RouteOutput,
-    ...RouteOutput[],
-  ],
-}));
+export const configSchema = z
+  .preprocess(captureStatedKeys, documentSchema)
+  .transform((doc) => ({
+    version: doc.version,
+    ...(doc.meta !== undefined ? { meta: doc.meta } : {}),
+    routes: applyDefaults(doc.routes, doc[STATED_KEYS_FIELD], doc.defaults) as [
+      RouteOutput,
+      ...RouteOutput[],
+    ],
+  }))
+  /**
+   * Cross-field checks, run after `defaults` have been folded in.
+   *
+   * It has to be here rather than on the route schema: a contradiction can be
+   * split across the two, and neither half is invalid alone. Verified —
+   * `defaults: { totalTimeoutMs: 1000 }` with a route stating
+   * `timeoutMs: 30_000` was accepted, and `forward` then clamped the
+   * per-attempt budget to 1000ms with nothing said. The config claimed one
+   * thing and the proxy did another.
+   */
+  .superRefine((config, ctx) => {
+    config.routes.forEach((entry, index) => {
+      if (entry.timeoutMs > entry.totalTimeoutMs) {
+        ctx.addIssue({
+          code: 'custom',
+          path: ['routes', index, 'timeoutMs'],
+          message:
+            `timeoutMs (${entry.timeoutMs}) exceeds totalTimeoutMs ` +
+            `(${entry.totalTimeoutMs}), so a single attempt can never use its ` +
+            `full budget; lower timeoutMs or raise totalTimeoutMs`,
+        });
+      }
+    });
+  });
 
 export type Config = {
   version: typeof CONFIG_VERSION;
