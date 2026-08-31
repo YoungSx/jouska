@@ -1,0 +1,169 @@
+/**
+ * D1 access for the admin panel: settings, routes, audit.
+ *
+ * Kept as plain functions over D1PreparedStatement rather than an ORM — the
+ * queries are few and the SQL is the documentation.
+ */
+import type { RouteRow } from './compile.js';
+
+const nowSeconds = (): number => Math.floor(Date.now() / 1000);
+
+export const getSetting = async (db: D1Database, key: string): Promise<unknown> => {
+  const row = await db
+    .prepare('SELECT value FROM settings WHERE key = ?')
+    .bind(key)
+    .first<{ value: string }>();
+  return row === null ? undefined : JSON.parse(row.value);
+};
+
+export const putSetting = async (db: D1Database, key: string, value: unknown): Promise<void> => {
+  await db
+    .prepare(
+      'INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value',
+    )
+    .bind(key, JSON.stringify(value))
+    .run();
+};
+
+/** Enabled routes in publish order. */
+export const listEnabledRoutes = async (db: D1Database): Promise<RouteRow[]> => {
+  const { results } = await db
+    .prepare(
+      'SELECT id, definition, enabled, position FROM routes WHERE enabled = 1 ORDER BY position',
+    )
+    .all<{ id: string; definition: string; enabled: number; position: number }>();
+  return results.map((r) => ({
+    id: r.id,
+    definition: JSON.parse(r.definition) as unknown,
+    enabled: r.enabled === 1,
+    position: r.position,
+  }));
+};
+
+export interface RouteListEntry {
+  readonly id: string;
+  readonly definition: unknown;
+  readonly enabled: boolean;
+  readonly position: number;
+  readonly updatedAt: number;
+  readonly updatedBy: string;
+}
+
+export const listAllRoutes = async (db: D1Database): Promise<RouteListEntry[]> => {
+  const { results } = await db
+    .prepare(
+      'SELECT id, definition, enabled, position, updated_at, updated_by FROM routes ORDER BY position',
+    )
+    .all<{
+      id: string;
+      definition: string;
+      enabled: number;
+      position: number;
+      updated_at: number;
+      updated_by: string;
+    }>();
+  return results.map((r) => ({
+    id: r.id,
+    definition: JSON.parse(r.definition) as unknown,
+    enabled: r.enabled === 1,
+    position: r.position,
+    updatedAt: r.updated_at,
+    updatedBy: r.updated_by,
+  }));
+};
+
+export const getRoute = async (db: D1Database, id: string): Promise<RouteListEntry | undefined> => {
+  const row = await db
+    .prepare(
+      'SELECT id, definition, enabled, position, updated_at, updated_by FROM routes WHERE id = ?',
+    )
+    .bind(id)
+    .first<{
+      id: string;
+      definition: string;
+      enabled: number;
+      position: number;
+      updated_at: number;
+      updated_by: string;
+    }>();
+  if (row === null) {
+    return undefined;
+  }
+  return {
+    id: row.id,
+    definition: JSON.parse(row.definition) as unknown,
+    enabled: row.enabled === 1,
+    position: row.position,
+    updatedAt: row.updated_at,
+    updatedBy: row.updated_by,
+  };
+};
+
+export const upsertRoute = async (
+  db: D1Database,
+  id: string,
+  definition: unknown,
+  enabled: boolean,
+  position: number,
+  actor: string,
+): Promise<void> => {
+  await db
+    .prepare(
+      `INSERT INTO routes (id, definition, enabled, position, updated_at, updated_by)
+       VALUES (?, ?, ?, ?, ?, ?)
+       ON CONFLICT (id) DO UPDATE SET
+         definition = excluded.definition, enabled = excluded.enabled,
+         position = excluded.position, updated_at = excluded.updated_at,
+         updated_by = excluded.updated_by`,
+    )
+    .bind(id, JSON.stringify(definition), enabled ? 1 : 0, position, nowSeconds(), actor)
+    .run();
+};
+
+export const deleteRoute = async (db: D1Database, id: string): Promise<void> => {
+  await db.prepare('DELETE FROM routes WHERE id = ?').bind(id).run();
+};
+
+/** Assigns 0..n-1 positions in the given order; used by the reorder endpoint. */
+export const reorderRoutes = async (
+  db: D1Database,
+  ids: readonly string[],
+  actor: string,
+): Promise<void> => {
+  const stmt = db.prepare(
+    'UPDATE routes SET position = ?, updated_at = ?, updated_by = ? WHERE id = ?',
+  );
+  const now = nowSeconds();
+  const updates = ids.map((id, index) => stmt.bind(index, now, actor, id));
+  await db.batch(updates);
+};
+
+export const audit = async (
+  db: D1Database,
+  actor: string,
+  action: string,
+  target: string | undefined,
+  detail: unknown,
+): Promise<void> => {
+  await db
+    .prepare('INSERT INTO audit_log (at, actor, action, target, detail) VALUES (?, ?, ?, ?, ?)')
+    .bind(nowSeconds(), actor, action, target, detail === undefined ? null : JSON.stringify(detail))
+    .run();
+};
+
+export interface AuditEntry {
+  readonly id: number;
+  readonly at: number;
+  readonly actor: string;
+  readonly action: string;
+  readonly target: string | null;
+  readonly detail: string | null;
+}
+
+export const listAudit = async (db: D1Database, limit: number): Promise<AuditEntry[]> => {
+  const { results } = await db
+    .prepare('SELECT id, at, actor, action, target, detail FROM audit_log ORDER BY id DESC LIMIT ?')
+    .bind(limit)
+    .all<AuditEntry>();
+  return results;
+};

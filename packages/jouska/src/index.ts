@@ -12,6 +12,11 @@ export type {
   RouteInput,
 } from './config.js';
 export { resolveConfig } from './resolve.js';
+// Match diagnostics: an admin panel validates a route table with the same
+// matcher the proxy runs (shadow detection, probe checks), so the matcher must
+// be importable rather than reimplemented beside it.
+export { matchUrl, routeId, splitUpstream } from './router.js';
+export type { Match } from './router.js';
 export { firstAvailable, fromEnvVar, fromKV } from './sources.js';
 export type { ConfigSource, KVReader, KVSourceOptions } from './sources.js';
 export type { MergeStrategy, ResolveOptions } from './resolve.js';
