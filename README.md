@@ -174,8 +174,11 @@ another: `{a→b, b→c}` will not turn `a` into `c`.
 A body whose charset the runtime can decode is transcoded to UTF-8 and its
 `Content-Type` corrected. One it cannot decode is passed through untouched:
 decoding GB2312 bytes as UTF-8 turns every character into U+FFFD, so relaying
-them verbatim is the only safe answer. `fallbackCharset` covers an upstream that
-declares nothing.
+them verbatim is the only safe answer. `fallbackCharset` covers both cases where
+there is no usable label to go on — an upstream that declares nothing, and one
+that declares a charset this runtime cannot decode. If the fallback is not
+decodable either, the body is still passed through rather than transcoded with a
+charset nobody asked for.
 
 Rewriting also drops the headers that describe the body the upstream sent:
 `Content-Length`, and the validators `ETag` and `Last-Modified`. Keeping a
