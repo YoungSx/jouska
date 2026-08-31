@@ -12,9 +12,16 @@ import { jouska } from '../../src/middleware/jouska';
  * output rather than on what the upstream or the client actually received.
  */
 
-const appWith = (routes: ConfigInput['routes'], fetchImpl: typeof fetch) => {
+const appWith = (
+  routes: ConfigInput['routes'],
+  fetchImpl: typeof fetch,
+  defaults?: ConfigInput['defaults'],
+) => {
   const app = new Hono();
-  app.use('*', jouska({ config: defineConfig({ routes }), fetchImpl }));
+  app.use(
+    '*',
+    jouska({ config: defineConfig({ ...(defaults ? { defaults } : {}), routes }), fetchImpl }),
+  );
   return app;
 };
 
@@ -1322,6 +1329,52 @@ describe('defaults are validated exactly as a route is', () => {
         routes: [{ match: { path: '/' }, upstream: 'o.test' }],
       }),
     ).toThrow();
+  });
+
+  /**
+   * `upstreamHeaders` is a bag of independent entries, so a route adding one of
+   * its own must keep the table-wide ones. Replacing the whole map dropped them
+   * silently — verified — which took a shared auth or user-agent header away
+   * from exactly the routes that added anything.
+   */
+  it('merges upstreamHeaders per entry rather than replacing the map', async () => {
+    const upstream = spy();
+    const app = appWith(
+      [
+        {
+          match: { path: '/a' },
+          upstream: 'o.test',
+          upstreamHeaders: { 'x-own': 'route', 'x-both': 'route' },
+        },
+      ],
+      upstream.fetchImpl,
+      { upstreamHeaders: { 'x-shared': 'table', 'x-both': 'table' } },
+    );
+    await app.request('https://p.dev/a');
+    const sent = upstream.seen().headers;
+    expect(sent.get('x-own')).toBe('route');
+    // The table-wide header survives the route stating one of its own.
+    expect(sent.get('x-shared')).toBe('table');
+    // On a collision the route still wins: defaults fill gaps, never override.
+    expect(sent.get('x-both')).toBe('route');
+  });
+
+  it('still replaces a policy block wholesale', async () => {
+    // The distinction that makes the merge above principled rather than ad hoc:
+    // `cors` is a cohesive unit, and merging halves of two of them would yield a
+    // policy neither the table nor the route wrote.
+    const config = defineConfig({
+      defaults: { cors: { credentials: true, maxAge: 600 } },
+      routes: [{ match: { path: '/a' }, upstream: 'o.test', cors: { allowHeaders: ['x-a'] } }],
+    });
+    expect(config.routes[0].cors).toEqual({
+      origins: undefined,
+      allowMethods: undefined,
+      allowHeaders: ['x-a'],
+      exposeHeaders: [],
+      credentials: false,
+      maxAge: undefined,
+    });
   });
 
   it.each([

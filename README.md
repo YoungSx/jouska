@@ -104,6 +104,13 @@ defineConfig({
 
 A route that states a field keeps its value; `defaults` only fills gaps.
 
+`upstreamHeaders` fills gaps entry by entry, because it is a bag of independent
+headers rather than one setting: a route adding a header of its own keeps the
+table-wide ones, and on a name collision the route still wins. The policy blocks
+—`cors`, `ip`, `rateLimit`, `bodyRewrite`—are replaced whole instead, since
+merging halves of two of them would produce a policy neither the table nor the
+route wrote.
+
 ### What is forwarded
 
 The client's own headers are forwarded, minus the hop-by-hop set and anything

@@ -548,10 +548,31 @@ type RouteOutput = z.output<typeof route>;
 type DefaultsOutput = z.output<typeof defaults>;
 
 /**
+ * Fields folded entry by entry rather than replaced whole.
+ *
+ * `upstreamHeaders` is a bag of independent entries, so "fills gaps" applies at
+ * the granularity the map has: a route adding one header of its own keeps the
+ * table-wide ones. Replacing the whole map instead silently dropped them —
+ * verified, a route stating `{'x-own': …}` alongside
+ * `defaults: {upstreamHeaders: {'x-from-defaults': …}}` sent only its own, so a
+ * shared auth or user-agent header vanished from exactly the routes that added
+ * anything. nginx's `proxy_set_header` behaves the same way and is a well-known
+ * footgun for it.
+ *
+ * The policy blocks — `cors`, `ip`, `rateLimit`, `bodyRewrite` — are deliberately
+ * not here. Those are cohesive units, and merging halves of two of them yields a
+ * policy neither the table nor the route wrote: `cors.origins` from one with
+ * `cors.credentials` from the other is nobody's intent.
+ */
+const MERGED_PER_KEY = new Set(['upstreamHeaders']);
+
+/**
  * Folds `defaults` into each route.
  *
  * A key the route did not state takes the table-wide value; a key it did state
- * keeps its own. `defaults` therefore fills gaps and never overrides.
+ * keeps its own. `defaults` therefore fills gaps and never overrides — including
+ * within the maps listed in {@link MERGED_PER_KEY}, where a gap is a missing
+ * entry rather than a missing field.
  */
 const applyDefaults = (
   routes: readonly RouteOutput[],
@@ -568,6 +589,11 @@ const applyDefaults = (
     for (const [key, value] of entries) {
       if (!stated.has(key)) {
         merged[key] = value;
+        continue;
+      }
+      if (MERGED_PER_KEY.has(key)) {
+        // The route's own entries win, the table's fill the rest.
+        merged[key] = { ...(value as object), ...(merged[key] as object) };
       }
     }
     return merged as RouteOutput;
