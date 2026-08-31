@@ -43,18 +43,39 @@ describe('password hashing', () => {
     expect(await verifyPassword('pw', 'scrypt$1$a$b')).toBe(false);
   });
 
-  it('stays inside the free-tier CPU budget', { timeout: 30_000 }, async () => {
+  it('pins the iteration count to the window that was measured to fit', () => {
+    // Minimum of nine runs in this runtime: 30k → 4 ms, 100k → 13 ms,
+    // 300k → 40 ms. The free plan allows 10 ms of CPU for the whole request,
+    // so hashing may only take a fraction of it — past ~50k the measured curve
+    // leaves nothing for Hono, D1 and serialization.
+    //
+    // This bound, not a wall-clock ceiling, is the CI gate: the constant is
+    // what regresses, and a runner's wall clock is not Cloudflare's CPU, so a
+    // tight timing assertion here would only measure the runner.
+    expect(ITERATIONS).toBeLessThan(50_000);
+    // A floor too, so hashing cannot be quietly weakened to nothing. 30k is
+    // below OWASP's 600k guidance for PBKDF2-SHA256 — the platform budget does
+    // not afford that, and the account lockout after five failures is what
+    // covers online guessing instead.
+    expect(ITERATIONS).toBeGreaterThanOrEqual(30_000);
+  });
+
+  it('really performs the derivation it claims', { timeout: 30_000 }, async () => {
     const samples: number[] = [];
-    for (let i = 0; i < 3; i++) {
+    for (let i = 0; i < 9; i += 1) {
       const start = performance.now();
       await hashPassword('benchmark');
       samples.push(performance.now() - start);
     }
-    const median = samples.toSorted((a, b) => a - b)[1]!;
-    // 10 ms is the platform ceiling for the whole request; hashing must
-    // leave the bulk of it for Hono, D1 and serialization.
-    expect(median).toBeLessThan(6);
-    // And a floor: a number this cheap is not doing the work.
-    expect(median).toBeGreaterThan(0.5);
+    // The minimum, not the median: scheduler noise only ever adds time, so the
+    // fastest of several runs is the closest estimate of the CPU cost. workerd
+    // also clamps performance.now() to 1 ms steps, which at a true ~4 ms moves
+    // a median over a few samples by whole milliseconds.
+    const fastest = Math.min(...samples);
+    // Deliberately wide: this catches a derivation that is not happening at
+    // all (a mocked or short-circuited crypto path) or one gone catastrophically
+    // slow, without failing on a runner three times slower than this machine.
+    expect(fastest).toBeGreaterThan(1.5);
+    expect(fastest).toBeLessThan(60);
   });
 });

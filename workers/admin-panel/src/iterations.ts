@@ -4,9 +4,11 @@
  * `iterations` was set in the real runtime, not from a datasheet: 100 000
  * measured at ~14 ms in workerd on this machine — over the free plan's 10 ms
  * CPU ceiling for the whole request, before Hono, D1 and serialization take
- * their share. 30 000 measured at ~4 ms, which fits with headroom. The budget
- * assertion in `password.test.ts` fails if this constant drifts out of budget,
- * so editing the number forces a re-measure.
+ * their share. 30 000 measured at ~4 ms, which fits with headroom (300 000 was
+ * 40 ms). `password.test.ts` asserts on this constant rather than on a
+ * wall-clock reading, because the constant is what regresses and a CI runner's
+ * clock is not Cloudflare's CPU — so editing the number forces a re-measure and
+ * a matching edit to that bound.
  */
 export const ITERATIONS = 30_000;
 
