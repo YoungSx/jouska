@@ -289,6 +289,27 @@ describe('textReplaceStream regressions', () => {
   });
 });
 
+describe('textRewriteStream guards', () => {
+  it('refuses an empty needle, naming the actual problem', () => {
+    // `indexOf('')` is 0 and consuming it advances nothing, so `scan` would spin
+    // forever — a hung isolate rather than a wrong answer. The schema already
+    // requires a non-empty `from`, so this covers direct internal callers.
+    //
+    // The previous assert caught the same case (it was the only way to break the
+    // carry bound) but reported `carry bound broken: literalKeep=-1`, which named
+    // neither the cause nor the fix.
+    expect(() => textRewriteStream([{ from: '', to: 'x' }], undefined)).toThrow(
+      /`from` must not be empty/,
+    );
+  });
+
+  it('accepts a single-character needle', () => {
+    // The boundary case: `literalKeep` is 0 here, the same value the empty needle
+    // would want, so the guard has to distinguish them rather than reject both.
+    expect(() => textRewriteStream([{ from: 'a', to: 'x' }], undefined)).not.toThrow();
+  });
+});
+
 describe('textRewriteStream hold-back boundaries', () => {
   const upstream = upstreamHostMatcher('o.test');
   const pipe = (

@@ -236,19 +236,27 @@ export const textRewriteStream = (
   // The host pass decides its own boundary, so only the literal needles set this.
   const keep = literalKeep;
 
-  // The carry is bounded, and this is where that is decided, so it is asserted
-  // here rather than left to be inferred. `literalKeep` is one short of the
+  // Why the carry is bounded, decided here: `literalKeep` is one short of the
   // longest needle because a needle that has arrived whole is replaced rather
-  // than held: only a strict prefix of one can still be waiting. Raise it to the
+  // than held — only a strict prefix of one can still be waiting. Raise it to the
   // full length and every chunk retains a byte it had already decided; drop it
   // and a needle straddling the boundary is split and silently missed. The host
   // pass adds its own bound (`MAX_AUTHORITY`) inside `rewriteTextUrls`, so the
   // total held is the sum of two constants and never grows with body size.
-  const longestNeedle = replacements.reduce((n, r) => Math.max(n, r.from.length), 0);
-  if (literalKeep !== Math.max(0, longestNeedle - 1)) {
-    throw new Error(
-      `carry bound broken: literalKeep=${literalKeep}, longest needle=${longestNeedle}`,
-    );
+  //
+  // An empty needle is refused rather than assumed away: `indexOf('')` is 0 and
+  // consuming it advances the write head by nothing, so `scan` would loop
+  // forever. The schema already requires `from` to be non-empty, which leaves
+  // this covering direct internal callers — worth checking, because the failure
+  // is a hung isolate rather than a wrong answer.
+  //
+  // This replaces an assert comparing `literalKeep` against the longest needle.
+  // That comparison could only ever fail on an empty needle (it yields -1 where
+  // the bound wants 0), so it was this check wearing a misleading label:
+  // verified, `{from: ''}` reported `carry bound broken: literalKeep=-1`, which
+  // describes neither the cause nor the fix.
+  if (replacements.some((r) => r.from === '')) {
+    throw new Error('textRewriteStream: a replacement `from` must not be empty');
   }
 
   /**
