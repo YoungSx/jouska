@@ -102,8 +102,9 @@ const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout
  * Forwards a request upstream with a per-attempt deadline, a total deadline and
  * bounded retries with backoff.
  *
- * Only idempotent methods retry: a request with a body cannot be replayed
- * anyway, since its stream is consumed by the first attempt.
+ * Retrying requires both an idempotent method and no request body. The method
+ * alone is not enough: `OPTIONS` and `TRACE` are idempotent and may still carry
+ * one, and a body stream is consumed by the first attempt.
  */
 export const forward = async ({
   route,
@@ -115,7 +116,15 @@ export const forward = async ({
   const fetcher = fetchImpl ?? fetch;
   const headers = buildUpstreamHeaders(request, route, target, requestUrl);
   const upgrade = route.websocket && isWebSocketUpgrade(request);
-  const attempts = isRetryable(request.method) && !upgrade ? route.retries + 1 : 1;
+  // A body rules out replay whatever the method says. `OPTIONS` and `TRACE` are
+  // idempotent yet may carry one, and the first attempt consumes the stream: the
+  // second then throws `This ReadableStream is disturbed` inside `attemptFetch`,
+  // before the network is touched. Measured in workerd, that cost one real
+  // attempt out of three and — the part that misleads whoever is debugging —
+  // replaced the genuine network error with that TypeError, because the retry
+  // loop rethrows whatever failed last.
+  const replayable = isRetryable(request.method) && request.body === null;
+  const attempts = replayable && !upgrade ? route.retries + 1 : 1;
 
   const startedAt = Date.now();
   const remaining = (): number => route.totalTimeoutMs - (Date.now() - startedAt);

@@ -47,6 +47,35 @@ describe('retries', () => {
     expect(up.attempts()).toBe(1);
   });
 
+  /**
+   * An idempotent method is not on its own enough to replay: `OPTIONS` and
+   * `TRACE` may carry a body, and the first attempt consumes its stream.
+   *
+   * Verified in workerd before the fix: the second attempt threw `This
+   * ReadableStream is disturbed` inside the attempt itself, so only one request
+   * ever reached the network — and the error the caller finally saw was that
+   * TypeError rather than the network failure that actually happened, because
+   * the loop rethrows whatever failed last.
+   */
+  it('never retries an idempotent method that carries a body', async () => {
+    const up = flakyUpstream(99);
+    const app = appWith([{ match: { path: '/x' }, upstream: 'o.test', retries: 3 }], up.fetchImpl);
+    const res = await app.request('https://p.dev/x', { method: 'OPTIONS', body: 'data' });
+    expect(up.attempts()).toBe(1);
+    // The real failure, not the disturbed-stream TypeError that used to mask it.
+    expect(res.status).toBe(502);
+    expect(await res.json()).toEqual({ error: 'upstream_unreachable', upstream: 'o.test' });
+  });
+
+  it('still retries an idempotent method with no body', async () => {
+    // The guard above must not be satisfied by refusing to retry anything.
+    const up = flakyUpstream(1);
+    const app = appWith([{ match: { path: '/x' }, upstream: 'o.test', retries: 2 }], up.fetchImpl);
+    const res = await app.request('https://p.dev/x', { method: 'OPTIONS' });
+    expect(res.status).toBe(200);
+    expect(up.attempts()).toBe(2);
+  });
+
   it('makes a single attempt when retries are zero', async () => {
     const up = flakyUpstream(99);
     const app = appWith([{ match: { path: '/x' }, upstream: 'o.test' }], up.fetchImpl);
