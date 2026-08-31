@@ -272,12 +272,17 @@ export const textRewriteStream = (
     //
     // On the final call nothing more can arrive, so a reference touching the end
     // is complete: it must be judged, not held back and not passed through.
-    const hosted = final
-      ? swapEveryHost(text, hostRewrite.isUpstreamHost, hostRewrite.proxyHost)
-      : rewriteTextUrls(text, hostRewrite.isUpstreamHost, hostRewrite.proxyHost).rewritten;
-    const undecided = final
-      ? ''
-      : rewriteTextUrls(text, hostRewrite.isUpstreamHost, hostRewrite.proxyHost).rest;
+    // One pass, both halves. Reading `.rewritten` and `.rest` from two separate
+    // calls scanned every chunk twice for one result — the same regex walk over
+    // the same text, discarded each time bar one field.
+    const host = final
+      ? {
+          rewritten: swapEveryHost(text, hostRewrite.isUpstreamHost, hostRewrite.proxyHost),
+          rest: '',
+        }
+      : rewriteTextUrls(text, hostRewrite.isUpstreamHost, hostRewrite.proxyHost);
+    const hosted = host.rewritten;
+    const undecided = host.rest;
 
     if (replacements.length === 0) {
       return { emit: hosted, rest: undecided };
