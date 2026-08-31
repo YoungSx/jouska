@@ -69,6 +69,50 @@ describe('defineConfig', () => {
       }),
     ).toThrow();
   });
+
+  /**
+   * A per-attempt deadline above the combined one is a contradiction: `forward`
+   * clamps the attempt to whatever the total has left, so the config says one
+   * thing and the proxy does another. It used to be accepted silently.
+   */
+  it('rejects a per-attempt timeout above the total', () => {
+    expect(() =>
+      defineConfig({
+        routes: [
+          { match: { path: '/a' }, upstream: 'o.test', timeoutMs: 30_000, totalTimeoutMs: 1000 },
+        ],
+      }),
+    ).toThrow(/timeoutMs .* exceeds totalTimeoutMs/);
+  });
+
+  it('rejects the same contradiction split across defaults and a route', () => {
+    // The check has to run after defaults are folded in: neither half is
+    // invalid on its own, and this spelling was accepted before the fix.
+    expect(() =>
+      defineConfig({
+        defaults: { totalTimeoutMs: 1000 },
+        routes: [{ match: { path: '/a' }, upstream: 'o.test', timeoutMs: 30_000 }],
+      }),
+    ).toThrow(/timeoutMs .* exceeds totalTimeoutMs/);
+  });
+
+  it('accepts a per-attempt timeout equal to the total', () => {
+    // One attempt using the whole budget is coherent, so the check must be
+    // strictly greater-than rather than any overlap.
+    expect(() =>
+      defineConfig({
+        routes: [
+          { match: { path: '/a' }, upstream: 'o.test', timeoutMs: 5000, totalTimeoutMs: 5000 },
+        ],
+      }),
+    ).not.toThrow();
+  });
+
+  it('accepts the defaults, which leave room for retries', () => {
+    expect(() =>
+      defineConfig({ routes: [{ match: { path: '/a' }, upstream: 'o.test' }] }),
+    ).not.toThrow();
+  });
 });
 
 describe('guard config', () => {
