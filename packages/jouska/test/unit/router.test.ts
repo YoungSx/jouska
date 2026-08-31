@@ -63,6 +63,70 @@ describe('matchRoute', () => {
     expect(matchRoute(config, req('https://p.dev/w'))).toBeUndefined();
   });
 
+  /**
+   * Every spelling an upstream would resolve to `/admin` has to match the
+   * `/admin` route, or a guard on that route is bypassed by writing the path
+   * differently and letting a laxer route take the request.
+   *
+   * All of these were verified failing in workerd before the fix: `decodeURI`
+   * does not decode `%2f`, `%5c`, `%3f` or `%23` (it is the inverse of
+   * `encodeURI`, which never emits them), `/;x/admin` became `//admin` after the
+   * separator-collapsing step had already run, and `/%252fadmin` needs two
+   * decode rounds before the separator appears.
+   */
+  it('matches every spelling an upstream would decode to the guarded path', () => {
+    const config = defineConfig({
+      routes: [{ match: { path: '/admin' }, upstream: 'origin.test' }],
+    });
+    for (const path of [
+      '/admin',
+      '/%61dmin', // percent-encoded letter
+      '//admin', // repeated separator
+      '/./admin', // dot segment (normalised by the URL parser)
+      '/admin;x', // path parameter
+      '/;x/admin', // parameter whose removal exposes a repeated separator
+      '/%2fadmin', // encoded separator
+      '/%2Fadmin', // ...in upper case
+      '/%5cadmin', // backslash as separator
+      '/admin%3fx', // cut short at a query
+      '/admin%23x', // cut short at a fragment
+      '/a%2f..%2fadmin', // traversal via encoded separators
+      '/a/%2e%2e/admin', // traversal via encoded dots
+      '/%252fadmin', // double-encoded separator
+    ]) {
+      expect(matchRoute(config, req(`https://p.dev${path}`)), path).toBeDefined();
+    }
+  });
+
+  /**
+   * The other half of the same guarantee: normalising aggressively must not
+   * start matching paths that share a prefix by coincidence, or the fix trades a
+   * bypass for an outage.
+   */
+  it('does not match paths that merely look like the guarded one', () => {
+    const config = defineConfig({
+      routes: [{ match: { path: '/admin' }, upstream: 'origin.test' }],
+    });
+    for (const path of ['/administrator', '/admin-beta', '/public/adminx', '/notadmin']) {
+      expect(matchRoute(config, req(`https://p.dev${path}`)), path).toBeUndefined();
+    }
+  });
+
+  /**
+   * A crafted path must not be able to spin in the normalisation loop. 200
+   * nested `%25` escapes resolve in bounded time because the loop stops after a
+   * fixed number of rounds rather than running to a true fixed point.
+   */
+  it('bounds the normalisation loop', () => {
+    const config = defineConfig({
+      routes: [{ match: { path: '/x' }, upstream: 'origin.test' }],
+    });
+    const nested = `/${'%25'.repeat(200)}2fadmin`;
+    const startedAt = Date.now();
+    matchRoute(config, req(`https://p.dev${nested}`));
+    expect(Date.now() - startedAt).toBeLessThan(1000);
+  });
+
   it('returns the first matching route', () => {
     const config = defineConfig({
       routes: [
@@ -128,5 +192,28 @@ describe('resolveUpstreamUrl', () => {
         'https://p.dev/s',
       ),
     ).toBe('https://origin.test/');
+  });
+
+  /**
+   * Matching normalises aggressively; forwarding must not. The escapes below all
+   * mean something different to an upstream once decoded, so re-encoding or
+   * decoding them here would send a different request than the client made.
+   */
+  it('forwards the client encoding untouched when stripping a prefix', () => {
+    const route = {
+      match: { path: '/api' },
+      upstream: 'origin.test/v1',
+      stripPrefix: true,
+    } as const;
+    expect(resolve(route, 'https://p.dev/api/a%20b')).toBe('https://origin.test/v1/a%20b');
+    expect(resolve(route, 'https://p.dev/api/%61bc')).toBe('https://origin.test/v1/%61bc');
+    // An encoded separator inside a path segment is data, not structure.
+    expect(resolve(route, 'https://p.dev/api/a%2fb')).toBe('https://origin.test/v1/a%2fb');
+  });
+
+  it('forwards the client encoding untouched with no prefix strip', () => {
+    const route = { match: { path: '/api' }, upstream: 'origin.test' } as const;
+    expect(resolve(route, 'https://p.dev/api/a%20b')).toBe('https://origin.test/api/a%20b');
+    expect(resolve(route, 'https://p.dev/api/a%2fb')).toBe('https://origin.test/api/a%2fb');
   });
 });

@@ -72,6 +72,79 @@ const pathMatches = (prefix: string, path: string): boolean => {
 };
 
 /**
+ * Separators an upstream may decode after jouska has finished matching.
+ *
+ * `decodeURI` deliberately leaves these alone — it is the inverse of
+ * `encodeURI`, which never produces them — so a candidate built with it can
+ * never turn `/%2fadmin` back into `/admin`. Verified in workerd: a guarded
+ * `/admin` route did not match `/%2fadmin`, `/%5cadmin`, `/admin%3fx` or
+ * `/admin%23x`, so each one slipped past the guard and reached a laxer route
+ * while the upstream still saw a path it would decode to `/admin`.
+ *
+ * `%5c` is included because Windows-hosted and JVM upstreams treat a backslash
+ * as a path separator. `%3f` and `%23` cut a path short at a query or fragment,
+ * which reaches the same handler by a different route.
+ */
+const ENCODED_SEPARATORS: readonly [RegExp, string][] = [
+  [/%2f/gi, '/'],
+  [/%5c/gi, '/'],
+  [/%3f/gi, '?'],
+  [/%23/gi, '#'],
+];
+
+/** Applies one normalisation round: decode, then collapse the forms it exposed. */
+const normaliseOnce = (path: string): string => {
+  let out = path;
+  // Percent-decoding first, so an escape that hides a separator or a dot
+  // segment is visible to the rules below.
+  try {
+    out = decodeURI(out);
+  } catch {
+    // Invalid escape sequence; keep going with what we have.
+  }
+  for (const [pattern, replacement] of ENCODED_SEPARATORS) {
+    out = out.replace(pattern, replacement);
+  }
+  // A path cut short at a query or fragment reaches the same handler.
+  out = out.split(/[?#]/)[0]!;
+  // Backslash as a separator, for upstreams that accept it.
+  out = out.replaceAll('\\', '/');
+  // Path parameters: `/admin;x` → `/admin`.
+  out = out.replace(/;[^/]*/g, '');
+  // Dot segments, which only appear once the escapes above are decoded.
+  out = collapseDotSegments(out);
+  // Repeated separators, last: the rules above can expose new ones.
+  out = out.replace(/\/{2,}/g, '/');
+  return out;
+};
+
+/**
+ * Resolves `.` and `..` segments.
+ *
+ * The URL parser does this for the literal forms, so only the percent-encoded
+ * spellings reach here — `/a/%2e%2e/admin` decodes to `/a/../admin` in the round
+ * above, and without this it would stay that way and match no route while the
+ * upstream resolved it to `/admin`.
+ */
+const collapseDotSegments = (path: string): string => {
+  const out: string[] = [];
+  for (const segment of path.split('/')) {
+    if (segment === '.') {
+      continue;
+    }
+    if (segment === '..') {
+      out.pop();
+      continue;
+    }
+    out.push(segment);
+  }
+  return out.join('/') || '/';
+};
+
+/** Bound on normalisation rounds, so a crafted path cannot spin here. */
+const MAX_NORMALISE_ROUNDS = 8;
+
+/**
  * Normalised variants of a request path, for matching only.
  *
  * The original is always first, so that {@link stripMatchedPrefix} can preserve
@@ -80,43 +153,34 @@ const pathMatches = (prefix: string, path: string): boolean => {
  * different request to most upstreams).
  *
  * The variants defend against authorisation bypass: a guard on `/admin` must
- * also fire for `/%61dmin` (percent-decoded by every upstream), `//admin`
- * (separators collapsed by most servers), and `/admin;x` (path parameters
- * stripped by Tomcat and others).
+ * also fire for every spelling an upstream would resolve to `/admin`. Which
+ * spellings those are is not a list anyone can finish from memory, so this
+ * applies the rules repeatedly until the path stops changing rather than once in
+ * a fixed order. A single pass is what let `/;x/admin` through: stripping `;x`
+ * produced `//admin`, but the separator-collapsing step had already run, so
+ * nothing collapsed it. Verified in workerd, along with `/%252fadmin`, where one
+ * decode leaves `%2f` and only a second turns it into a separator.
+ *
+ * Every intermediate form is offered as a candidate, not just the fixed point:
+ * upstreams normalise to differing depths, and a guard has to fire for whichever
+ * one the upstream lands on.
  */
 const pathCandidates = (path: string): string[] => {
   const candidates: string[] = [path];
   const seen = new Set([path]);
 
-  const add = (p: string): void => {
-    if (!seen.has(p)) {
-      seen.add(p);
-      candidates.push(p);
+  let current = path;
+  for (let round = 0; round < MAX_NORMALISE_ROUNDS; round += 1) {
+    const next = normaliseOnce(current);
+    if (next === current) {
+      break;
     }
-  };
-
-  // Decode percent-escapes: `/%61dmin` → `/admin`
-  let decoded = path;
-  try {
-    decoded = decodeURI(path);
-    add(decoded);
-  } catch {
-    // Invalid escape sequence — leave it encoded, it cannot be a bypass.
+    if (!seen.has(next)) {
+      seen.add(next);
+      candidates.push(next);
+    }
+    current = next;
   }
-
-  // Collapse repeated separators: `//admin` → `/admin`
-  const collapsed = path.replace(/\/{2,}/g, '/');
-  add(collapsed);
-
-  // Strip path parameters: `/admin;x` → `/admin`
-  const noParams = path.replace(/;[^/]*/g, '');
-  add(noParams);
-
-  // Fully normalised: decode → collapse → strip, applied in sequence
-  let normalised = decoded;
-  normalised = normalised.replace(/\/{2,}/g, '/');
-  normalised = normalised.replace(/;[^/]*/g, '');
-  add(normalised);
 
   return candidates;
 };
