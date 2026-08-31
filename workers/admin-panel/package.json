@@ -1,0 +1,26 @@
+{
+  "name": "@jouska/admin-panel",
+  "version": "0.0.0",
+  "description": "Admin panel for jouska: static assets + config API on one Worker.",
+  "license": "MIT",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "vitest run",
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "migrate:local": "wrangler d1 migrations apply jouska-admin --local",
+    "migrate:remote": "wrangler d1 migrations apply jouska-admin --remote"
+  },
+  "dependencies": {
+    "hono": "^4.13.5",
+    "jouska": "*"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-pool-workers": "^0.22.0",
+    "@cloudflare/workers-types": "^5.20260826.1",
+    "vitest": "^4.1.11",
+    "wrangler": "^4.126.0"
+  }
+}

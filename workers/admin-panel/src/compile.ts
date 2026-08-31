@@ -1,0 +1,154 @@
+import { CONFIG_VERSION, configSchema, type ConfigInput, type RouteInput } from 'jouska';
+import { shadowWarnings, type ShadowWarning } from './shadow.js';
+
+/**
+ * Compiles the admin panel's rows into a route-table document.
+ *
+ * The document that lands in KV is the *input* shape, not the parsed output:
+ * table-wide `defaults` stay where the operator wrote them, so the stored
+ * document stays small and the proxy re-applies them on load. Validation
+ * against `configSchema` happens here — a document that cannot parse must
+ * never reach KV, where it would silently fall back to code config.
+ */
+
+/** One row of the `routes` table, already read and JSON-parsed. */
+export interface RouteRow {
+  readonly id: string;
+  readonly definition: unknown;
+  readonly enabled: boolean;
+  readonly position: number;
+}
+
+export interface CompileIssue {
+  /** Row the issue belongs to; undefined for table-level issues. */
+  readonly routeId: string | undefined;
+  /** Zod issue path, joined — e.g. `routes.2.upstream`. */
+  readonly path: string;
+  readonly message: string;
+}
+
+export type CompileResult =
+  | {
+      readonly ok: true;
+      /** Validated input document — what gets written to KV (plus `meta`). */
+      readonly document: ConfigInput;
+      readonly shadowWarnings: readonly ShadowWarning[];
+      /** Parsed output, for previews: defaults folded in, stated keys resolved. */
+      readonly parsed: ReturnType<typeof configSchema.parse>;
+    }
+  | { readonly ok: false; readonly issues: readonly CompileIssue[] };
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === 'object' && value !== null && !Array.isArray(value);
+
+/** Assembles one route definition, rejecting a conflicting `id` up front. */
+const assembleRoute = (
+  row: RouteRow,
+): { readonly route?: RouteInput; readonly issue?: CompileIssue } => {
+  if (!isRecord(row.definition)) {
+    return { issue: { routeId: row.id, path: 'definition', message: 'must be a JSON object' } };
+  }
+  const declared = row.definition['id'];
+  if (declared !== undefined && declared !== row.id) {
+    return {
+      issue: {
+        routeId: row.id,
+        path: 'definition.id',
+        message: `declares id "${String(declared)}" but the route is stored as "${row.id}" — the row id wins, so remove the field`,
+      },
+    };
+  }
+  // Path matching is plain prefix matching: `pathMatches` does startsWith, so
+  // '/*' is a literal '/*' prefix that almost nothing ever hits. The
+  // match-everything path is '/'.
+  const match = row.definition['match'];
+  if (isRecord(match) && match['path'] === '/*') {
+    return {
+      issue: {
+        routeId: row.id,
+        path: 'definition.match.path',
+        message: `"/*" is not a wildcard — paths match as plain prefixes, so "/*" only matches paths starting with "/*". Use "/" to match every path.`,
+      },
+    };
+  }
+  // `id` comes from the row: it is the merge key in resolveConfig and the
+  // rate-limit bucket prefix, so a definition could not be allowed to drift.
+  const { id: _ignored, ...rest } = row.definition;
+  return { route: { ...(rest as RouteInput), id: row.id } };
+};
+
+const compileIssuePath = (issuePath: readonly PropertyKey[]): string =>
+  issuePath.map(String).join('.');
+
+/**
+ * Maps a Zod issue onto the row it belongs to. Paths look like
+ * `routes.2.upstream`; index 2 is the third *enabled* route, which is the
+ * third row in the caller's ordering.
+ */
+const issueToCompile = (
+  issue: { path: readonly PropertyKey[]; message: string },
+  rows: readonly RouteRow[],
+): CompileIssue => {
+  if (issue.path[0] !== 'routes' || typeof issue.path[1] !== 'number') {
+    return {
+      routeId: undefined,
+      path: compileIssuePath(issue.path),
+      message: issue.message,
+    };
+  }
+  const row = rows[issue.path[1]];
+  return {
+    routeId: row?.id,
+    path: compileIssuePath(issue.path.slice(2)),
+    message: issue.message,
+  };
+};
+
+export const compileConfig = (rows: readonly RouteRow[], defaults: unknown): CompileResult => {
+  const routes: RouteInput[] = [];
+  const issues: CompileIssue[] = [];
+  for (const row of rows) {
+    // Disabled rows are dead config: they parse fine but must not ship to the
+    // proxy, where they would take live traffic.
+    if (!row.enabled) {
+      continue;
+    }
+    const assembled = assembleRoute(row);
+    if (assembled.issue !== undefined) {
+      issues.push(assembled.issue);
+    } else if (assembled.route !== undefined) {
+      routes.push(assembled.route);
+    }
+  }
+  if (!isRecord(defaults) && defaults !== undefined && defaults !== null) {
+    issues.push({
+      routeId: undefined,
+      path: 'defaults',
+      message: 'must be a JSON object',
+    });
+  }
+
+  const document: ConfigInput = {
+    version: CONFIG_VERSION,
+    routes,
+    ...(isRecord(defaults) ? { defaults: defaults as ConfigInput['defaults'] } : {}),
+  };
+
+  const result = configSchema.safeParse(document);
+  if (!result.success) {
+    return {
+      ok: false,
+      issues: [...issues, ...result.error.issues.map((issue) => issueToCompile(issue, rows))],
+    };
+  }
+  if (issues.length > 0) {
+    return { ok: false, issues };
+  }
+
+  return {
+    ok: true,
+    document,
+    parsed: result.data,
+    shadowWarnings: shadowWarnings(result.data),
+  };
+};

@@ -637,7 +637,8 @@ export const configSchema = z
 
 export type Config = {
   version: typeof CONFIG_VERSION;
-  meta?: z.output<typeof meta>;
+  /** Declared optional-undefined so a consumer may spread-conditionally under exactOptionalPropertyTypes. */
+  meta?: z.output<typeof meta> | undefined;
   routes: [RouteOutput, ...RouteOutput[]];
 };
 export type Route = RouteOutput;
