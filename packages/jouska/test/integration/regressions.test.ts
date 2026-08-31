@@ -440,6 +440,47 @@ describe('HTML rewriting coverage', () => {
     });
     expect(out).toContain('https://o.test/b.png');
   });
+
+  /**
+   * Rewriting a `<style>` node requires accumulating it, because a `url(...)` can
+   * straddle two chunks. Accumulating without a bound is the whole-body
+   * buffering this module opens by ruling out — verified in workerd, a 4.2MB
+   * node was held complete in a JS string, with nothing to stop it being 60MB
+   * inside a 128MB isolate.
+   *
+   * Past the cap the node is emitted unrewritten. What must not happen is losing
+   * any of it: a dropped fragment would corrupt the stylesheet silently, which
+   * is worse than not rewriting it.
+   */
+  describe('oversized style nodes', () => {
+    const oversizedCss = (bytes: number) => `a{color:red}`.repeat(Math.ceil(bytes / 12));
+
+    it('emits an oversized style node whole, without rewriting it', async () => {
+      const css = `${oversizedCss(300 * 1024)}b{background:url(https://o.test/b.png)}`;
+      const out = await render(`<html><style>${css}</style></html>`);
+      // Every byte survives.
+      expect(out).toContain(css);
+      // And the tradeoff is the documented one: the url() is left alone.
+      expect(out).toContain('url(https://o.test/b.png)');
+    });
+
+    it('still rewrites a style node under the cap', async () => {
+      // The cap must not be satisfied by giving up on everything.
+      const css = `${oversizedCss(100 * 1024)}b{background:url(https://o.test/b.png)}`;
+      const out = await render(`<html><style>${css}</style></html>`);
+      expect(out).toContain('url(https://p.dev/b.png)');
+    });
+
+    it('recovers for the next node after one overflows', async () => {
+      // The overflow flag is per node; a following style block must be rewritten
+      // normally rather than inheriting the giving-up state.
+      const out = await render(
+        `<html><style>${oversizedCss(300 * 1024)}</style>` +
+          `<style>b{background:url(https://o.test/small.png)}</style></html>`,
+      );
+      expect(out).toContain('url(https://p.dev/small.png)');
+    });
+  });
 });
 
 describe('deadlines and retries', () => {

@@ -510,6 +510,23 @@ export const rewriteMetaRefresh = (
     },
   );
 
+/**
+ * Cap on the text of one `<style>` node held in memory while waiting to rewrite
+ * it as a whole.
+ *
+ * A `url(...)` can straddle two chunks, so the node has to be accumulated before
+ * it can be rewritten — but accumulating without a bound is exactly the
+ * whole-body buffering this file opens by ruling out. Verified in workerd: a
+ * single 4.2MB `<style>` node was held complete in a JS string, and nothing
+ * stopped it being 60MB inside a 128MB isolate.
+ *
+ * 256KB is far above real inline stylesheets (typically well under 50KB) and far
+ * below the isolate limit. Past it the node is emitted unrewritten: losing a
+ * background image on a pathological page is a visible, debuggable miss, whereas
+ * running the isolate out of memory takes down every request it was serving.
+ */
+const MAX_STYLE_BUFFER = 256 * 1024;
+
 export interface HtmlRewriteOptions {
   /** Hosts belonging to the upstream, including sibling subdomains. */
   isUpstreamHost: (host: string) => boolean;
@@ -536,6 +553,9 @@ export const htmlRewriter = ({
     rewriteUrlValue(value, isUpstreamHost, proxyHost, base);
   // Accumulates one `<style>` text node across however many chunks it arrives in.
   let styleBuffer = '';
+  // Set once a node has outgrown MAX_STYLE_BUFFER, so its remaining chunks pass
+  // straight through instead of being accumulated.
+  let styleOverflowed = false;
 
   const rewriter = new HTMLRewriter().on('*', {
     element(element) {
@@ -598,8 +618,32 @@ export const htmlRewriter = ({
       // streamed, and a `url(...)` may span two of them. Accumulate until
       // `lastInTextNode`, then rewrite once and emit — the alternative rewrote
       // each fragment separately and missed anything that straddled a boundary.
+      //
+      // Accumulation is capped: see MAX_STYLE_BUFFER. Past the cap the node is
+      // emitted unrewritten rather than held, because holding it is the one
+      // failure this file exists to avoid.
       text(chunk) {
+        if (styleOverflowed) {
+          // Already given up on this node; let its remaining text through as is.
+          if (chunk.lastInTextNode) {
+            styleOverflowed = false;
+          }
+          return;
+        }
+
         styleBuffer += chunk.text;
+
+        if (styleBuffer.length > MAX_STYLE_BUFFER) {
+          // Emit what was withheld, unrewritten, and stop buffering this node.
+          // Rewriting here would allocate a second copy of an already oversized
+          // string, which is the opposite of what the cap is for.
+          const held = styleBuffer;
+          styleBuffer = '';
+          styleOverflowed = !chunk.lastInTextNode;
+          chunk.replace(held, { html: true });
+          return;
+        }
+
         if (!chunk.lastInTextNode) {
           // Remove the fragment; the whole node is re-emitted on the last chunk.
           chunk.remove();
