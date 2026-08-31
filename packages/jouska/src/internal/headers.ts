@@ -196,9 +196,19 @@ export const rewriteResponseHeaders = ({
  * Copies headers, dropping the ones that describe a single connection.
  *
  * Also drops `content-encoding` and, with it, `content-length`. Requests go out
- * without `accept-encoding`, so a body should arrive uncompressed; an upstream
- * that declares an encoding anyway is describing something the client is not
- * receiving, and a client that believes it would fail to decode the response.
+ * without `accept-encoding`, and the Workers runtime decompresses what it does
+ * understand and removes the header itself, so by the time a response reaches
+ * here an encoding label should not have survived.
+ *
+ * The limit of that reasoning, recorded rather than papered over: if one does
+ * survive, the bytes are relayed as they arrived and the label is removed, so a
+ * client is handed encoded bytes with nothing saying so. Verified only with an
+ * injected `fetchImpl` — brotli-labelled bytes came back byte-identical and
+ * unlabelled — which is reachable through the `fetchImpl` option and, in
+ * principle, through an encoding the runtime passes through verbatim. It has not
+ * been reproduced against a real origin, so the fix is not guessed at here:
+ * relaying the label instead would be wrong whenever the upstream declared an
+ * encoding it had not applied, which is the case this drop was written for.
  */
 export const stripHopByHop = (headers: Headers): Headers => {
   const out = new Headers(headers);

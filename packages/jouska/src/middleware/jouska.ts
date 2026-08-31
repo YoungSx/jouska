@@ -52,6 +52,13 @@ export interface JouskaOptions {
    *
    * Wrap the body in `ctx.waitUntil` if it does I/O, so the response is not held
    * waiting on it.
+   *
+   * Not called for a CORS preflight that `hono/cors` answers itself: nothing was
+   * proxied, so there is no upstream, status or duration to report. Verified — a
+   * preflight against a route with `cors` set produces a 204 and no event. Note
+   * the asymmetry with rate limiting, which can be told to count preflights via
+   * `countPreflight`; if you need them in your metrics, count them at the app
+   * level rather than expecting them here.
    */
   onProxy?: (event: ProxyEvent) => void;
 }
