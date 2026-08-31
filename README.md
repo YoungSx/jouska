@@ -568,18 +568,24 @@ the published document).
 
 ### Deploy
 
-The panel needs two real resource IDs. Create them once, then fill in
-`workers/admin-panel/wrangler.jsonc`:
+The committed `wrangler.jsonc` files are account-agnostic templates — D1 and
+KV ids differ per Cloudflare account, so the repo ships placeholders and one
+command wires in the real ones. Find-or-create D1 `jouska-admin` and KV
+`CONFIG_KV`, patch both Workers' configs, idempotent on re-run:
 
 ```sh
-wrangler d1 create jouska-admin   # id → "database_id"   (REPLACE_WITH_REAL_D1_ID)
-wrangler kv namespace create CONFIG_KV   # id → "id"     (REPLACE_WITH_REAL_KV_ID)
+npx wrangler login
+npm run cf:setup
 ```
 
-The CI `Deploy` workflow (on `v*` tags) deploys the panel alongside the proxy:
-D1 migrations run first, then the Worker, then a `/api/health` probe must
-answer `{"ok":true}` on the deployed workers.dev URL before the job passes.
-Local development needs the same two steps against local simulators:
+The CI `Deploy` workflow (on `v*` tags) runs the same provisioning step before
+migrating and deploying the panel, then the proxy — first deploy creates the
+resources, later deploys reuse them. Only the two Cloudflare secrets
+(`CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`) are needed; the patched ids
+live on the ephemeral runner, never in git. D1 migrations run first, then the
+Worker, then a `/api/health` probe must answer `{"ok":true}` on the deployed
+workers.dev URL before the job passes. Local development works against local
+simulators without any of this:
 
 ```sh
 npx wrangler d1 migrations apply jouska-admin --local -c workers/admin-panel/wrangler.jsonc

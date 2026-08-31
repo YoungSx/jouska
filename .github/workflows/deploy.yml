@@ -15,9 +15,9 @@ permissions:
   contents: read
 
 jobs:
-  deploy-worker:
+  deploy:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
 
@@ -32,32 +32,16 @@ jobs:
       # exports 指向 ./dist/index.js——wrangler 打包前必须先产出 dist。
       - run: npm run build -w jouska
 
-      # 只部署参考 Worker；库本身暂不发包。
-      - uses: cloudflare/wrangler-action@v4
-        with:
-          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          workingDirectory: workers/reverse-proxy
-          command: deploy
-
-  deploy-admin-panel:
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    # 面板与反代互相独立（面板只写 KV，代理只读 KV），可并行部署。
-    steps:
-      - uses: actions/checkout@v7
-
-      - uses: actions/setup-node@v7
-        with:
-          node-version: 24
-          cache: npm
-
-      - run: npm ci
-
-      - run: npm run build -w jouska
+      # 找到或创建 D1/KV，把真实 id 写进 wrangler.jsonc（runner 是一次性的，
+      # 不会污染仓库）。顺序执行而非并行：首次部署时两个 job 赛跑创建同名
+      # D1 会让其中一个失败。CI 只跑仓库，个人 id 永远不落进 git。
+      - name: Provision D1/KV and wire ids
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: npm run cf:setup
 
       # 迁移先于部署：新代码上线时它依赖的表必须已存在。
-      # wrangler-action 只在其自身 command 里注入凭据，独立 step 需自带 env。
       - name: Apply D1 migrations
         working-directory: workers/admin-panel
         env:
@@ -65,8 +49,7 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: npx wrangler d1 migrations apply jouska-admin --remote
 
-      # 不走 wrangler-action：部署后要从输出里抓 workers.dev URL 做健康检查。
-      - name: Deploy and health-check
+      - name: Deploy admin panel and health-check
         working-directory: workers/admin-panel
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -89,3 +72,11 @@ jobs:
           done
           echo "health check failed at $url/api/health" >&2
           exit 1
+
+      # 面板先上（写 KV），反代后上（读 KV）——顺序即依赖方向。
+      - name: Deploy reverse proxy
+        working-directory: workers/reverse-proxy
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: npx wrangler deploy
