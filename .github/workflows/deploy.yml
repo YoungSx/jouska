@@ -39,3 +39,53 @@ jobs:
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           workingDirectory: workers/reverse-proxy
           command: deploy
+
+  deploy-admin-panel:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    # 面板与反代互相独立（面板只写 KV，代理只读 KV），可并行部署。
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+
+      - run: npm ci
+
+      - run: npm run build -w jouska
+
+      # 迁移先于部署：新代码上线时它依赖的表必须已存在。
+      # wrangler-action 只在其自身 command 里注入凭据，独立 step 需自带 env。
+      - name: Apply D1 migrations
+        working-directory: workers/admin-panel
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: npx wrangler d1 migrations apply jouska-admin --remote
+
+      # 不走 wrangler-action：部署后要从输出里抓 workers.dev URL 做健康检查。
+      - name: Deploy and health-check
+        working-directory: workers/admin-panel
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          out=$(npx wrangler deploy 2>&1)
+          echo "$out"
+          url=$(echo "$out" | grep -oE 'https://[a-zA-Z0-9.-]+\.workers\.dev' | head -1)
+          if [ -z "$url" ]; then
+            echo "deploy output contained no workers.dev URL" >&2
+            exit 1
+          fi
+          # 上传后 workerd 需要几秒才对新版本应答，重试直到 health 通或超时。
+          for _ in 1 2 3 4 5 6; do
+            if curl -fsS -m 10 "$url/api/health" | grep -q '"ok":true'; then
+              echo "admin panel healthy at $url"
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "health check failed at $url/api/health" >&2
+          exit 1
