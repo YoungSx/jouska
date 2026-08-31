@@ -557,6 +557,51 @@ These are Workers limits, not choices, and they shape the architecture:
   nothing calls `await response.text()` on a proxied body.
 - **CPU time limits.** `timeoutMs` is capped at 30s to stay inside them.
 
+## Admin panel
+
+`workers/admin-panel` is the operator UI for the remote route table: a Hono API
+and a no-build vanilla SPA deployed as one Worker with static assets. It
+supports multiple users out of the box — the first caller to `/api/auth/bootstrap`
+becomes the initial admin, further users are created by an admin — and stays
+inside the free tier (D1 for sessions, users and the audit log; one KV key for
+the published document).
+
+### Deploy
+
+The panel needs two real resource IDs. Create them once, then fill in
+`workers/admin-panel/wrangler.jsonc`:
+
+```sh
+wrangler d1 create jouska-admin   # id → "database_id"   (REPLACE_WITH_REAL_D1_ID)
+wrangler kv namespace create CONFIG_KV   # id → "id"     (REPLACE_WITH_REAL_KV_ID)
+```
+
+The CI `Deploy` workflow (on `v*` tags) deploys the panel alongside the proxy:
+D1 migrations run first, then the Worker, then a `/api/health` probe must
+answer `{"ok":true}` on the deployed workers.dev URL before the job passes.
+Local development needs the same two steps against local simulators:
+
+```sh
+npx wrangler d1 migrations apply jouska-admin --local -c workers/admin-panel/wrangler.jsonc
+npx wrangler dev -c workers/admin-panel/wrangler.jsonc
+```
+
+### Architecture notes
+
+- **Publish is the only KV write.** Editing routes or defaults only changes
+  D1; preview compiles the full document and reports issues, shadowed routes
+  and dangerous switches before anything reaches the proxy. Publishing with
+  dangerous switches requires an explicit `confirm`.
+- **The proxy keeps winning merges.** The panel writes the same document shape
+  `resolveConfig` reads, so `merge: 'byId'` with a code table continues to
+  work: code wins ties, git stays the reviewable fallback.
+- **Sessions are D1 rows, not JWTs.** Revocation is instant (logout deletes the
+  row), passwords are PBKDF2 with 30k iterations — sized for the Workers CPU
+  budget, verified by a timing test — and login locks after five consecutive
+  failures.
+- **CSRF is a server-side same-origin check** on every mutation; the SPA is
+  same-origin by construction and needs no tokens.
+
 ## Development
 
 ```sh
