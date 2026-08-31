@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   htmlRewriter,
+  resolveCharset,
   scan,
   shouldRewrite,
   textReplaceStream,
@@ -110,6 +111,47 @@ describe('shouldRewrite', () => {
   });
   it('rejects a missing content type', () => {
     expect(shouldRewrite(null, ['text/html'])).toBe(false);
+  });
+});
+
+describe('resolveCharset', () => {
+  it('uses the fallback when the declared label cannot be decoded', () => {
+    // The case the option is named and documented for. It used to return
+    // undefined here, because `declared ?? fallback` short-circuits on any
+    // declared value however unusable — so the option did nothing in exactly the
+    // situation its docstring described. `iso-2022-kr` is mapped to Replacement
+    // by the encoding spec, so TextDecoder refuses it outright.
+    expect(resolveCharset('x-nonsense', 'gbk')).toEqual({ charset: 'gbk', transcoded: true });
+    expect(resolveCharset('iso-2022-kr', 'gbk')).toEqual({ charset: 'gbk', transcoded: true });
+  });
+
+  it('prefers a usable declared label over the fallback', () => {
+    expect(resolveCharset('big5', 'gbk')).toEqual({ charset: 'big5', transcoded: true });
+  });
+
+  it('uses the fallback when nothing is declared', () => {
+    expect(resolveCharset(undefined, 'gbk')).toEqual({ charset: 'gbk', transcoded: true });
+  });
+
+  it('assumes UTF-8 when neither is given', () => {
+    expect(resolveCharset(undefined, undefined)).toEqual({ charset: 'utf-8', transcoded: false });
+  });
+
+  it('does not transcode a body already labelled UTF-8', () => {
+    expect(resolveCharset('utf-8', undefined)).toEqual({ charset: 'utf-8', transcoded: false });
+  });
+
+  it('declines when neither the declared label nor the fallback is usable', () => {
+    // Passing the bytes through untouched is the only safe answer; assuming
+    // UTF-8 would corrupt every character while the header kept the old label.
+    expect(resolveCharset('x-nonsense', 'also-nonsense')).toBeUndefined();
+    expect(resolveCharset('x-nonsense', undefined)).toBeUndefined();
+  });
+
+  it('declines when nothing is declared and the fallback is unusable', () => {
+    // Not a silent downgrade to UTF-8: the operator asked for a specific
+    // charset, and quietly substituting another would corrupt the body.
+    expect(resolveCharset(undefined, 'x-nonsense')).toBeUndefined();
   });
 });
 

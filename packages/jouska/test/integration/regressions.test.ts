@@ -293,6 +293,27 @@ describe('non-UTF-8 bodies', () => {
     const res = await app.request('https://p.dev/x');
     expect(new Uint8Array(await res.arrayBuffer())).toEqual(gb2312);
   });
+
+  it('uses fallbackCharset when the upstream declares one it cannot decode', async () => {
+    // The same body and the same unusable label as above, but with the option
+    // set. Before the fix this relayed the undecoded bytes: `declared ??
+    // fallback` short-circuited on the unusable label, so the option had no
+    // effect in the one case its docstring described.
+    const app = appWith(
+      [
+        {
+          match: { path: '/' },
+          upstream: 'o.test',
+          bodyRewrite: { fallbackCharset: 'gb2312' },
+        },
+      ],
+      async () =>
+        new Response(gb2312, { headers: { 'content-type': 'text/html; charset=x-nonsense' } }),
+    );
+    const res = await app.request('https://p.dev/x');
+    expect(await res.text()).toBe('<p>你好</p>');
+    expect(res.headers.get('content-type')).toBe('text/html; charset=utf-8');
+  });
 });
 
 describe('cookies are only rescoped when they belong to the upstream', () => {

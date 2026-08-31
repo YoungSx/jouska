@@ -224,10 +224,13 @@ const bodyRewrite = z.object({
    */
   rewriteStyles: z.boolean().default(true),
   /**
-   * Charset to assume when the upstream declares one this runtime cannot
-   * decode. Left undefined the body passes through untouched rather than being
-   * mangled — verified against workerd, decoding GB2312 bytes as UTF-8 turns
-   * every multi-byte character into U+FFFD.
+   * Charset to assume when the upstream declares nothing, or declares a label
+   * this runtime cannot decode. Left undefined, such a body passes through
+   * untouched rather than being mangled — verified against workerd, decoding
+   * GB2312 bytes as UTF-8 turns every multi-byte character into U+FFFD.
+   *
+   * A fallback this runtime cannot decode either leaves the body untouched too,
+   * rather than silently standing in UTF-8 for the charset that was asked for.
    */
   fallbackCharset: z.string().min(1).optional(),
 });

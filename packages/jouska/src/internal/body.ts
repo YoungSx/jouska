@@ -369,23 +369,9 @@ const UTF8_LABELS = new Set([
 ]);
 
 /**
- * Decides how to decode a body, or declines to touch it.
- *
- * Returns the charset to decode with and whether the response's `content-type`
- * must then be corrected to UTF-8, or `undefined` when the encoding is unknown to
- * this runtime — in which case passing the bytes through untouched is the only
- * safe answer, since decoding them wrongly would corrupt every character.
+ * Resolves one charset label, or `undefined` when this runtime cannot decode it.
  */
-export const resolveCharset = (
-  declared: string | undefined,
-  fallback: string | undefined,
-): { charset: string; transcoded: boolean } | undefined => {
-  const candidate = declared ?? fallback;
-  if (candidate === undefined) {
-    // Nothing declared: UTF-8 is the only defensible assumption for text, and it
-    // is what the previous behaviour did for every body.
-    return { charset: 'utf-8', transcoded: false };
-  }
+const usableCharset = (candidate: string): { charset: string; transcoded: boolean } | undefined => {
   if (UTF8_LABELS.has(candidate)) {
     return { charset: candidate, transcoded: false };
   }
@@ -395,6 +381,46 @@ export const resolveCharset = (
   // Anything else this runtime can decode is re-encoded as UTF-8 on the way out,
   // so the declared charset has to be corrected.
   return { charset: candidate, transcoded: true };
+};
+
+/**
+ * Decides how to decode a body, or declines to touch it.
+ *
+ * Returns the charset to decode with and whether the response's `content-type`
+ * must then be corrected to UTF-8, or `undefined` when no usable encoding is
+ * available — in which case passing the bytes through untouched is the only safe
+ * answer, since decoding them wrongly would corrupt every character.
+ *
+ * `fallback` applies in both cases it is named for: an upstream that declares
+ * nothing, and one that declares a label this runtime cannot decode. It
+ * previously covered only the first, because `declared ?? fallback` short-circuits
+ * on any declared value however unusable — so the option documented as covering
+ * "an upstream that declares one this runtime cannot decode" did nothing in
+ * exactly that case. Verified in workerd: `resolveCharset('x-nonsense', 'gbk')`
+ * returned `undefined` and the body was relayed as undecoded bytes.
+ *
+ * An unusable fallback still yields `undefined` rather than quietly assuming
+ * UTF-8: substituting a charset nobody asked for would corrupt the body while
+ * the response kept claiming the original label.
+ */
+export const resolveCharset = (
+  declared: string | undefined,
+  fallback: string | undefined,
+): { charset: string; transcoded: boolean } | undefined => {
+  if (declared === undefined) {
+    if (fallback === undefined) {
+      // Nothing declared and nothing configured: UTF-8 is the only defensible
+      // assumption for text, and it is what every body used to get.
+      return { charset: 'utf-8', transcoded: false };
+    }
+    return usableCharset(fallback);
+  }
+  const fromDeclared = usableCharset(declared);
+  if (fromDeclared !== undefined) {
+    return fromDeclared;
+  }
+  // The declared label is unusable. This is what the fallback exists for.
+  return fallback === undefined ? undefined : usableCharset(fallback);
 };
 
 /**
