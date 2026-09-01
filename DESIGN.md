@@ -185,12 +185,12 @@ components:
 单列纵向流，`flex min-h-dvh flex-col` 夹住内容：
 
 - **容器**：`max-w-6xl`（72rem）居中，水平内边距统一 `px-4`（16px）。登录页收窄到 `max-w-sm`（24rem）居中。
-- **顶栏**：sticky top-0，`bg-background/95` + `backdrop-blur` + 底边框，z-30。品牌（左）+ 横滚导航（中，`nav-scroll` 右缘淡出提示还有未入屏项，滚到头即收）+ 主题切换与账号菜单（右）。高度由 `py-2.5` 决定，内容单行。
+- **顶栏**：sticky top-0，`bg-background/95` + `backdrop-blur` + 底边框，z-30。品牌（左）+ 导航（中，见「响应式」）+ 主题切换与账号菜单（右）。高度由 `py-2.5` 决定，内容单行。
 - **发布栏**：sticky bottom-0，同样的半透明 + blur + 顶边框，z-20。左：状态图标 + 状态句 + （非 clean 时）线上 revision Badge；下挂一行 12px muted-foreground 细节。右：查看按钮（ghost sm）+ 发布按钮（sm）。sticky 而非 fixed——fixed 会盖住最后一行，而这个面板的最后一行常常正是刚改的那条路由。
 - **主体**：`pt-6 pb-8`（24px / 32px），页面内区块之间 `gap-6`（24px），Card 内元素 `gap-2`/`gap-1.5`（8px / 6px）。
 - **表格**：容器内横滚（`-mx-4 overflow-x-auto px-4 sm:mx-0`），窄屏不断行——这些值要逐字符核对，换行会读错。列宽用固定 `w-*` 约束序号、状态、时间、操作列。
 - **密度**：紧凑。空隙档位实测分布：gap-2（8px）最常用，其次 gap-1.5（6px）、gap-4（16px）；危险块、JSON 块内 `p-3`（12px）。
-- **响应式**：`sm:` 断点之上发布栏与顶栏转单行，之下转两行（图标+文案 / 按钮）；导航在窄屏横滚而不是换行或折叠。
+- **响应式**：`sm:` 断点之上发布栏与顶栏转单行，之下转两行（图标+文案 / 按钮）。导航分两路：`sm:` 及以上平铺 Tabs 横滚（`nav-scroll` 右缘淡出提示还有未入屏项，滚到头即收）；窄屏收进一个官方 DropdownMenu——触发钮显示菜单图标与当前页名，菜单项是 CheckboxItem，当前页打勾（390px 视口下六个导航项挤进一条横滚缝，「现在在哪」不可见，故折叠）。两路指向同一份导航数据与同一个状态，不会漂移成两套导航。
 
 ## Elevation & Depth
 
@@ -264,7 +264,7 @@ components:
 
 - 顶栏 TabsList 承载路由/域名/发布/审计/用户/历史，顺序即优先级。选中态由 nova Tabs 提供（accent 底）。
 - 未实现功能的导航项照样可达，挂 10px「待开发」secondary Badge，落地页是一张说明卡而不是假表单——空壳按钮比没有按钮更让人以为坏了。
-- 窄屏横滚 + `nav-scroll` 右缘淡出（mask-image 渐隐，不遮点击；JS 置位 `scroll-tail`，滚到头即收）。
+- 窄屏收进官方 DropdownMenu：ghost 触发钮（菜单图标 + 当前页名）拉 CheckboxItem 菜单，当前页打勾；菜单项加高触控目标（`py-3`）。`sm:` 及以上回到平铺 Tabs + `nav-scroll` 右缘淡出（mask-image 渐隐，不遮点击；JS 置位 `scroll-tail`，滚到头即收）。
 - 账号：ghost 按钮（等宽账号名 + 角色 Badge）拉下拉菜单，菜单含等宽账号名与 destructive 退出项。
 - skip-link：`sr-only`，focus 时固定于左上角的 primary 实底块。
 

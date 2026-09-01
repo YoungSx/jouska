@@ -1,5 +1,5 @@
 import * as React from 'react';
-import { LogOutIcon, RefreshCwIcon, Trash2Icon } from 'lucide-react';
+import { LogOutIcon, MenuIcon, RefreshCwIcon, Trash2Icon } from 'lucide-react';
 import { toast } from 'sonner';
 import { Toaster } from '@/components/ui/sonner';
 import { Badge } from '@/components/ui/badge';
@@ -15,6 +15,7 @@ import {
 } from '@/components/ui/dialog';
 import {
   DropdownMenu,
+  DropdownMenuCheckboxItem,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuLabel,
@@ -303,18 +304,18 @@ const App = () => {
       </a>
 
       <header className="bg-background/95 sticky top-0 z-30 border-b backdrop-blur">
-        <div className="mx-auto flex max-w-6xl items-center gap-4 px-4 py-2.5">
+        <div className="mx-auto flex max-w-6xl items-center gap-2.5 px-4 py-2.5 sm:gap-4">
           <div className="shrink-0">
             <div className="text-sm leading-tight font-semibold tracking-tight">{t.app.name}</div>
             <div className="text-muted-foreground text-xs leading-tight">{t.app.subtitle}</div>
           </div>
 
-          {/* 窄屏下放不下的导航项仍可达：容器可横滚，右缘的淡出提示还有更多。
-              scroll-tail 由 onScroll 置位/复位——滚到头就收掉淡出，不撒谎。 */}
+          {/* 桌面：导航全部平铺（Tabs）。窄屏：收进一个官方 DropdownMenu，当前页打勾。
+              两条路指向同一份 NAV_ITEMS 与同一个 view 状态，不会漂移成两套导航。 */}
           <nav
             ref={navRef}
             onScroll={syncNavTail}
-            className="nav-scroll min-w-0 flex-1"
+            className="nav-scroll hidden min-w-0 flex-1 sm:block"
             aria-label={t.app.title}
           >
             <Tabs value={view} onValueChange={(value) => setView(value as View)}>
@@ -332,6 +333,38 @@ const App = () => {
               </TabsList>
             </Tabs>
           </nav>
+          <nav className="min-w-0 flex-1 sm:hidden" aria-label={t.app.title}>
+            <DropdownMenu>
+              <DropdownMenuTrigger
+                render={
+                  <Button variant="ghost" size="sm" aria-label={t.nav.menu}>
+                    <MenuIcon />
+                    {NAV_ITEMS.find((item) => item.id === view)?.label ?? ''}
+                  </Button>
+                }
+              />
+              <DropdownMenuContent align="start" className="min-w-44">
+                {NAV_ITEMS.map((item) => (
+                  <DropdownMenuCheckboxItem
+                    key={item.id}
+                    checked={item.id === view}
+                    onCheckedChange={() => setView(item.id)}
+                    // Base UI 对 CheckboxItem 的默认是点了留在菜单里（多选语义）；
+                    // 导航是单选，点了就得走。
+                    closeOnClick
+                    className="py-3"
+                  >
+                    {item.label}
+                    {item.planned === true && (
+                      <Badge variant="secondary" className="ml-1.5 px-1.5 py-0 text-[10px]">
+                        {t.planned.badge}
+                      </Badge>
+                    )}
+                  </DropdownMenuCheckboxItem>
+                ))}
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </nav>
 
           <div className="flex shrink-0 items-center gap-1.5">
             <ThemeToggle />
@@ -339,7 +372,9 @@ const App = () => {
               <DropdownMenuTrigger
                 render={
                   <Button variant="ghost" size="sm" aria-label={t.account.menu}>
-                    <span className="max-w-32 truncate font-mono text-xs">{user.subject}</span>
+                    <span className="max-w-16 truncate font-mono text-xs sm:max-w-32">
+                      {user.subject}
+                    </span>
                     <Badge variant={isAdmin ? 'default' : 'secondary'}>
                       {isAdmin ? t.account.admin : t.account.viewer}
                     </Badge>
