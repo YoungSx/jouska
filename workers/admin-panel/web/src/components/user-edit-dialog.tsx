@@ -158,7 +158,10 @@ export const UserEditDialog = ({ target, selfSubject, onClose, onSaved }: UserEd
         <div className="flex flex-col gap-4">
           <Field>
             <FieldLabel htmlFor="user-edit-role">{t.users.editRole}</FieldLabel>
-            <Select value={role} onValueChange={(value) => setRole(value === 'admin' ? 'admin' : 'viewer')}>
+            <Select
+              value={role}
+              onValueChange={(value) => setRole(value === 'admin' ? 'admin' : 'viewer')}
+            >
               <SelectTrigger id="user-edit-role" disabled={busy} className="w-full">
                 <SelectValue />
               </SelectTrigger>
@@ -169,7 +172,6 @@ export const UserEditDialog = ({ target, selfSubject, onClose, onSaved }: UserEd
             </Select>
             <FieldDescription>{t.users.editRoleHint}</FieldDescription>
           </Field>
-
 
           {isSelf ? (
             // 自己停用自己没有出口 —— 服务端守卫会挡，但界面不该先把人领进死胡同。
@@ -190,7 +192,12 @@ export const UserEditDialog = ({ target, selfSubject, onClose, onSaved }: UserEd
                 <span className="text-sm font-medium">{t.users.status.locked}</span>
                 <span className="text-muted-foreground text-xs">{t.users.unlockHint}</span>
               </span>
-              <Button variant="outline" size="sm" disabled={unlocking || busy} onClick={() => void unlock()}>
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={unlocking || busy}
+                onClick={() => void unlock()}
+              >
                 {unlocking ? <Spinner /> : <UnlockIcon />}
                 {t.users.unlock}
               </Button>

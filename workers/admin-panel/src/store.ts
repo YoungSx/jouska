@@ -310,7 +310,9 @@ export const insertUser = async (
 ): Promise<number | undefined> => {
   try {
     const res = await db
-      .prepare('INSERT INTO users (subject, email, role, password, created_at) VALUES (?, ?, ?, ?, ?)')
+      .prepare(
+        'INSERT INTO users (subject, email, role, password, created_at) VALUES (?, ?, ?, ?, ?)',
+      )
       .bind(args.subject, args.email ?? null, args.role, args.passwordHash, nowSeconds())
       .run();
     return res.meta.last_row_id;
@@ -418,7 +420,9 @@ export const changePasswordAndRevokeOthers = async (
 ): Promise<number> => {
   const [, revoked] = await db.batch([
     db
-      .prepare('UPDATE users SET password = ?, failed_attempts = 0, locked_until = NULL WHERE id = ?')
+      .prepare(
+        'UPDATE users SET password = ?, failed_attempts = 0, locked_until = NULL WHERE id = ?',
+      )
       .bind(args.passwordHash, args.userId),
     db
       .prepare('DELETE FROM sessions WHERE user_id = ? AND token_hash != ?')

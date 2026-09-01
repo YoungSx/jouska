@@ -94,7 +94,9 @@ const statusBadge = (user: UserEntry) => {
   if (user.lockedUntil !== null && user.lockedUntil * 1000 > Date.now()) {
     return (
       <Badge variant="destructive">
-        <span title={t.users.status.lockedUntil(timeExact(user.lockedUntil))}>{t.users.status.locked}</span>
+        <span title={t.users.status.lockedUntil(timeExact(user.lockedUntil))}>
+          {t.users.status.locked}
+        </span>
       </Badge>
     );
   }
@@ -330,7 +332,11 @@ const UsersTable = ({ users, selfSubject, onEdit, onDelete }: UsersTableProps) =
                 <DropdownMenu>
                   <DropdownMenuTrigger
                     render={
-                      <Button variant="ghost" size="icon-sm" aria-label={t.users.rowMenu(user.subject)}>
+                      <Button
+                        variant="ghost"
+                        size="icon-sm"
+                        aria-label={t.users.rowMenu(user.subject)}
+                      >
                         <MoreHorizontalIcon />
                       </Button>
                     }

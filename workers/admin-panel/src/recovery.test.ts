@@ -362,11 +362,13 @@ describe('the endpoint', () => {
     );
     await openWindow({ token: TOKEN, expiresAt: nowSeconds() + 600 });
     expect(
-      (await call('POST', '/api/auth/recover', {
-        token: TOKEN,
-        subject: 'admin1',
-        password: NEW_PASSWORD,
-      })).status,
+      (
+        await call('POST', '/api/auth/recover', {
+          token: TOKEN,
+          subject: 'admin1',
+          password: NEW_PASSWORD,
+        })
+      ).status,
     ).toBe(200);
 
     expect(await login(OLD_PASSWORD)).toBe(401);
