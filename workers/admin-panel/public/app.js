@@ -266,11 +266,19 @@ $('#editorSave').addEventListener('click', async () => {
 
 /* ---------- 预览 + 发布 ---------- */
 
-const loadPreview = async () => {
+/** keepMsg：发布成功后刷新预览时保留刚写的提示，否则它会被清空。 */
+const loadPreview = async (keepMsg = false) => {
   const box = $('#previewBody');
   const msg = $('#publishMsg');
   try {
     const p = await api('GET', '/api/preview');
+    // 空表不是故障，是还没开始：刚部署完就说"配置有错"只会吓人。
+    if (p.empty === true) {
+      box.innerHTML = `<p class="muted">还没有路由。到「路由」页新建一条，再回来发布给反代。</p>`;
+      $('#publishBtn').disabled = true;
+      if (!keepMsg) setMsg(msg, '');
+      return;
+    }
     if (!p.ok) {
       box.innerHTML =
         `<p>当前配置有错，不能发布：</p>` +
@@ -315,30 +323,46 @@ const loadPreview = async () => {
     html += `<details><summary>生成的文档（写入 KV 的就是它）</summary><pre>${esc(JSON.stringify(p.document, null, 2))}</pre></details>`;
     box.innerHTML = html;
     $('#publishBtn').disabled = false;
-    setMsg(msg, '');
+    if (!keepMsg) setMsg(msg, '');
   } catch (err) {
     setMsg(msg, `预览失败：${err.message}`, 'err');
   }
 };
 
-$('#publishBtn').addEventListener('click', async () => {
+/** 发布一次；confirm 为 true 时表示用户已在弹窗里认过危险开关。 */
+const publish = async (confirmed) => {
   const msg = $('#publishMsg');
   const note = $('#publishNote').value.trim();
   try {
     const res = await api('POST', '/api/publish', {
       ...(note === '' ? {} : { note }),
-      confirm: true,
+      ...(confirmed ? { confirm: true } : {}),
     });
     setMsg(msg, `已发布，revision ${res.revision}`, 'ok');
-    loadPreview();
+    await loadPreview(true);
   } catch (err) {
+    // 服务端要求确认：列出到底哪几项危险，认下了才真正重发一次。
+    // 先前这里第一次就带 confirm: true，等于把二次确认绕过去了。
     if (err.data?.error === 'confirmation_required') {
-      if (confirm('该配置含危险开关，确认要发布吗？')) loadPreview();
-    } else {
-      setMsg(msg, `发布失败：${err.message}`, 'err');
+      const lines = Object.entries(err.data.dangers ?? {})
+        .flatMap(([id, risks]) => risks.map((r) => `· ${id} — ${r.path}（${r.level}）`))
+        .join('\n');
+      if (confirm(`该配置含危险开关：\n\n${lines}\n\n确认发布？`)) {
+        await publish(true);
+      } else {
+        setMsg(msg, '已取消，未发布。');
+      }
+      return;
     }
+    if (err.data?.empty === true) {
+      setMsg(msg, '还没有路由可发布。', 'err');
+      return;
+    }
+    setMsg(msg, `发布失败：${err.message}`, 'err');
   }
-});
+};
+
+$('#publishBtn').addEventListener('click', () => publish(false));
 
 /* ---------- 审计 ---------- */
 

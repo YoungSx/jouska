@@ -37,7 +37,19 @@ export type CompileResult =
       /** Parsed output, for previews: defaults folded in, stated keys resolved. */
       readonly parsed: ReturnType<typeof configSchema.parse>;
     }
-  | { readonly ok: false; readonly issues: readonly CompileIssue[] };
+  | {
+      readonly ok: false;
+      readonly issues: readonly CompileIssue[];
+      /**
+       * True when the only thing wrong is that there is nothing to publish.
+       *
+       * A fresh deployment has no routes, and that is not a misconfiguration —
+       * it is the starting state. Callers separate the two so the UI can guide
+       * ("add your first route") instead of alarming ("your config is broken"),
+       * while publish still refuses either way.
+       */
+      readonly empty?: true;
+    };
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -118,18 +130,20 @@ const issueToCompile = (
 export const compileConfig = (rows: readonly RouteRow[], defaults: unknown): CompileResult => {
   const routes: RouteInput[] = [];
   const issues: CompileIssue[] = [];
-  // An empty table validates fine but means "the proxy forwards nothing".
-  // Publishing it would blackhole live traffic without a single error, so it
-  // is refused here where the operator still sees why.
+  // No enabled routes: publishing would leave the proxy with nothing to
+  // forward, so it is still refused — but flagged as `empty` rather than
+  // dressed up as a validation failure. `configSchema` would reject this too
+  // (`routes` is `.nonempty()`), with a message about array length that says
+  // nothing to an operator who simply has not added a route yet.
   if (rows.length === 0) {
     return {
       ok: false,
+      empty: true,
       issues: [
         {
           routeId: undefined,
           path: 'routes',
-          message:
-            'no enabled routes — publishing this would leave the proxy with nothing to forward; add or enable a route first',
+          message: 'no routes yet — add one, then publish to send it to the proxy',
         },
       ],
     };
