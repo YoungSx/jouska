@@ -200,7 +200,8 @@ const AuthCard = ({ mode, bootstrapable, onMode, onSignedIn }: AuthCardProps) =>
   };
 
   const bootstrapping = mode === 'bootstrap' && bootstrapable;
-  const busy = pending !== null;
+  // pending 是布尔，不是"null 即空闲"的三态——直接用，别再比较。
+  const busy = pending;
 
   return (
     <Card>
