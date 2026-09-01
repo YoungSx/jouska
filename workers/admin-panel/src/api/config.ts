@@ -25,6 +25,16 @@ import {
   upsertRoute,
 } from '../store.js';
 import type { AppEnv } from '../env.js';
+import {
+  boundedInteger,
+  boundedString,
+  isPlainObject,
+  jsonByteLength,
+  MAX_DEFAULTS_BYTES,
+  MAX_DEFINITION_BYTES,
+  MAX_NOTE_LENGTH,
+  strictBoolean,
+} from '../validate.js';
 
 /** The KV key the reverse proxy reads via fromKV(..., CONFIG_KEY ?? 'routes'). */
 const KV_KEY = 'routes';
@@ -57,10 +67,26 @@ configRoutes.put('/routes/:id', requireAdmin, async (c) => {
     return c.json({ error: 'invalid_route_id' }, 400);
   }
   const body = await readJsonObject(c);
-  if (typeof body.definition !== 'object' || body.definition === null) {
-    return c.json({ error: 'invalid_input', detail: 'definition must be an object' }, 400);
+  // An array is an object to `typeof` but never a route; reject it by shape.
+  if (!isPlainObject(body.definition)) {
+    return c.json({ error: 'invalid_input', detail: 'definition must be a JSON object' }, 400);
   }
-  const enabled = body.enabled === undefined ? true : body.enabled === true;
+  const size = jsonByteLength(body.definition);
+  if (size === undefined || size > MAX_DEFINITION_BYTES) {
+    return c.json(
+      {
+        error: 'invalid_input',
+        detail: `definition must serialize to at most ${MAX_DEFINITION_BYTES} bytes`,
+      },
+      400,
+    );
+  }
+  // Strict boolean: `enabled: 'yes'` reads as false to `=== true`, which would
+  // silently park the route out of production on a typo. Reject instead.
+  const enabled = body.enabled === undefined ? true : strictBoolean(body.enabled);
+  if (enabled === undefined) {
+    return c.json({ error: 'invalid_input', detail: 'enabled must be a boolean' }, 400);
+  }
   const existing = await getRoute(c.env.DB, id);
   // New routes append at the end; position is managed, not authored.
   const position =
@@ -102,7 +128,15 @@ configRoutes.put('/routes-order', requireAdmin, async (c) => {
   }
   const ids = body.ids as string[];
   const known = new Set((await listAllRoutes(c.env.DB)).map((r) => r.id));
-  if (ids.length !== known.size || !ids.every((id) => known.has(id))) {
+  // A permutation, checked as one: right length, all known, and no duplicates.
+  // Without the duplicate check `['a','a']` passes the first two and leaves
+  // some other route unpositioned while two rows claim the same slot — which
+  // the position unique index then rejects as a 500.
+  if (
+    ids.length !== known.size ||
+    new Set(ids).size !== ids.length ||
+    !ids.every((id) => known.has(id))
+  ) {
     return c.json(
       { error: 'invalid_input', detail: 'ids must be a permutation of all route ids' },
       400,
@@ -120,8 +154,18 @@ configRoutes.get('/defaults', async (c) => {
 
 configRoutes.put('/defaults', requireAdmin, async (c) => {
   const body = await readJsonObject(c);
-  if (typeof body.defaults !== 'object' || body.defaults === null) {
-    return c.json({ error: 'invalid_input', detail: 'defaults must be an object' }, 400);
+  if (!isPlainObject(body.defaults)) {
+    return c.json({ error: 'invalid_input', detail: 'defaults must be a JSON object' }, 400);
+  }
+  const size = jsonByteLength(body.defaults);
+  if (size === undefined || size > MAX_DEFAULTS_BYTES) {
+    return c.json(
+      {
+        error: 'invalid_input',
+        detail: `defaults must serialize to at most ${MAX_DEFAULTS_BYTES} bytes`,
+      },
+      400,
+    );
   }
   const user = c.get('user');
   await putSetting(c.env.DB, 'defaults', body.defaults);
@@ -193,15 +237,18 @@ configRoutes.post('/publish', requireAdmin, async (c) => {
   }
 
   const user = c.get('user');
-  const revision =
-    (typeof (await getSetting(c.env.DB, 'revision')) === 'number'
-      ? ((await getSetting(c.env.DB, 'revision')) as number)
-      : 0) + 1;
+  const stored = await getSetting(c.env.DB, 'revision');
+  // A revision must be a positive integer: a corrupt or hand-edited value must
+  // not produce `NaN + 1` or walk backwards over an existing revision.
+  const previous =
+    typeof stored === 'number' && Number.isInteger(stored) && stored >= 0 ? stored : 0;
+  const revision = previous + 1;
+  const note = boundedString(body.note, MAX_NOTE_LENGTH);
   const meta = {
     updatedAt: new Date().toISOString(),
     updatedBy: user.subject,
     revision,
-    ...(typeof body.note === 'string' && body.note !== '' ? { note: body.note } : {}),
+    ...(note === undefined ? {} : { note }),
   };
   const document = { ...compiled.document, meta };
 
@@ -213,13 +260,15 @@ configRoutes.post('/publish', requireAdmin, async (c) => {
     routeCount: rows.length,
     shadowWarnings: compiled.shadowWarnings,
     dangers,
-    ...(typeof body.note === 'string' && body.note !== '' ? { note: body.note } : {}),
+    ...(note === undefined ? {} : { note }),
   });
 
   return c.json({ ok: true, revision, shadowWarnings: compiled.shadowWarnings, dangers });
 });
 
 configRoutes.get('/audit', async (c) => {
-  const limit = Math.min(Number(c.req.query('limit') ?? 50) || 50, 200);
+  // Fractions reach SQLite as `LIMIT 1.5` (an error) and negatives as
+  // `LIMIT -5` (silently unbounded, dumping the whole log); both fall back.
+  const limit = boundedInteger(c.req.query('limit'), 50, 200);
   return c.json({ entries: await listAudit(c.env.DB, limit) });
 });

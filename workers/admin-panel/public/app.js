@@ -91,18 +91,22 @@ $('#authForm').addEventListener('submit', async (e) => {
   const payload = { subject: form.get('subject'), password: form.get('password') };
   const bootstrap = $('#authSubmit').textContent === '创建管理员';
   const msg = $('#authMsg');
+  // 上一次尝试的提示必须先清掉，否则失败后重试成功时，旧文案还留在屏幕上。
+  setMsg(msg, '');
   try {
-    await api('POST', '/api/auth/bootstrap', payload);
-    setMsg(msg, '管理员已创建，正在登录…', 'ok');
-    await api('POST', '/api/auth/login', payload);
-    enterApp({ subject: payload.subject, role: 'admin' });
-  } catch (err) {
-    if (!bootstrap && err.status === undefined) {
-      // 网络层失败不在此列；401/409 等都有明确形状。
+    // 按当前模式分派：登录态下无条件先打 bootstrap 会拿到 409，
+    // 常规登录就永远走不到 login 那一步。
+    if (bootstrap) {
+      await api('POST', '/api/auth/bootstrap', payload);
+      setMsg(msg, '管理员已创建，正在登录…', 'ok');
     }
+    const { user } = await api('POST', '/api/auth/login', payload);
+    // 角色以服务端返回为准，不假设新建的一定是管理员。
+    enterApp(user ?? { subject: payload.subject, role: 'admin' });
+  } catch (err) {
     const hints = {
       invalid_credentials: '账号或密码不对。',
-      locked: `试错太多次，账号锁定了，${Math.ceil((err.data.retryAfterSeconds ?? 900) / 60)} 分钟后再来。`,
+      locked: `试错太多次，账号锁定了，${Math.ceil((err.data?.retryAfterSeconds ?? 900) / 60)} 分钟后再来。`,
       already_bootstrapped: '已初始化过，请直接登录。',
       invalid_input: '密码至少 12 位。',
     };
@@ -254,7 +258,7 @@ $('#editorSave').addEventListener('click', async () => {
   } catch (err) {
     setMsg(
       msg,
-      `保存失败：${err.message}${err.data.detail ? `（${err.data.detail}）` : ''}`,
+      `保存失败：${err.message}${err.data?.detail ? `（${err.data.detail}）` : ''}`,
       'err',
     );
   }
@@ -270,7 +274,7 @@ const loadPreview = async () => {
     if (!p.ok) {
       box.innerHTML =
         `<p>当前配置有错，不能发布：</p>` +
-        p.issues
+        (p.issues ?? [])
           .map(
             (i) =>
               `<div class="issue"><b>${esc(i.routeId ?? '(表)')}</b> <code>${esc(i.path)}</code> — ${esc(i.message)}</div>`,
@@ -280,10 +284,11 @@ const loadPreview = async () => {
       return;
     }
     let html = `<p><span class="badge on">${p.routeCount} 条路由</span>`;
-    if (p.shadowWarnings.length > 0) {
+    const shadows = p.shadowWarnings ?? [];
+    if (shadows.length > 0) {
       html +=
-        ` <span class="badge warn">${p.shadowWarnings.length} 条被遮蔽</span></p>` +
-        p.shadowWarnings
+        ` <span class="badge warn">${shadows.length} 条被遮蔽</span></p>` +
+        shadows
           .map(
             (s) =>
               `<div class="shadow">⚠ <b>${esc(s.shadowedId)}</b> 被 <b>${esc(s.byId)}</b> 完全遮蔽（试探路径 <code>${esc(s.probe)}</code>）</div>`,
@@ -301,7 +306,7 @@ const loadPreview = async () => {
             p.dangers[id]
               .map(
                 (r) =>
-                  `<div class="danger"><b>${esc(id)}</b> — ${esc(r.field)}: ${esc(r.reason)}</div>`,
+                  `<div class="danger"><b>${esc(id)}</b> — <code>${esc(r.path)}</code>（${esc(r.level)}）：${esc(r.reason)}</div>`,
               )
               .join(''),
           )

@@ -16,6 +16,12 @@ import {
 } from '../auth.js';
 import type { AppEnv } from '../env.js';
 import { hashPassword, verifyPassword } from '../password.js';
+import {
+  boundedString,
+  MAX_PASSWORD_LENGTH,
+  MAX_SUBJECT_LENGTH,
+  MIN_PASSWORD_LENGTH,
+} from '../validate.js';
 
 /** Consecutive failures before the account parks until locked_until. */
 const MAX_FAILED_ATTEMPTS = 5;
@@ -37,13 +43,21 @@ export const authRoutes = new Hono<AppEnv>();
 
 authRoutes.post('/bootstrap', async (c) => {
   const body = await readJsonObject(c);
+  // Bounds before work: the password is about to be hashed, and an unbounded
+  // one is the cheapest way to spend this request's whole CPU budget.
+  const subject = boundedString(body.subject, MAX_SUBJECT_LENGTH);
+  const password = typeof body.password === 'string' ? body.password : undefined;
   if (
-    typeof body.subject !== 'string' ||
-    typeof body.password !== 'string' ||
-    body.password.length < 12
+    subject === undefined ||
+    password === undefined ||
+    password.length < MIN_PASSWORD_LENGTH ||
+    password.length > MAX_PASSWORD_LENGTH
   ) {
     return c.json(
-      { error: 'invalid_input', detail: 'subject and password (min 12 chars) are required' },
+      {
+        error: 'invalid_input',
+        detail: `subject (1-${MAX_SUBJECT_LENGTH} chars, not blank) and password (${MIN_PASSWORD_LENGTH}-${MAX_PASSWORD_LENGTH} chars) are required`,
+      },
       400,
     );
   }
@@ -51,12 +65,12 @@ authRoutes.post('/bootstrap', async (c) => {
   if ((existing?.n ?? 0) > 0) {
     return c.json({ error: 'already_bootstrapped' }, 409);
   }
-  const passwordHash = await hashPassword(body.password);
+  const passwordHash = await hashPassword(password);
   try {
     await c.env.DB.prepare(
       'INSERT INTO users (subject, role, password, created_at) VALUES (?, ?, ?, ?)',
     )
-      .bind(body.subject, 'admin', passwordHash, nowSeconds())
+      .bind(subject, 'admin', passwordHash, nowSeconds())
       .run();
   } catch {
     // Lost the bootstrap race: the unique index means the table is no longer empty.
@@ -67,13 +81,18 @@ authRoutes.post('/bootstrap', async (c) => {
 
 authRoutes.post('/login', async (c) => {
   const body = await readJsonObject(c);
-  if (typeof body.subject !== 'string' || typeof body.password !== 'string') {
+  // Login is reachable unauthenticated, so the bounds matter more here than at
+  // bootstrap: without them anyone can make this worker hash arbitrarily long
+  // input on demand. Rejected before the lookup, let alone the hash.
+  const subject = boundedString(body.subject, MAX_SUBJECT_LENGTH);
+  const password = typeof body.password === 'string' ? body.password : undefined;
+  if (subject === undefined || password === undefined || password.length > MAX_PASSWORD_LENGTH) {
     return c.json({ error: 'invalid_input' }, 400);
   }
   const user = await c.env.DB.prepare(
     'SELECT id, subject, role, password, disabled, failed_attempts, locked_until FROM users WHERE subject = ?',
   )
-    .bind(body.subject)
+    .bind(subject)
     .first<UserRow>();
 
   const now = nowSeconds();
@@ -88,7 +107,7 @@ authRoutes.post('/login', async (c) => {
     return c.json({ error: 'locked', retryAfterSeconds: user.locked_until - now }, 429);
   }
 
-  const ok = await verifyPassword(body.password, user.password);
+  const ok = await verifyPassword(password, user.password);
   if (!ok) {
     const failed = user.failed_attempts + 1;
     const lock = failed >= MAX_FAILED_ATTEMPTS ? now + LOCKOUT_SECONDS : null;
