@@ -13,8 +13,10 @@ import {
   destroySession,
   resolveSession,
   sessionCookieHeader,
+  sessionTokenHashFromCookie,
 } from '../auth.js';
 import type { AppEnv } from '../env.js';
+import { requireUser } from '../middleware.js';
 import { hashPassword, verifyPassword } from '../password.js';
 import {
   boundedString,
@@ -24,7 +26,12 @@ import {
   parseJsonSafe,
 } from '../validate.js';
 import { checkRecoveryToken, RECOVERY_KEY, RECOVERY_MAX_TOKEN_LENGTH } from '../recovery.js';
-import { audit, consumeRecoveryAndSetPassword, getSettingRaw } from '../store.js';
+import {
+  audit,
+  changePasswordAndRevokeOthers,
+  consumeRecoveryAndSetPassword,
+  getSettingRaw,
+} from '../store.js';
 
 /** Consecutive failures before the account parks until locked_until. */
 const MAX_FAILED_ATTEMPTS = 5;
@@ -229,4 +236,82 @@ authRoutes.get('/me', async (c) => {
     return c.json({ user: null, bootstrapable: (existing?.n ?? 0) === 0 }, 200);
   }
   return c.json({ user, bootstrapable: false });
+});
+
+/**
+ * Change the caller's own password.
+ *
+ * Mounted in this group — before the global requireUser — so it carries its
+ * own guard. The current password is verified first: a stolen session cookie
+ * alone must not be able to lock the owner out.
+ */
+authRoutes.post('/password', requireUser, async (c) => {
+  const body = await readJsonObject(c);
+  // Passwords are never run through boundedString: it trims, and a leading or
+  // trailing space is part of the password. Same checks as bootstrap/login.
+  const currentPassword = typeof body.currentPassword === 'string' ? body.currentPassword : undefined;
+  const newPassword = typeof body.newPassword === 'string' ? body.newPassword : undefined;
+  if (
+    currentPassword === undefined ||
+    newPassword === undefined ||
+    currentPassword.length > MAX_PASSWORD_LENGTH ||
+    newPassword.length < MIN_PASSWORD_LENGTH ||
+    newPassword.length > MAX_PASSWORD_LENGTH
+  ) {
+    return c.json(
+      {
+        error: 'invalid_input',
+        detail: `currentPassword is required (<= ${MAX_PASSWORD_LENGTH} chars) and newPassword must be ${MIN_PASSWORD_LENGTH}-${MAX_PASSWORD_LENGTH} characters`,
+      },
+      400,
+    );
+  }
+
+  const user = await c.env.DB.prepare(
+    'SELECT id, password, locked_until FROM users WHERE id = ?',
+  )
+    .bind(c.get('user').userId)
+    .first<{ id: number; password: string | null; locked_until: number | null }>();
+
+  // An account without a password is one an SSO/Access flow owns; it has no
+  // current password to verify, so the change is refused, not bypassed.
+  if (user === null || user.password === null) {
+    return c.json({ error: 'no_password' }, 409);
+  }
+
+  // The lockout is checked before any hashing: a locked account must not be
+  // able to spend CPU verifying anything, correctly or not.
+  const now = nowSeconds();
+  if (user.locked_until !== null && user.locked_until > now) {
+    return c.json({ error: 'locked', retryAfterSeconds: user.locked_until - now }, 429);
+  }
+
+  // One wrong current password counts exactly as one failed login: the same
+  // counter, the same ceiling, the same lockout. Copying the constants would
+  // let the two drift.
+  const ok = await verifyPassword(currentPassword, user.password);
+  if (!ok) {
+    const existing = await c.env.DB.prepare('SELECT failed_attempts FROM users WHERE id = ?')
+      .bind(user.id)
+      .first<{ failed_attempts: number }>();
+    const failed = (existing?.failed_attempts ?? 0) + 1;
+    const lock = failed >= MAX_FAILED_ATTEMPTS ? now + LOCKOUT_SECONDS : null;
+    await c.env.DB.prepare('UPDATE users SET failed_attempts = ?, locked_until = ? WHERE id = ?')
+      .bind(failed, lock, user.id)
+      .run();
+    return c.json({ error: 'wrong_password' }, 401);
+  }
+
+  const passwordHash = await hashPassword(newPassword);
+  // Keep the current session by its hash — the D1-side identity the cookie
+  // resolves to. No new cookie is set: the session that proved itself lives on.
+  const revoked = await changePasswordAndRevokeOthers(c.env.DB, {
+    userId: user.id,
+    passwordHash,
+    keepTokenHash: (await sessionTokenHashFromCookie(c.req.header('cookie'))) ?? '',
+  });
+  await audit(c.env.DB, c.get('user').subject, 'auth.password', c.get('user').subject, {
+    revokedSessions: revoked,
+  });
+  return c.json({ ok: true, revokedSessions: revoked });
 });

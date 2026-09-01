@@ -224,3 +224,205 @@ export const listAudit = async (db: D1Database, limit: number): Promise<AuditEnt
     .all<AuditEntry>();
   return results;
 };
+
+/* ---------- users (account management) ----------
+ *
+ * The last-admin invariant lives *inside* the write statement, not in a
+ * check-then-act pair around it: the guard subqueries are evaluated against
+ * the table as it stands at write time, so two concurrent requests cannot
+ * both pass a read-side check and jointly brick the panel. (Recovery only
+ * rewrites passwords and bootstrap only opens on an empty table, so a table
+ * with no usable admin has no way back.)
+ *
+ * Two invariants, both required:
+ *   - at least one admin row exists, AND
+ *   - at least one enabled (disabled = 0) admin exists.
+ * Checking only the enabled count lets "A enabled + B disabled, demote A"
+ * through, and that state has no exit.
+ */
+
+export interface UserListEntry {
+  readonly id: number;
+  readonly subject: string;
+  readonly email: string | null;
+  readonly role: 'admin' | 'viewer';
+  readonly disabled: boolean;
+  readonly createdAt: number;
+  readonly lastSeen: number | null;
+  readonly failedAttempts: number;
+  readonly lockedUntil: number | null;
+  readonly sessions: number;
+}
+
+/**
+ * The user list for the admin screen.
+ *
+ * Column list, never `SELECT *`: the `password` hash lives in this table and
+ * must not be one forgotten `*` away from a 200 response.
+ */
+export const listUsers = async (db: D1Database): Promise<UserListEntry[]> => {
+  const { results } = await db
+    .prepare(
+      `SELECT u.id, u.subject, u.email, u.role, u.disabled, u.created_at, u.last_seen,
+              u.failed_attempts, u.locked_until,
+              (SELECT COUNT(*) FROM sessions s WHERE s.user_id = u.id) AS sessions
+       FROM users u
+       ORDER BY u.id`,
+    )
+    .all<{
+      id: number;
+      subject: string;
+      email: string | null;
+      role: string;
+      disabled: number;
+      created_at: number;
+      last_seen: number | null;
+      failed_attempts: number;
+      locked_until: number | null;
+      sessions: number;
+    }>();
+  return results.map((r) => ({
+    id: r.id,
+    subject: r.subject,
+    email: r.email,
+    role: r.role === 'viewer' ? 'viewer' : 'admin',
+    disabled: r.disabled === 1,
+    createdAt: r.created_at,
+    lastSeen: r.last_seen,
+    failedAttempts: r.failed_attempts,
+    lockedUntil: r.locked_until,
+    sessions: r.sessions,
+  }));
+};
+
+/**
+ * Creates a user with an admin-set password. Returns the new id, or undefined
+ * when the subject's unique index rejected the insert.
+ */
+export const insertUser = async (
+  db: D1Database,
+  args: {
+    readonly subject: string;
+    readonly email: string | undefined;
+    readonly role: 'admin' | 'viewer';
+    readonly passwordHash: string;
+  },
+): Promise<number | undefined> => {
+  try {
+    const res = await db
+      .prepare('INSERT INTO users (subject, email, role, password, created_at) VALUES (?, ?, ?, ?, ?)')
+      .bind(args.subject, args.email ?? null, args.role, args.passwordHash, nowSeconds())
+      .run();
+    return res.meta.last_row_id;
+  } catch {
+    // The unique index on subject is the only realistic rejection here.
+    return undefined;
+  }
+};
+
+export interface UserUpdate {
+  readonly role?: 'admin' | 'viewer';
+  readonly disabled?: boolean;
+  /** Clears the login lockout: locked_until and the failure counter together. */
+  readonly unlock?: boolean;
+}
+
+/**
+ * Partial update of one user, guarded when the change could shrink the admin
+ * pool. Returns the number of rows written: 0 means the guard refused.
+ *
+ * `unlock` gets its own SET clause rather than always clearing the lock — an
+ * unlock bundled into an unrelated role change would silently un-lock an
+ * account the operator never asked about.
+ */
+export const updateUserGuarded = async (
+  db: D1Database,
+  id: number,
+  update: UserUpdate,
+): Promise<number> => {
+  const sets: string[] = [];
+  const binds: unknown[] = [];
+  if (update.role !== undefined) {
+    sets.push('role = ?');
+    binds.push(update.role);
+  }
+  if (update.disabled !== undefined) {
+    sets.push('disabled = ?');
+    binds.push(update.disabled ? 1 : 0);
+  }
+  if (update.unlock === true) {
+    sets.push('locked_until = NULL, failed_attempts = 0');
+  }
+  // Dangerous = this request could shrink the enabled-admin pool. Decided from
+  // the requested fields alone, never from a stale read of the row: the guard
+  // below re-derives the row's actual state atomically at write time, so a
+  // request that looks like a no-op ("disable an already-disabled user") is
+  // still guarded if the row has been enabled again in between.
+  const dangerous = update.role === 'viewer' || update.disabled === true;
+  const guard = dangerous
+    ? ` AND ( role != 'admin'
+        OR ( (SELECT COUNT(*) FROM users a WHERE a.role = 'admin') > 1
+             AND ( (SELECT COUNT(*) FROM users a WHERE a.role = 'admin' AND a.disabled = 0) > 1
+                   OR disabled = 1 ) ) )`
+    : '';
+  const res = await db
+    .prepare(`UPDATE users SET ${sets.join(', ')} WHERE id = ?${guard}`)
+    .bind(...binds, id)
+    .run();
+  return res.meta.changes;
+};
+
+/**
+ * Deletes one user, guarded on both invariants plus a floor of one row.
+ *
+ * The row floor is not sentiment: emptying `users` reopens bootstrap, which
+ * would let anyone on the public internet create the next admin. The guard is
+ * part of the DELETE itself, so re-running it after the state has changed
+ * re-evaluates it — the second attempt finds the guard no longer satisfied and
+ * writes nothing.
+ *
+ * Sessions of the deleted user go via ON DELETE CASCADE.
+ */
+export const deleteUserGuarded = async (db: D1Database, id: number): Promise<number> => {
+  const res = await db
+    .prepare(
+      `DELETE FROM users
+       WHERE id = ?
+         AND (SELECT COUNT(*) FROM users) > 1
+         AND ( role != 'admin'
+               OR (disabled = 1 AND (SELECT COUNT(*) FROM users a WHERE a.role = 'admin') > 1)
+               OR (SELECT COUNT(*) FROM users a WHERE a.role = 'admin' AND a.disabled = 0) > 1 )`,
+    )
+    .bind(id)
+    .run();
+  return res.meta.changes;
+};
+
+/**
+ * Sets the caller's own new password and revokes every other session in one
+ * transaction. The current session (identified by its token hash) is kept, so
+ * the request that changed the password does not log itself out.
+ *
+ * The UPDATE is unconditional on purpose — the caller has already verified the
+ * current password — so this batch cannot silently write zero rows, which is
+ * why the audit row for a successful change may live outside it.
+ */
+export const changePasswordAndRevokeOthers = async (
+  db: D1Database,
+  args: {
+    readonly userId: number;
+    readonly passwordHash: string;
+    /** SHA-256 of the current request's own session token. */
+    readonly keepTokenHash: string;
+  },
+): Promise<number> => {
+  const [, revoked] = await db.batch([
+    db
+      .prepare('UPDATE users SET password = ?, failed_attempts = 0, locked_until = NULL WHERE id = ?')
+      .bind(args.passwordHash, args.userId),
+    db
+      .prepare('DELETE FROM sessions WHERE user_id = ? AND token_hash != ?')
+      .bind(args.userId, args.keepTokenHash),
+  ]);
+  return revoked?.meta.changes ?? 0;
+};

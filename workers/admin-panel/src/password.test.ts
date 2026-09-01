@@ -78,4 +78,28 @@ describe('password hashing', () => {
     expect(fastest).toBeGreaterThan(1.5);
     expect(fastest).toBeLessThan(60);
   });
+
+  it('keeps a password change (verify + hash, back to back) in the same window', { timeout: 60_000 }, async () => {
+    // POST /api/auth/password does two derivations per request: verify the
+    // current password, then hash the new one. That is the worst CPU case on
+    // the panel, so it gets its own measured bound — raising ITERATIONS past
+    // what two derivations afford must fail here, not on production's first
+    // password change on the free tier.
+    const samples: number[] = [];
+    for (let i = 0; i < 9; i += 1) {
+      const stored = await hashPassword('benchmark');
+      const start = performance.now();
+      await verifyPassword('benchmark', stored);
+      await hashPassword('the-replacement-password');
+      samples.push(performance.now() - start);
+    }
+    const fastest = Math.min(...samples);
+    // Measured in this runtime: 2 × 30k ≈ 8 ms (fastest-of-nine). The floor
+    // proves both derivations really happened; the ceiling catches a
+    // catastrophic regression, and a runner faster or slower than this machine
+    // changes nothing — the ITERATIONS pin above is the CI gate for the
+    // platform budget.
+    expect(fastest).toBeGreaterThan(3);
+    expect(fastest).toBeLessThan(80);
+  });
 });

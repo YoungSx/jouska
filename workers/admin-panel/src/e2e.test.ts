@@ -95,16 +95,15 @@ const bootstrapAdmin = async (): Promise<void> => {
   expect(res.status, JSON.stringify(await res.json())).toBe(201);
 };
 
-const createViewer = async (): Promise<void> => {
-  // There is no viewer bootstrap; the admin creates the second user directly
-  // in D1 with the panel's own hashing, exactly as an operator would.
-  const { hashPassword } = await import('./password.js');
-  const hash = await hashPassword('viewer-password-123');
-  await testEnv.DB.prepare(
-    "INSERT INTO users (subject, role, password, created_at) VALUES ('viewer', 'viewer', ?, ?)",
-  )
-    .bind(hash, Math.floor(Date.now() / 1000))
-    .run();
+/** Creates the viewer through the panel's own admin API — the operator path. */
+const createViewer = async (adminCookie: string): Promise<void> => {
+  const res = await call(
+    'POST',
+    '/api/users',
+    { subject: 'viewer', password: 'viewer-password-123', role: 'viewer' },
+    { cookie: adminCookie },
+  );
+  expect(res.status, JSON.stringify(await res.json())).toBe(201);
 };
 
 const theRoute = {
@@ -308,8 +307,8 @@ describe('admin panel end-to-end', () => {
 
   it('viewers may read but not write', async () => {
     await bootstrapAdmin();
-    await createViewer();
     adminCookie = cookieFrom(await login('root', 'correct-horse-battery'));
+    await createViewer(adminCookie);
     const viewerLogin = await login('viewer', 'viewer-password-123');
     expect(viewerLogin.status).toBe(200);
     viewerCookie = cookieFrom(viewerLogin);
@@ -321,6 +320,8 @@ describe('admin panel end-to-end', () => {
       403,
     );
     expect((await call('POST', '/api/publish', {}, vAuth)).status).toBe(403);
+    // The user list is admin-only too — a viewer must not even read it.
+    expect((await get('/api/users', vAuth)).status).toBe(403);
     // Admin can still write.
     expect((await call('PUT', '/api/routes/app', { definition: theRoute }, aAuth)).status).toBe(
       200,

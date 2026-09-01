@@ -10,6 +10,7 @@ import { Hono } from 'hono';
 import { authRoutes } from './api/auth.js';
 import { configRoutes } from './api/config.js';
 import { domainRoutes } from './api/domains.js';
+import { userRoutes } from './api/users.js';
 import { requireSameOrigin, requireUser } from './middleware.js';
 import type { AppEnv } from './env.js';
 
@@ -33,6 +34,7 @@ app.use('/api/*', requireUser);
 
 app.route('/api', configRoutes);
 app.route('/api', domainRoutes);
+app.route('/api', userRoutes);
 
 export default {
   async fetch(request, env, ctx): Promise<Response> {
