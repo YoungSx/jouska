@@ -1,0 +1,315 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-09-01T00:00:00Z",
+  "title": "Design System: jouska 管理面板",
+  "extensions": {
+    "colorMeta": {
+      "background": {
+        "role": "neutral",
+        "displayName": "画布（深色）",
+        "canonical": "oklch(0.145 0 0)",
+        "tonalRamp": [
+          "oklch(0.15 0 0)",
+          "oklch(0.205 0 0)",
+          "oklch(0.269 0 0)",
+          "oklch(0.371 0 0)",
+          "oklch(0.439 0 0)",
+          "oklch(0.556 0 0)",
+          "oklch(0.708 0 0)",
+          "oklch(0.922 0 0)"
+        ]
+      },
+      "foreground": {
+        "role": "neutral",
+        "displayName": "正文（深色）",
+        "canonical": "oklch(0.985 0 0)",
+        "tonalRamp": [
+          "oklch(0.145 0 0)",
+          "oklch(0.269 0 0)",
+          "oklch(0.371 0 0)",
+          "oklch(0.439 0 0)",
+          "oklch(0.556 0 0)",
+          "oklch(0.708 0 0)",
+          "oklch(0.922 0 0)",
+          "oklch(0.985 0 0)"
+        ]
+      },
+      "card": {
+        "role": "neutral",
+        "displayName": "面板",
+        "canonical": "oklch(0.205 0 0)",
+        "tonalRamp": [
+          "oklch(0.145 0 0)",
+          "oklch(0.205 0 0)",
+          "oklch(0.269 0 0)",
+          "oklch(0.371 0 0)",
+          "oklch(0.439 0 0)",
+          "oklch(0.556 0 0)",
+          "oklch(0.708 0 0)",
+          "oklch(0.985 0 0)"
+        ]
+      },
+      "primary": {
+        "role": "primary",
+        "displayName": "反转强调",
+        "canonical": "oklch(0.922 0 0)",
+        "tonalRamp": [
+          "oklch(0.145 0 0)",
+          "oklch(0.205 0 0)",
+          "oklch(0.269 0 0)",
+          "oklch(0.371 0 0)",
+          "oklch(0.439 0 0)",
+          "oklch(0.556 0 0)",
+          "oklch(0.708 0 0)",
+          "oklch(0.922 0 0)"
+        ]
+      },
+      "secondary": {
+        "role": "neutral",
+        "displayName": "次级表面",
+        "canonical": "oklch(0.269 0 0)",
+        "tonalRamp": [
+          "oklch(0.145 0 0)",
+          "oklch(0.205 0 0)",
+          "oklch(0.269 0 0)",
+          "oklch(0.371 0 0)",
+          "oklch(0.439 0 0)",
+          "oklch(0.556 0 0)",
+          "oklch(0.708 0 0)",
+          "oklch(0.922 0 0)"
+        ]
+      },
+      "muted-foreground": {
+        "role": "neutral",
+        "displayName": "次级文字",
+        "canonical": "oklch(0.708 0 0)",
+        "tonalRamp": [
+          "oklch(0.145 0 0)",
+          "oklch(0.205 0 0)",
+          "oklch(0.269 0 0)",
+          "oklch(0.371 0 0)",
+          "oklch(0.439 0 0)",
+          "oklch(0.556 0 0)",
+          "oklch(0.708 0 0)",
+          "oklch(0.922 0 0)"
+        ]
+      },
+      "border": {
+        "role": "neutral",
+        "displayName": "描边（深色）",
+        "canonical": "oklch(1 0 0 / 10%)",
+        "tonalRamp": [
+          "oklch(1 0 0 / 5%)",
+          "oklch(1 0 0 / 10%)",
+          "oklch(1 0 0 / 15%)",
+          "oklch(1 0 0 / 25%)",
+          "oklch(1 0 0 / 40%)",
+          "oklch(1 0 0 / 55%)",
+          "oklch(1 0 0 / 75%)",
+          "oklch(1 0 0)"
+        ]
+      },
+      "ring": {
+        "role": "neutral",
+        "displayName": "焦点环",
+        "canonical": "oklch(0.556 0 0)",
+        "tonalRamp": [
+          "oklch(0.145 0 0)",
+          "oklch(0.269 0 0)",
+          "oklch(0.371 0 0)",
+          "oklch(0.439 0 0)",
+          "oklch(0.556 0 0)",
+          "oklch(0.708 0 0)",
+          "oklch(0.922 0 0)",
+          "oklch(0.985 0 0)"
+        ]
+      },
+      "destructive": {
+        "role": "primary",
+        "displayName": "危险红（全系统唯一彩色）",
+        "canonical": "oklch(0.704 0.191 22.216)",
+        "tonalRamp": [
+          "oklch(0.35 0.13 22)",
+          "oklch(0.45 0.16 22)",
+          "oklch(0.577 0.245 27.325)",
+          "oklch(0.63 0.22 24)",
+          "oklch(0.704 0.191 22.216)",
+          "oklch(0.78 0.14 22)",
+          "oklch(0.86 0.09 22)",
+          "oklch(0.93 0.05 22)"
+        ]
+      }
+    },
+    "typographyMeta": {
+      "body": {
+        "displayName": "正文 14px",
+        "purpose": "默认正文、按钮文字、表单标签、卡片说明。层级封顶即此上两档。"
+      },
+      "annotation": {
+        "displayName": "注脚 12px",
+        "purpose": "hint、时间戳、表头、表格数据、等宽标识符；辅助信息配 muted-foreground。"
+      },
+      "title": {
+        "displayName": "标题 16px",
+        "purpose": "CardTitle 与页面级标题，是本系统最大字号；无 20px 以上档位。"
+      },
+      "mono": {
+        "displayName": "数据等宽",
+        "purpose": "路由 ID、host、路径、上游、JSON 文档、账号名 —— 凡要逐字符核对的东西。"
+      }
+    },
+    "shadows": [],
+    "motion": [
+      {
+        "name": "gate-land",
+        "value": "gate-land 200ms ease-out（from: translateY(-3px) scale(1.15) opacity .4）",
+        "purpose": "发布栏图标在闸门状态翻转时落位一次。全系统唯一自定义动效；key 重挂驱动重放，静止零成本。"
+      }
+    ],
+    "breakpoints": [{ "name": "sm", "value": "40rem" }]
+  },
+  "components": [
+    {
+      "name": "Primary Button",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "最重的动作：发布、新建路由、确认弹窗主动作。重量来自明度反转，不来自色相。",
+      "html": "<button class=\"ds-btn-primary\"><svg width=\"16\" height=\"16\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M12 3v12\"/><path d=\"m7 10 5 5 5-5\"/><path d=\"M5 21h14\"/></svg>发布到反代</button>",
+      "css": ".ds-btn-primary { display: inline-flex; align-items: center; justify-content: center; gap: 6px; height: 28px; padding: 0 10px; border: 1px solid transparent; border-radius: var(--radius, 10px); background: var(--primary, oklch(0.922 0 0)); color: var(--primary-foreground, oklch(0.205 0 0)); font: 500 13px/1 var(--font-sans, 'Geist Variable', sans-serif); white-space: nowrap; transition: all 150ms; cursor: pointer; } .ds-btn-primary:hover { background: color-mix(in oklch, var(--primary, oklch(0.922 0 0)) 80%, transparent); } .ds-btn-primary:focus-visible { outline: none; border-color: var(--ring, oklch(0.556 0 0)); box-shadow: 0 0 0 3px color-mix(in oklch, var(--ring, oklch(0.556 0 0)) 50%, transparent); } .ds-btn-primary:active { transform: translateY(1px); } .ds-btn-primary:disabled { opacity: 0.5; pointer-events: none; } .ds-btn-primary svg { flex-shrink: 0; pointer-events: none; }"
+    },
+    {
+      "name": "Outline Button",
+      "kind": "button",
+      "refersTo": "button-outline",
+      "description": "取消、刷新、重试等次级动作；确认弹窗页脚的取消键固定用它。",
+      "html": "<button class=\"ds-btn-outline\"><svg width=\"14\" height=\"14\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M3 12a9 9 0 0 1 15-6.7L21 8\"/><path d=\"M21 3v5h-5\"/></svg>重新检查</button>",
+      "css": ".ds-btn-outline { display: inline-flex; align-items: center; justify-content: center; gap: 6px; height: 28px; padding: 0 10px; border: 1px solid var(--border, oklch(1 0 0 / 10%)); border-radius: var(--radius, 10px); background: var(--background, oklch(0.145 0 0)); color: var(--foreground, oklch(0.985 0 0)); font: 500 13px/1 var(--font-sans, 'Geist Variable', sans-serif); white-space: nowrap; transition: all 150ms; cursor: pointer; } .ds-btn-outline:hover { background: var(--muted, oklch(0.269 0 0)); color: var(--foreground, oklch(0.985 0 0)); } .ds-btn-outline:focus-visible { outline: none; border-color: var(--ring, oklch(0.556 0 0)); box-shadow: 0 0 0 3px color-mix(in oklch, var(--ring, oklch(0.556 0 0)) 50%, transparent); } .ds-btn-outline svg { flex-shrink: 0; }"
+    },
+    {
+      "name": "Destructive Button",
+      "kind": "button",
+      "refersTo": "button-destructive",
+      "description": "破坏性动作（删除路由确认）。危险不尖叫：10% 淡染底 + destructive 文字，hover 只加深一档。",
+      "html": "<button class=\"ds-btn-destructive\"><svg width=\"14\" height=\"14\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M3 6h18\"/><path d=\"M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6\"/><path d=\"M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2\"/></svg>删除</button>",
+      "css": ".ds-btn-destructive { display: inline-flex; align-items: center; justify-content: center; gap: 6px; height: 28px; padding: 0 10px; border: 1px solid transparent; border-radius: var(--radius, 10px); background: color-mix(in oklch, var(--destructive, oklch(0.704 0.191 22.216)) 20%, transparent); color: var(--destructive, oklch(0.704 0.191 22.216)); font: 500 13px/1 var(--font-sans, 'Geist Variable', sans-serif); white-space: nowrap; transition: all 150ms; cursor: pointer; } .ds-btn-destructive:hover { background: color-mix(in oklch, var(--destructive, oklch(0.704 0.191 22.216)) 30%, transparent); } .ds-btn-destructive:focus-visible { outline: none; border-color: color-mix(in oklch, var(--destructive, oklch(0.704 0.191 22.216)) 40%, transparent); box-shadow: 0 0 0 3px color-mix(in oklch, var(--destructive, oklch(0.704 0.191 22.216)) 40%, transparent); } .ds-btn-destructive svg { flex-shrink: 0; }"
+    },
+    {
+      "name": "Ghost Button",
+      "kind": "button",
+      "refersTo": "button-ghost",
+      "description": "透明底行内动作：查看发布内容、行菜单、主题切换。",
+      "html": "<button class=\"ds-btn-ghost\">查看发布内容</button>",
+      "css": ".ds-btn-ghost { display: inline-flex; align-items: center; justify-content: center; gap: 6px; height: 28px; padding: 0 10px; border: 1px solid transparent; border-radius: var(--radius, 10px); background: transparent; color: var(--foreground, oklch(0.985 0 0)); font: 500 13px/1 var(--font-sans, 'Geist Variable', sans-serif); white-space: nowrap; transition: all 150ms; cursor: pointer; } .ds-btn-ghost:hover { background: var(--muted, oklch(0.269 0 0)); } .ds-btn-ghost:focus-visible { outline: none; border-color: var(--ring, oklch(0.556 0 0)); box-shadow: 0 0 0 3px color-mix(in oklch, var(--ring, oklch(0.556 0 0)) 50%, transparent); }"
+    },
+    {
+      "name": "Badge",
+      "kind": "chip",
+      "refersTo": "badge-secondary",
+      "description": "20px 状态胶囊。default=primary 实底（启用/管理员），secondary=灰（停用/待开发），destructive=淡染红（损坏/危险计数），outline=带边框（线上 revision）。",
+      "html": "<span class=\"ds-badge-row\"><span class=\"ds-badge ds-badge-default\">启用</span><span class=\"ds-badge ds-badge-secondary\">待开发</span><span class=\"ds-badge ds-badge-destructive\"><svg width=\"12\" height=\"12\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3\"/><path d=\"M12 9v4\"/><path d=\"M12 17h.01\"/></svg>2</span><span class=\"ds-badge ds-badge-outline\">线上 revision 12</span></span>",
+      "css": ".ds-badge-row { display: inline-flex; align-items: center; gap: 8px; flex-wrap: wrap; font: 400 14px/1 var(--font-sans, 'Geist Variable', sans-serif); } .ds-badge { display: inline-flex; align-items: center; justify-content: center; gap: 4px; height: 20px; padding: 2px 8px; border: 1px solid transparent; border-radius: 9999px; font: 500 12px/1 var(--font-sans, 'Geist Variable', sans-serif); white-space: nowrap; } .ds-badge svg { flex-shrink: 0; } .ds-badge-default { background: var(--primary, oklch(0.922 0 0)); color: var(--primary-foreground, oklch(0.205 0 0)); } .ds-badge-secondary { background: var(--secondary, oklch(0.269 0 0)); color: var(--secondary-foreground, oklch(0.985 0 0)); } .ds-badge-destructive { background: color-mix(in oklch, var(--destructive, oklch(0.704 0.191 22.216)) 20%, transparent); color: var(--destructive, oklch(0.704 0.191 22.216)); } .ds-badge-outline { border-color: var(--border, oklch(1 0 0 / 10%)); color: var(--foreground, oklch(0.985 0 0)); }"
+    },
+    {
+      "name": "Input / Field",
+      "kind": "input",
+      "refersTo": "input",
+      "description": "Field 组织 label（14px）与 description（12px 灰）；input 用 border-input + 10px 圆角，焦点转环。",
+      "html": "<div class=\"ds-field\"><label class=\"ds-field-label\" for=\"ds-input-upstream\">upstream</label><input class=\"ds-input\" id=\"ds-input-upstream\" placeholder=\"origin.example.com\" /><p class=\"ds-field-desc\">`host`、`host:port` 或 `host/base/path`。不要写协议。</p></div>",
+      "css": ".ds-field { display: flex; flex-direction: column; gap: 6px; font: 400 14px/1.4 var(--font-sans, 'Geist Variable', sans-serif); color: var(--foreground, oklch(0.985 0 0)); } .ds-field-label { font-size: 14px; font-weight: 500; } .ds-input { height: 32px; padding: 0 12px; border: 1px solid var(--input, oklch(1 0 0 / 15%)); border-radius: var(--radius, 10px); background: color-mix(in oklch, var(--input, oklch(1 0 0 / 15%)) 30%, transparent); color: var(--foreground, oklch(0.985 0 0)); font: 400 14px/1 var(--font-mono, ui-monospace, monospace); outline: none; transition: box-shadow 150ms, border-color 150ms; } .ds-input::placeholder { color: var(--muted-foreground, oklch(0.708 0 0)); } .ds-input:focus-visible { border-color: var(--ring, oklch(0.556 0 0)); box-shadow: 0 0 0 3px color-mix(in oklch, var(--ring, oklch(0.556 0 0)) 50%, transparent); } .ds-field-desc { font-size: 12px; color: var(--muted-foreground, oklch(0.708 0 0)); }"
+    },
+    {
+      "name": "Card",
+      "kind": "card",
+      "refersTo": "card",
+      "description": "一切区块的容器：card 底、ring-1 细环、14px 圆角、无阴影；标题 16px 与说明 14px 灰，动作靠右。",
+      "html": "<div class=\"ds-card\"><div class=\"ds-card-head\"><div><div class=\"ds-card-title\">路由表</div><p class=\"ds-card-desc\">顺序即优先级，第一个匹配到的路由胜出。</p></div><button class=\"ds-btn-primary\">新建路由</button></div><div class=\"ds-card-body\">表格或空态放在这里。</div></div>",
+      "css": ".ds-card { display: flex; flex-direction: column; max-width: 560px; border-radius: 14px; background: var(--card, oklch(0.205 0 0)); color: var(--card-foreground, oklch(0.985 0 0)); box-shadow: 0 0 0 1px color-mix(in oklch, var(--foreground, oklch(0.985 0 0)) 10%, transparent); overflow: hidden; font: 400 14px/1.4 var(--font-sans, 'Geist Variable', sans-serif); } .ds-card-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; padding: 16px 16px 0; } .ds-card-title { font-size: 16px; font-weight: 500; line-height: 1.35; } .ds-card-desc { margin-top: 4px; font-size: 14px; color: var(--muted-foreground, oklch(0.708 0 0)); } .ds-card-body { padding: 16px; }"
+    },
+    {
+      "name": "Danger Surface",
+      "kind": "custom",
+      "refersTo": "danger-surface",
+      "description": "「按下会改变生产流量」的区域底色：destructive 8% 底 + 30% 描边。预览页危险卡片与发布弹窗清单同底色。",
+      "html": "<div class=\"ds-danger\"><p class=\"ds-danger-lead\">这份配置带着下面这些危险开关：</p><ul class=\"ds-danger-list\"><li><code>route-api.allowPrivateUpstream</code><span>放行内网与云元数据地址。</span></li></ul></div>",
+      "css": ".ds-danger { display: flex; flex-direction: column; gap: 8px; max-width: 560px; padding: 12px; border: 1px solid color-mix(in oklch, var(--destructive, oklch(0.704 0.191 22.216)) 30%, transparent); border-radius: var(--radius, 10px); background: color-mix(in oklch, var(--destructive, oklch(0.704 0.191 22.216)) 8%, transparent); font: 400 14px/1.4 var(--font-sans, 'Geist Variable', sans-serif); color: var(--foreground, oklch(0.985 0 0)); } .ds-danger-lead { margin: 0; font-size: 14px; font-weight: 500; color: var(--destructive, oklch(0.704 0.191 22.216)); } .ds-danger-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; } .ds-danger-list li { display: flex; flex-direction: column; gap: 2px; } .ds-danger-list code { font: 400 12px/1 var(--font-mono, ui-monospace, monospace); } .ds-danger-list span { font-size: 12px; color: var(--muted-foreground, oklch(0.708 0 0)); }"
+    },
+    {
+      "name": "Publish Bar",
+      "kind": "custom",
+      "refersTo": "button-primary",
+      "description": "常驻底部的 sticky 栏，面板的论点本身：左边差异陈述，右边发布按钮。role=status + aria-live。",
+      "html": "<div class=\"ds-bar\"><div class=\"ds-bar-inner\"><svg class=\"ds-bar-icon ds-bar-icon-pending\" width=\"16\" height=\"16\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><circle cx=\"12\" cy=\"12\" r=\"10\"/><path d=\"M12 8v4\"/><path d=\"M12 16h.01\"/></svg><div class=\"ds-bar-text\"><span class=\"ds-bar-headline\">草稿有改动尚未发布 <span class=\"ds-badge ds-badge-outline\">线上 revision 12</span></span><p class=\"ds-bar-detail\">发布后线上会变成这 3 条路由；在那之前流量仍走旧配置</p></div><div class=\"ds-bar-actions\"><button class=\"ds-btn-ghost\">查看发布内容</button><button class=\"ds-btn-primary\">发布到反代</button></div></div></div>",
+      "css": ".ds-bar { position: sticky; bottom: 0; z-index: 20; border-top: 1px solid var(--border, oklch(1 0 0 / 10%)); background: color-mix(in oklch, var(--background, oklch(0.145 0 0)) 95%, transparent); backdrop-filter: blur(8px); font: 400 14px/1.4 var(--font-sans, 'Geist Variable', sans-serif); color: var(--foreground, oklch(0.985 0 0)); } .ds-bar-inner { display: flex; align-items: center; gap: 16px; max-width: 72rem; margin: 0 auto; padding: 12px 16px; } .ds-bar-icon { flex-shrink: 0; } .ds-bar-icon-pending { color: var(--foreground, oklch(0.985 0 0)); animation: ds-gate-land 200ms ease-out; } .ds-bar-icon-neutral { color: var(--muted-foreground, oklch(0.708 0 0)); } .ds-bar-icon-bad { color: var(--destructive, oklch(0.704 0.191 22.216)); } .ds-bar-text { min-width: 0; flex: 1; } .ds-bar-headline { font-weight: 500; display: inline-flex; align-items: center; gap: 8px; flex-wrap: wrap; } .ds-bar-detail { margin: 2px 0 0; font-size: 12px; color: var(--muted-foreground, oklch(0.708 0 0)); } .ds-bar-actions { display: flex; flex-shrink: 0; align-items: center; gap: 8px; } @media (max-width: 39.99rem) { .ds-bar-inner { flex-direction: column; align-items: stretch; } .ds-bar-actions { justify-content: flex-end; } } @keyframes ds-gate-land { from { transform: translateY(-3px) scale(1.15); opacity: 0.4; } to { transform: none; opacity: 1; } }"
+    }
+  ],
+  "narrative": {
+    "northStar": "闸门（The Gate）",
+    "overview": "这个界面不是通用管理后台，它只讲一件事：草稿与生产之间隔着一道必须亲手推开的闸。视觉系统全部服务于这句话——常驻底部的发布栏是唯一的主角，其他一切都是它的注脚；危险不禁止、只让手指变重，所以整个系统里唯一的彩色是 destructive，它出现的地方都是「按下去会改变生产流量」的地方，从不装饰。\n\n底座是 shadcn/ui 官方 Base UI 版 nova preset（neutral 中性 oklch token、自托管 Geist 变量字体、Lucide 图标），nova token 一律不改——跟得上上游升级比拿到偏好的色号重要（src/index.css 明文声明）。产品只补 preset 没覆盖的两类东西：浏览器自身表面（selection、滚动条、focus）与产品特有语义（等宽数字、危险底色、闸门动画）。深色优先（html.dark 出厂即深色），浅色完整对称。",
+    "keyCharacteristics": [
+      "全中性灰阶 + 唯一色相 destructive；primary 不是品牌色而是明度反转的强调",
+      "无阴影系统，深度靠边框、tonal 分层与 backdrop-blur",
+      "类型档位封顶 text-base（16px），层级靠字重与灰度不靠字号",
+      "标识符、host、路径、JSON 一律等宽；表格数字一律 tabular-nums",
+      "常驻顶栏与常驻发布栏夹住内容，sticky + 半透明 + backdrop-blur",
+      "键盘可达是硬要求：焦点环永远可见，disabled 控件留在原地并说明原因"
+    ],
+    "rules": [
+      {
+        "name": "唯一色相规则",
+        "body": "全系统只允许 destructive 一个 chroma > 0 的 token。要强调就用明度反转（primary）或灰阶深浅，不引入第二个色相。品牌、成功、信息都用图标（Lucide）+ 灰阶表达，不上绿色/蓝色。",
+        "section": "colors"
+      },
+      {
+        "name": "危险有底色规则",
+        "body": "「需要亲手确认」的区域用 danger-surface（destructive 8% 底 + 30% 描边）标出，而不是只靠文字。发布预览页的危险卡片与发布弹窗里的危险清单必须同底色——两处说的是同一件事，操作者要能把它们对上。",
+        "section": "colors"
+      },
+      {
+        "name": "disabled 可见规则",
+        "body": "观察者看得见发布按钮但按不动，并且知道为什么：disabled 控件不隐藏、不消失，用原生 disabled 样式（opacity-50）加 title 说明原因。",
+        "section": "colors"
+      },
+      {
+        "name": "等宽是数据规则",
+        "body": "一个字符串只要会被操作者逐字符核对（ID、host、路径、上游、JSON、时间戳旁的确切值），就用 font-mono（12px）；说给人看的话用 sans。两者不混排在一个值里。",
+        "section": "typography"
+      },
+      {
+        "name": "数字对齐规则",
+        "body": "表格里的时间戳、计数、毫秒、revision 一律 tabular-nums（table, .tabular 全局生效）——比例数字会让竖列对不齐。",
+        "section": "typography"
+      },
+      {
+        "name": "无大标题规则",
+        "body": "不要给这个界面引入 20px+ 的标题字号。层级靠字重（400/500/600）与灰度（foreground / muted-foreground）完成，封顶 16px。",
+        "section": "typography"
+      },
+      {
+        "name": "无边影规则",
+        "body": "静止与交互态都不用 box-shadow。层次感来自灰阶差与 1px 边界；模糊只用于 sticky 栏的 backdrop-blur。",
+        "section": "elevation"
+      },
+      {
+        "name": "焦点环规则",
+        "body": "焦点必须一眼可见：组件内 focus-visible:ring-3 ring-ring/50，原生元素由全局 :focus-visible { outline: 2px solid var(--ring); outline-offset: 2px } 兜底。任何新控件不得移除焦点环。",
+        "section": "elevation"
+      }
+    ],
+    "dos": [
+      "Do 从 src/index.css 的 CSS 变量取每一个颜色（bg-background、text-muted-foreground、text-destructive…），深浅两主题自动成立；不写死色号。",
+      "Do 保持 nova token 零改动。产品需要新语义时在 index.css 追加 @utility/@theme，像 danger-surface、gate-icon 一样带注释说明为什么。",
+      "Do 用 danger-surface 标出一切「按下会改变生产流量」的区域，并让同一语义在不同页面同底色。",
+      "Do 新增控件保持键盘可达：可 Tab、焦点环可见、弹窗有焦点陷阱与 Esc 关闭（Base UI 默认提供，别绕开）。",
+      "Do 把所有界面文案写进 src/lib/messages.ts，语气说清后果不吓人；空态是「还没开始」。",
+      "Do 状态变化用 toast 或发布栏告知；加载用形状对齐的 Skeleton。"
+    ],
+    "donts": [
+      "Don't 引入第二个色相或品牌色。primary、secondary、accent 都是灰阶；绿色/蓝色成功/信息指示在这里没有位置。",
+      "Don't 用装饰性红色。destructive 只出现在「会改变生产行为」的语义处；危险按钮用淡染（bg-destructive/10），不用实底大色块。",
+      "Don't 使用 box-shadow 表达层级；也不要给 Badge 以外的元素用胶囊圆角。",
+      "Don't 引入 20px 以上的标题字号，或替代 Geist 的第二套字体。",
+      "Don't 隐藏或移除 disabled 控件——留在原位配 title 说明原因。",
+      "Don't 用拖拽实现路由排序（上下移按钮天然键盘可达）；不要让表格在窄屏折行——等宽值换行会读错。"
+    ]
+  }
+}

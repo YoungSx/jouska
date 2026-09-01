@@ -1,0 +1,507 @@
+import * as React from 'react';
+import { LogOutIcon, RefreshCwIcon, Trash2Icon } from 'lucide-react';
+import { toast } from 'sonner';
+import { Toaster } from '@/components/ui/sonner';
+import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu';
+import { Skeleton } from '@/components/ui/skeleton';
+import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { PublishBar } from '@/components/publish-bar';
+import { PublishDialog } from '@/components/publish-dialog';
+import { ThemeToggle } from '@/components/theme-toggle';
+import { AuthView } from '@/views/auth-view';
+import { AuditView } from '@/views/audit-view';
+import { DomainsView } from '@/views/domains-view';
+import { PreviewView } from '@/views/preview-view';
+import { RouteEditor } from '@/views/route-editor';
+import { RoutesView } from '@/views/routes-view';
+import { useDraft } from '@/hooks/use-draft';
+import { errorCode, useSession } from '@/hooks/use-session';
+import { api, type RouteEntry, type User } from '@/lib/api';
+import { isUsableDefinition } from '@/lib/format';
+import { t } from '@/lib/messages';
+import type { RouteDefinition } from '@/lib/types';
+
+/**
+ * 应用外壳：会话、导航、闸门轨道的接线处。
+ *
+ * 这个文件不做业务判断 —— 它只把 useSession（谁在用）、useDraft（草稿与线上差多
+ * 少）和各个视图缝在一起。发布栏常驻底部，意味着无论操作者此刻在哪一页，「线上
+ * 正在服务哪一版」这个问题始终有答案。
+ */
+
+type View =
+  | 'routes'
+  | 'domains'
+  | 'preview'
+  | 'audit'
+  /** 已规划未实现的功能入口：只说实话，不做假界面。 */
+  | 'planned-users'
+  | 'planned-history';
+
+interface NavItem {
+  readonly id: View;
+  readonly label: string;
+  readonly planned?: boolean;
+}
+
+const NAV_ITEMS: readonly NavItem[] = [
+  { id: 'routes', label: t.nav.routes },
+  { id: 'domains', label: t.nav.domains },
+  { id: 'preview', label: t.nav.preview },
+  { id: 'audit', label: t.nav.audit },
+  { id: 'planned-users', label: t.nav.users, planned: true },
+  { id: 'planned-history', label: t.nav.history, planned: true },
+];
+
+const App = () => {
+  const session = useSession();
+  const [view, setView] = React.useState<View>('routes');
+
+  /* 顶栏导航在窄屏下可横滚；「滚到头了没有」只驱动右缘淡出的显示，不参与渲染分支。 */
+  const navRef = React.useRef<HTMLElement | null>(null);
+  const syncNavTail = React.useCallback(() => {
+    navRef.current?.classList.toggle(
+      'scroll-tail',
+      navRef.current.scrollWidth - navRef.current.scrollLeft - navRef.current.clientWidth > 1,
+    );
+  }, []);
+  /* 视口宽度变化（旋转、分屏）会改变是否溢出；Web 字体（Geist、CJK 徽标字）
+     晚于首帧加载也会改变文字宽度——fonts.ready 后补测一次，淡出才不陈旧。 */
+  React.useEffect(() => {
+    syncNavTail();
+    window.addEventListener('resize', syncNavTail);
+    document.fonts.ready.then(syncNavTail).catch(() => undefined);
+    return () => window.removeEventListener('resize', syncNavTail);
+  }, [syncNavTail]);
+
+  const draft = useDraft(session.state.status === 'authed', session.onUnauthenticated);
+  const isAdmin = session.state.status === 'authed' && session.state.user.role === 'admin';
+
+  /* ---------- 弹窗状态：编辑器、发布、删除确认。 ---------- */
+  const [editor, setEditor] = React.useState<{
+    initial: { id: string; definition: RouteDefinition; enabled: boolean };
+    createMode: boolean;
+  } | null>(null);
+  const [editorOpen, setEditorOpen] = React.useState(false);
+  const [publishOpen, setPublishOpen] = React.useState(false);
+  const [deleteTarget, setDeleteTarget] = React.useState<RouteEntry | null>(null);
+
+  const reloadQuietly = React.useCallback(() => {
+    void draft.reload();
+  }, [draft.reload]);
+
+  /* ---------- 编辑器入口。 ---------- */
+
+  /** 复制件需要一个不与现有路由冲突的 ID —— 服务端会拒绝重复 ID，别把错留给它。 */
+  const suggestCopyId = (base: string): string => {
+    const taken = new Set(draft.routes.map((route) => route.id));
+    if (!taken.has(`${base}-copy`)) {
+      return `${base}-copy`;
+    }
+    for (let n = 2; ; n += 1) {
+      const candidate = `${base}-copy-${String(n)}`;
+      if (!taken.has(candidate)) {
+        return candidate;
+      }
+    }
+  };
+
+  const suggestNewId = (): string => {
+    const taken = new Set(draft.routes.map((route) => route.id));
+    for (let n = 1; ; n += 1) {
+      const candidate = `route-${String(n)}`;
+      if (!taken.has(candidate)) {
+        return candidate;
+      }
+    }
+  };
+
+  const openEditor = (
+    initial: { id: string; definition: RouteDefinition; enabled: boolean },
+    createMode: boolean,
+  ) => {
+    setEditor({ initial, createMode });
+    setEditorOpen(true);
+  };
+
+  const onCreate = () => {
+    openEditor({ id: suggestNewId(), definition: {}, enabled: true }, true);
+  };
+
+  const onEdit = (route: RouteEntry) => {
+    // 不可用的定义不进编辑器 —— routes-view 已经把入口禁掉，这里再挡一层。
+    if (!isUsableDefinition(route.definition)) {
+      return;
+    }
+    openEditor({ id: route.id, definition: route.definition, enabled: route.enabled }, false);
+  };
+
+  const onDuplicate = (route: RouteEntry) => {
+    if (!isUsableDefinition(route.definition)) {
+      return;
+    }
+    // 深拷贝：编辑器里改动不能回流到原路由的定义。
+    const definition = JSON.parse(JSON.stringify(route.definition)) as RouteDefinition;
+    openEditor({ id: suggestCopyId(route.id), definition, enabled: route.enabled }, true);
+  };
+
+  /* ---------- 路由写操作。 ---------- */
+
+  /** 401 之外的写失败进 toast —— 会话失效则整页回到登录。 */
+  const handleWriteError = (error: unknown, fallback: (message: string) => string) => {
+    if (errorCode(error) === 'unauthenticated') {
+      session.onUnauthenticated();
+      return;
+    }
+    toast.error(fallback(error instanceof Error ? error.message : t.common.unknownError));
+  };
+
+  const onDelete = async () => {
+    const target = deleteTarget;
+    if (target === null) {
+      return;
+    }
+    setDeleteTarget(null);
+    try {
+      await api.deleteRoute(target.id);
+      toast.success(t.routes.deleted(target.id));
+      reloadQuietly();
+    } catch (error) {
+      handleWriteError(error, t.routes.actionFailed);
+    }
+  };
+
+  const onMove = async (index: number, direction: -1 | 1) => {
+    const target = index + direction;
+    if (target < 0 || target >= draft.routes.length) {
+      return;
+    }
+    const ids = draft.routes.map((route) => route.id);
+    [ids[index], ids[target]] = [ids[target], ids[index]];
+    try {
+      await api.reorderRoutes(ids);
+      toast.success(t.routes.reordered);
+      reloadQuietly();
+    } catch (error) {
+      handleWriteError(error, t.routes.actionFailed);
+    }
+  };
+
+  const onSaveDefaults = async (defaults: Record<string, unknown>) => {
+    try {
+      await api.putDefaults(defaults);
+      toast.success(t.defaults.saved);
+      reloadQuietly();
+    } catch (error) {
+      handleWriteError(error, t.routes.actionFailed);
+      // 抛回去让 DefaultsCard 的保存按钮停下来 —— 静默失败会让人以为存上了。
+      throw error;
+    }
+  };
+
+  /* ---------- 预览页拿到的门。 ---------- */
+
+  const previewForPage = (() => {
+    switch (draft.gate.kind) {
+      case 'empty':
+        // 门已经知道草稿是空的；把这份事实交给预览页的空态分支。
+        return { ok: true, empty: true as const };
+      case 'blocked':
+      case 'dirty':
+      case 'clean':
+        return draft.gate.preview;
+      default:
+        return null;
+    }
+  })();
+
+  /** 每条路由命中的危险字段路径，行内就地标出。 */
+  const dangersByRoute: Record<string, readonly string[]> = (() => {
+    const gate = draft.gate;
+    if (gate.kind !== 'dirty' && gate.kind !== 'blocked' && gate.kind !== 'clean') {
+      return {};
+    }
+    const paths: Record<string, readonly string[]> = {};
+    for (const [routeId, risks] of Object.entries(gate.preview.dangers ?? {})) {
+      paths[routeId] = risks.map((risk) => risk.path);
+    }
+    return paths;
+  })();
+
+  /* ---------- 会话的三种非登录态。 ---------- */
+
+  if (session.state.status === 'loading') {
+    return (
+      <div className="mx-auto flex max-w-6xl flex-col gap-4 px-4 py-10" aria-busy>
+        {[0, 1, 2].map((row) => (
+          <Skeleton key={row} className="h-24 w-full" />
+        ))}
+      </div>
+    );
+  }
+
+  if (session.state.status === 'offline') {
+    return (
+      <div className="mx-auto max-w-md px-4 py-24">
+        <Card>
+          <CardHeader>
+            <CardTitle>{t.common.networkError}</CardTitle>
+            <CardDescription>{t.app.title}</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <Button variant="outline" onClick={() => void session.refresh()}>
+              <RefreshCwIcon />
+              {t.common.retry}
+            </Button>
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
+
+  if (session.state.status === 'anonymous') {
+    return (
+      <>
+        <AuthView
+          me={{ user: null, bootstrapable: session.state.bootstrapable }}
+          loading={false}
+          onSignedIn={() => void session.refresh()}
+        />
+        <Toaster position="top-center" richColors />
+      </>
+    );
+  }
+
+  const user: User = session.state.user;
+
+  return (
+    <div className="flex min-h-dvh flex-col">
+      {/* 键盘可达性是硬要求（PRODUCT.md）：先给读屏与键盘用户一条直达内容的路。 */}
+      <a
+        href="#main"
+        className="bg-primary text-primary-foreground sr-only z-50 rounded-md px-3 py-2 text-sm focus:not-sr-only focus:fixed focus:top-2 focus:left-2"
+      >
+        {t.nav.skipToContent}
+      </a>
+
+      <header className="bg-background/95 sticky top-0 z-30 border-b backdrop-blur">
+        <div className="mx-auto flex max-w-6xl items-center gap-4 px-4 py-2.5">
+          <div className="shrink-0">
+            <div className="text-sm leading-tight font-semibold tracking-tight">{t.app.name}</div>
+            <div className="text-muted-foreground text-xs leading-tight">{t.app.subtitle}</div>
+          </div>
+
+          {/* 窄屏下放不下的导航项仍可达：容器可横滚，右缘的淡出提示还有更多。
+              scroll-tail 由 onScroll 置位/复位——滚到头就收掉淡出，不撒谎。 */}
+          <nav
+            ref={navRef}
+            onScroll={syncNavTail}
+            className="nav-scroll min-w-0 flex-1 overflow-x-auto"
+            aria-label={t.app.title}
+          >
+            <Tabs value={view} onValueChange={(value) => setView(value as View)}>
+              <TabsList>
+                {NAV_ITEMS.map((item) => (
+                  <TabsTrigger key={item.id} value={item.id}>
+                    {item.label}
+                    {item.planned === true && (
+                      <Badge variant="secondary" className="ml-1.5 px-1.5 py-0 text-[10px]">
+                        {t.planned.badge}
+                      </Badge>
+                    )}
+                  </TabsTrigger>
+                ))}
+              </TabsList>
+            </Tabs>
+          </nav>
+
+          <div className="flex shrink-0 items-center gap-1.5">
+            <ThemeToggle />
+            <DropdownMenu>
+              <DropdownMenuTrigger
+                render={
+                  <Button variant="ghost" size="sm" aria-label={t.account.menu}>
+                    <span className="max-w-32 truncate font-mono text-xs">{user.subject}</span>
+                    <Badge variant={isAdmin ? 'default' : 'secondary'}>
+                      {isAdmin ? t.account.admin : t.account.viewer}
+                    </Badge>
+                  </Button>
+                }
+              />
+              <DropdownMenuContent align="end" className="min-w-44">
+                <DropdownMenuLabel className="font-mono text-xs">{user.subject}</DropdownMenuLabel>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem
+                  variant="destructive"
+                  onClick={() => {
+                    setView('routes');
+                    void session.signOut();
+                  }}
+                >
+                  <LogOutIcon />
+                  {t.account.logout}
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </div>
+        </div>
+      </header>
+
+      <main id="main" className="mx-auto w-full max-w-6xl flex-1 px-4 pt-6 pb-8">
+        {view === 'routes' && (
+          <RoutesView
+            routes={draft.routes}
+            defaults={draft.defaults}
+            loading={draft.loading}
+            isAdmin={isAdmin}
+            dangersByRoute={dangersByRoute}
+            onCreate={onCreate}
+            onEdit={onEdit}
+            onDuplicate={onDuplicate}
+            onDelete={setDeleteTarget}
+            onMove={(index, direction) => void onMove(index, direction)}
+            onSaveDefaults={onSaveDefaults}
+          />
+        )}
+        {view === 'domains' && <DomainsView />}
+        {view === 'preview' && (
+          <PreviewView
+            preview={previewForPage}
+            loading={draft.loading}
+            isAdmin={isAdmin}
+            onRefresh={() => void draft.recheck()}
+            onPublish={() => setPublishOpen(true)}
+            onGoRoutes={() => setView('routes')}
+          />
+        )}
+        {view === 'audit' && <AuditView />}
+        {(view === 'planned-users' || view === 'planned-history') && <PlannedView view={view} />}
+      </main>
+
+      {/* 闸门轨道：无论在哪一页，草稿与线上的差异都摆在这里。 */}
+      <PublishBar
+        gate={draft.gate}
+        canPublish={isAdmin}
+        publishing={false}
+        onPublish={() => setPublishOpen(true)}
+        onReview={() => setView('preview')}
+      />
+
+      {editor !== null && (
+        <RouteEditor
+          open={editorOpen}
+          onOpenChange={(open: boolean) => {
+            setEditorOpen(open);
+            if (!open) {
+              setEditor(null);
+            }
+          }}
+          initial={editor.initial}
+          createMode={editor.createMode}
+          onSaved={() => {
+            setEditorOpen(false);
+            setEditor(null);
+            reloadQuietly();
+          }}
+        />
+      )}
+
+      <PublishDialog
+        open={publishOpen}
+        onOpenChange={setPublishOpen}
+        preview={draft.gate.kind === 'dirty' ? draft.gate.preview : null}
+        onPublished={() => {
+          setPublishOpen(false);
+          reloadQuietly();
+        }}
+      />
+
+      <DeleteRouteDialog
+        target={deleteTarget}
+        onDismiss={() => setDeleteTarget(null)}
+        onConfirm={() => void onDelete()}
+      />
+
+      <Toaster position="top-center" richColors />
+    </div>
+  );
+};
+
+/**
+ * 待开发功能的入口页。只说实话：这个功能还没有，数据库里哪些字段在等它。
+ * 空壳按钮比没有按钮更让人以为坏了 —— 所以这里是一张说明卡，不是假表单。
+ */
+const PlannedView = ({ view }: { view: 'planned-users' | 'planned-history' }) => {
+  const entry = view === 'planned-users' ? t.planned.users : t.planned.history;
+  return (
+    <Card>
+      <CardHeader>
+        <div className="flex items-center gap-2">
+          <CardTitle>{entry.title}</CardTitle>
+          <Badge variant="secondary">{t.planned.badge}</Badge>
+        </div>
+        <CardDescription>{entry.description}</CardDescription>
+      </CardHeader>
+      <CardContent className="flex flex-col gap-2">
+        <ul className="text-muted-foreground list-disc space-y-1 pl-5 text-sm">
+          {entry.items.map((item) => (
+            <li key={item}>{item}</li>
+          ))}
+        </ul>
+        {/* 标注成 string：as const 把 note 收窄成字面量，与 '' 的比较会被判为死代码。 */}
+        {(entry.note as string) !== '' && (
+          <p className="text-muted-foreground text-xs">{entry.note}</p>
+        )}
+      </CardContent>
+    </Card>
+  );
+};
+
+/** 删除路由的确认弹窗。删除是写操作，必须问过一次；理由写在正文里而不是标题上。 */
+const DeleteRouteDialog = ({
+  target,
+  onDismiss,
+  onConfirm,
+}: {
+  target: RouteEntry | null;
+  onDismiss: () => void;
+  onConfirm: () => void;
+}) => (
+  <Dialog open={target !== null} onOpenChange={(open: boolean) => open || onDismiss()}>
+    <DialogContent className="sm:max-w-md">
+      <DialogHeader>
+        <DialogTitle>{target === null ? '' : t.routes.deleteTitle(target.id)}</DialogTitle>
+        <DialogDescription>{t.routes.deleteBody}</DialogDescription>
+      </DialogHeader>
+      <DialogFooter>
+        <Button variant="outline" onClick={onDismiss}>
+          {t.common.cancel}
+        </Button>
+        <Button variant="destructive" onClick={onConfirm}>
+          <Trash2Icon />
+          {t.routes.deleteConfirm}
+        </Button>
+      </DialogFooter>
+    </DialogContent>
+  </Dialog>
+);
+
+export default App;

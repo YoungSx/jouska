@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="zh-CN" class="dark">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="dark light" />
+    <meta name="robots" content="noindex, nofollow" />
+    <title>jouska 管理面板</title>
+  </head>
+  <body>
+    <!--
+      THESIS: 这个面板只讲一件事 —— 草稿与生产之间隔着一道必须亲手推开的闸。它
+      拒绝管理后台默认的那种「保存即生效」错觉：没有散落各处的保存提示，只有一
+      条常驻的发布栏，永远回答「线上是哪一版，草稿差了多少」。
+      OWN-WORLD: shadcn/ui 官方 Base UI base，nova preset（Geist 变量字体、
+      Lucide 图标、neutral 中性底色、oklch token）。深浅双主题，深色优先 —— 运维
+      面板多在暗光下长时间盯屏。危险用 destructive token，从不用装饰性红色。
+      STORY: 操作者知道线上正在服务哪个 revision、草稿改了什么、发布会带上哪些
+      危险开关，然后亲手推那道闸。
+      FIRST VIEWPORT: 顶栏（品牌 + 路由/发布/审计 + 主题 + 账号）；主体是路由
+      表，顺序即优先级；底部常驻发布栏，左侧是草稿与线上的差异陈述，右侧是发布
+      按钮。改任何东西，发布栏立刻从「一致」变成「N 项待发布」。
+      FORM: 闸门轨道，我排序里的第 4 号，用户在决策轮里锁定。seed key 3ad26f63。
+      FINISH: unreviewed and undocumented is unfinished; this build ends with the
+      finish review, the verdict, DESIGN.md, and every shipping raster carrying
+      its provenance.
+    -->
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

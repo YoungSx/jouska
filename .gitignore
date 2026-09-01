@@ -4,3 +4,9 @@ dist/
 .dev.vars
 *.log
 *.tgz
+
+# vite 构建产物：CI 里 npm run build 生成，不入库
+workers/admin-panel/public/
+
+# impeccable 流程的开发证据（审查截图），随生随删不入库；design.json sidecar 入库
+.impeccable/review/

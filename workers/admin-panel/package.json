@@ -6,10 +6,13 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "typecheck": "tsc --noEmit -p tsconfig.json && npm run typecheck -w @jouska/admin-web",
     "test": "vitest run",
-    "dev": "wrangler dev",
-    "deploy": "wrangler deploy",
+    "build": "npm run build -w @jouska/admin-web",
+    "dev": "npm run dev:api",
+    "dev:api": "wrangler dev --var PANEL_URL:http://localhost:5173",
+    "dev:web": "npm run dev -w @jouska/admin-web",
+    "deploy": "npm run build && wrangler deploy",
     "migrate:local": "wrangler d1 migrations apply jouska-admin --local",
     "migrate:remote": "wrangler d1 migrations apply jouska-admin --remote"
   },
