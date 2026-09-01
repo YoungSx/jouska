@@ -22,6 +22,7 @@ export const t = {
     audit: '审计',
     users: '用户',
     history: '历史',
+    menu: '导航菜单',
     skipToContent: '跳到主内容',
   },
 
