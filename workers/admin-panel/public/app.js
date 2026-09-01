@@ -69,6 +69,9 @@ const showAuth = (bootstrapable) => {
   $('#view-auth').hidden = false;
   for (const v of views) $(`#view-${v}`).hidden = true;
   $('#bootstrapToggle').hidden = !bootstrapable;
+  // 每次回到登录页都收起恢复框：它是例外路径，不该常驻。
+  $('#recoverBox').hidden = true;
+  setMsg($('#recoverMsg'), '');
   if (bootstrapable) {
     $('#authTitle').textContent = '首次部署';
     $('#authSubmit').textContent = '创建管理员';
@@ -109,6 +112,41 @@ $('#authForm').addEventListener('submit', async (e) => {
       locked: `试错太多次，账号锁定了，${Math.ceil((err.data?.retryAfterSeconds ?? 900) / 60)} 分钟后再来。`,
       already_bootstrapped: '已初始化过，请直接登录。',
       invalid_input: '密码至少 12 位。',
+    };
+    setMsg(msg, hints[err.message] ?? `失败：${err.message}`, 'err');
+  }
+});
+
+/* ---------- 带外恢复 ---------- */
+
+$('#recoverToggle').addEventListener('click', (e) => {
+  e.preventDefault();
+  const box = $('#recoverBox');
+  box.hidden = !box.hidden;
+});
+
+$('#recoverForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const form = new FormData(e.target);
+  const msg = $('#recoverMsg');
+  setMsg(msg, '');
+  try {
+    await api('POST', '/api/auth/recover', {
+      subject: form.get('subject'),
+      token: form.get('token'),
+      password: form.get('password'),
+    });
+    setMsg(msg, '密码已重置，正在登录…', 'ok');
+    const { user } = await api('POST', '/api/auth/login', {
+      subject: form.get('subject'),
+      password: form.get('password'),
+    });
+    enterApp(user);
+  } catch (err) {
+    // 服务端刻意不区分"没开窗口/令牌不对/已过期"，前端也不能替它猜。
+    const hints = {
+      recovery_unavailable: '没能重置。检查令牌是否写对、是否已过期、账号名是否正确。',
+      invalid_input: '新密码至少 12 位，令牌至少 16 位。',
     };
     setMsg(msg, hints[err.message] ?? `失败：${err.message}`, 'err');
   }

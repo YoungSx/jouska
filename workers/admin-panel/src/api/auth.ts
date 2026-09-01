@@ -21,7 +21,10 @@ import {
   MAX_PASSWORD_LENGTH,
   MAX_SUBJECT_LENGTH,
   MIN_PASSWORD_LENGTH,
+  parseJsonSafe,
 } from '../validate.js';
+import { checkRecoveryToken, RECOVERY_KEY, RECOVERY_MAX_TOKEN_LENGTH } from '../recovery.js';
+import { audit, consumeRecoveryAndSetPassword, getSettingRaw } from '../store.js';
 
 /** Consecutive failures before the account parks until locked_until. */
 const MAX_FAILED_ATTEMPTS = 5;
@@ -132,6 +135,84 @@ authRoutes.post('/login', async (c) => {
 authRoutes.post('/logout', async (c) => {
   await destroySession(c.env.DB, c.req.header('cookie'));
   c.header('set-cookie', clearCookieHeader());
+  return c.json({ ok: true });
+});
+
+/**
+ * Out-of-band password recovery: spend a token an operator wrote into
+ * `settings` and set a new password. Reachable unauthenticated by necessity —
+ * whoever needs it cannot log in.
+ *
+ * Every failure returns the same 401 `recovery_unavailable`. Distinguishing
+ * "no window open" from "wrong token" from "expired" would let anyone poll this
+ * endpoint to learn when an operator opens a window, which is exactly the
+ * moment worth attacking.
+ */
+authRoutes.post('/recover', async (c) => {
+  const body = await readJsonObject(c);
+  const token = boundedString(body.token, RECOVERY_MAX_TOKEN_LENGTH);
+  const subject = boundedString(body.subject, MAX_SUBJECT_LENGTH);
+  const password = typeof body.password === 'string' ? body.password : undefined;
+  const unavailable = { error: 'recovery_unavailable' } as const;
+
+  // Shape errors answer 400 — they say nothing about whether a window is open.
+  if (
+    password === undefined ||
+    password.length < MIN_PASSWORD_LENGTH ||
+    password.length > MAX_PASSWORD_LENGTH
+  ) {
+    return c.json(
+      {
+        error: 'invalid_input',
+        detail: `password must be ${MIN_PASSWORD_LENGTH}-${MAX_PASSWORD_LENGTH} characters`,
+      },
+      400,
+    );
+  }
+  if (token === undefined || subject === undefined) {
+    return c.json({ error: 'invalid_input', detail: 'token and subject are required' }, 400);
+  }
+
+  const stored = await getSettingRaw(c.env.DB, RECOVERY_KEY);
+  const parsed = stored === undefined ? undefined : parseJsonSafe(stored);
+  const check = await checkRecoveryToken(
+    parsed !== undefined && parsed.ok ? parsed.value : undefined,
+    token,
+    nowSeconds(),
+  );
+  if (!check.ok) {
+    return c.json(unavailable, 401);
+  }
+  // A token may be pinned to one account, so a leaked token cannot be
+  // redirected at a different admin than the operator intended.
+  if (check.record.subject !== undefined && check.record.subject !== subject) {
+    return c.json(unavailable, 401);
+  }
+
+  const user = await c.env.DB.prepare('SELECT id, subject FROM users WHERE subject = ?')
+    .bind(subject)
+    .first<{ id: number; subject: string }>();
+  if (user === null) {
+    return c.json(unavailable, 401);
+  }
+
+  const passwordHash = await hashPassword(password);
+  // One transaction: spend the token and write the password together, so a
+  // second concurrent request finds nothing to spend.
+  const spent = await consumeRecoveryAndSetPassword(c.env.DB, {
+    recoveryKey: RECOVERY_KEY,
+    expectedValue: stored as string,
+    userId: user.id,
+    passwordHash,
+  });
+  if (!spent) {
+    return c.json(unavailable, 401);
+  }
+  // Audited under the recovered account: the log must show that this password
+  // came in through the out-of-band path, not through a normal change.
+  await audit(c.env.DB, user.subject, 'auth.recover', user.subject, {
+    via: 'settings-token',
+  });
   return c.json({ ok: true });
 });
 
