@@ -1,5 +1,5 @@
 import * as React from 'react';
-import { LogOutIcon, MenuIcon, RefreshCwIcon, Trash2Icon } from 'lucide-react';
+import { KeyRoundIcon, LogOutIcon, MenuIcon, RefreshCwIcon, Trash2Icon } from 'lucide-react';
 import { toast } from 'sonner';
 import { Toaster } from '@/components/ui/sonner';
 import { Badge } from '@/components/ui/badge';
@@ -26,6 +26,7 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { PublishBar } from '@/components/publish-bar';
 import { PublishDialog } from '@/components/publish-dialog';
+import { ChangePasswordDialog } from '@/components/change-password-dialog';
 import { ThemeToggle } from '@/components/theme-toggle';
 import { AuthView } from '@/views/auth-view';
 import { AuditView } from '@/views/audit-view';
@@ -33,6 +34,7 @@ import { DomainsView } from '@/views/domains-view';
 import { PreviewView } from '@/views/preview-view';
 import { RouteEditor } from '@/views/route-editor';
 import { RoutesView } from '@/views/routes-view';
+import { UsersView } from '@/views/users-view';
 import { useDraft } from '@/hooks/use-draft';
 import { errorCode, useSession } from '@/hooks/use-session';
 import { api, type RouteEntry, type User } from '@/lib/api';
@@ -53,14 +55,16 @@ type View =
   | 'domains'
   | 'preview'
   | 'audit'
+  | 'users'
   /** 已规划未实现的功能入口：只说实话，不做假界面。 */
-  | 'planned-users'
   | 'planned-history';
 
 interface NavItem {
   readonly id: View;
   readonly label: string;
   readonly planned?: boolean;
+  /** admin 专属页：viewer 的导航里整个不出现，而不是点进去吃 403。 */
+  readonly adminOnly?: boolean;
 }
 
 const NAV_ITEMS: readonly NavItem[] = [
@@ -68,7 +72,7 @@ const NAV_ITEMS: readonly NavItem[] = [
   { id: 'domains', label: t.nav.domains },
   { id: 'preview', label: t.nav.preview },
   { id: 'audit', label: t.nav.audit },
-  { id: 'planned-users', label: t.nav.users, planned: true },
+  { id: 'users', label: t.nav.users, adminOnly: true },
   { id: 'planned-history', label: t.nav.history, planned: true },
 ];
 
@@ -104,6 +108,7 @@ const App = () => {
   const [editorOpen, setEditorOpen] = React.useState(false);
   const [publishOpen, setPublishOpen] = React.useState(false);
   const [deleteTarget, setDeleteTarget] = React.useState<RouteEntry | null>(null);
+  const [passwordOpen, setPasswordOpen] = React.useState(false);
 
   const reloadQuietly = React.useCallback(() => {
     void draft.reload();
@@ -320,7 +325,7 @@ const App = () => {
           >
             <Tabs value={view} onValueChange={(value) => setView(value as View)}>
               <TabsList>
-                {NAV_ITEMS.map((item) => (
+                {NAV_ITEMS.filter((item) => item.adminOnly !== true || isAdmin).map((item) => (
                   <TabsTrigger key={item.id} value={item.id}>
                     {item.label}
                     {item.planned === true && (
@@ -384,6 +389,10 @@ const App = () => {
               <DropdownMenuContent align="end" className="min-w-44">
                 <DropdownMenuLabel className="font-mono text-xs">{user.subject}</DropdownMenuLabel>
                 <DropdownMenuSeparator />
+                <DropdownMenuItem onClick={() => setPasswordOpen(true)}>
+                  <KeyRoundIcon />
+                  {t.account.changePassword}
+                </DropdownMenuItem>
                 <DropdownMenuItem
                   variant="destructive"
                   onClick={() => {
@@ -428,7 +437,13 @@ const App = () => {
           />
         )}
         {view === 'audit' && <AuditView />}
-        {(view === 'planned-users' || view === 'planned-history') && <PlannedView view={view} />}
+        {view === 'users' && (
+          <UsersView
+            selfSubject={user.subject}
+            onSelfRoleChanged={() => void session.refresh()}
+          />
+        )}
+        {view === 'planned-history' && <PlannedView />}
       </main>
 
       {/* 闸门轨道：无论在哪一页，草稿与线上的差异都摆在这里。 */}
@@ -475,6 +490,8 @@ const App = () => {
         onConfirm={() => void onDelete()}
       />
 
+      <ChangePasswordDialog open={passwordOpen} onOpenChange={setPasswordOpen} />
+
       <Toaster position="top-center" richColors />
     </div>
   );
@@ -484,8 +501,8 @@ const App = () => {
  * 待开发功能的入口页。只说实话：这个功能还没有，数据库里哪些字段在等它。
  * 空壳按钮比没有按钮更让人以为坏了 —— 所以这里是一张说明卡，不是假表单。
  */
-const PlannedView = ({ view }: { view: 'planned-users' | 'planned-history' }) => {
-  const entry = view === 'planned-users' ? t.planned.users : t.planned.history;
+const PlannedView = () => {
+  const entry = t.planned.history;
   return (
     <Card>
       <CardHeader>

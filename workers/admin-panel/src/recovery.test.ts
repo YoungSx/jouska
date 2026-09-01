@@ -69,6 +69,9 @@ const storedRows = async (): Promise<number> => {
 const login = async (password: string): Promise<number> =>
   (await call('POST', '/api/auth/login', { subject: 'admin1', password })).status;
 
+const cookieFrom = (res: ResponseLike): string =>
+  `jouska_session=${/jouska_session=([^;]+)/.exec(res.headers.get('set-cookie') ?? '')?.[1] ?? ''}`;
+
 beforeEach(async () => {
   await applyD1Migrations(testEnv.DB, TEST_MIGRATIONS);
   for (const table of ['audit_log', 'sessions', 'routes', 'settings', 'users']) {
@@ -323,5 +326,54 @@ describe('the endpoint', () => {
     );
     expect(res.status).toBe(403);
     expect(await storedRows()).toBe(1);
+  });
+
+  it('still works after a self-service password change', async () => {
+    // The recovery token lives in settings, untouched by the password change —
+    // which is the point: the self-change path must not be able to disable the
+    // out-of-band lifeline.
+    const loginRes = await call('POST', '/api/auth/login', {
+      subject: 'admin1',
+      password: OLD_PASSWORD,
+    });
+    await call(
+      'POST',
+      '/api/auth/password',
+      { currentPassword: OLD_PASSWORD, newPassword: NEW_PASSWORD },
+      { cookie: cookieFrom(loginRes) },
+    );
+
+    await openWindow({ token: TOKEN, expiresAt: nowSeconds() + 600 });
+    const recover = await call('POST', '/api/auth/recover', {
+      token: TOKEN,
+      subject: 'admin1',
+      password: OLD_PASSWORD,
+    });
+    expect(recover.status).toBe(200);
+    expect(await login(OLD_PASSWORD)).toBe(200);
+  });
+
+  it('revokes every session including the one that drove the recovery', async () => {
+    // Contrast with POST /api/auth/password, which keeps the caller's session:
+    // recovery rides an unauthenticated request, so there is nothing to keep,
+    // and a token spent from a stolen channel must leave nothing alive.
+    const cookie = cookieFrom(
+      await call('POST', '/api/auth/login', { subject: 'admin1', password: OLD_PASSWORD }),
+    );
+    await openWindow({ token: TOKEN, expiresAt: nowSeconds() + 600 });
+    expect(
+      (await call('POST', '/api/auth/recover', {
+        token: TOKEN,
+        subject: 'admin1',
+        password: NEW_PASSWORD,
+      })).status,
+    ).toBe(200);
+
+    expect(await login(OLD_PASSWORD)).toBe(401);
+    // The pre-recovery cookie is dead — this session was alive before the
+    // recover call and must not have survived it. (/me always answers 200; it
+    // is the SPA's login-state ping and says "no session" in the body.)
+    const me = await call('GET', '/api/auth/me', undefined, { cookie });
+    expect(((await me.json()) as { user: unknown }).user).toBeNull();
   });
 });

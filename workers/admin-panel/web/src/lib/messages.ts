@@ -42,6 +42,97 @@ export const t = {
     viewerReadonly: '观察者身份，只读',
     logout: '退出登录',
     menu: '账号菜单',
+    changePassword: '修改密码…',
+  },
+
+  /**
+   * 修改自己的密码。当前会话保留（服务端只吊销其他会话），所以成功后的下一句话
+   * 是「其他标签页要重新登录」而不是「请重新登录」—— 这个区别是真实的安全承诺，
+   * 措辞不能含糊。
+   */
+  changePassword: {
+    title: '修改密码',
+    lead: '改完之后，其他标签页和其他设备的登录会失效，当前这一页不受影响。',
+    current: '当前密码',
+    new: '新密码',
+    confirm: '再输一遍新密码',
+    mismatch: '两次输入的新密码不一样',
+    action: '确认修改',
+    pending: '修改中…',
+    ok: '密码已修改，其他标签页需要重新登录。',
+    errors: {
+      wrong_password: '当前密码不对。',
+      no_password: '这个账号不是用密码登录的（比如走了 SSO），改不了密码。',
+      locked: (minutes: number) => `试错太多次，账号已锁定，${minutes} 分钟后再试。`,
+      invalid_input: (min: number, max: number) => `新密码需要 ${min}-${max} 位。`,
+      unknown: (message: string) => `修改失败：${message}`,
+    },
+  },
+
+  /**
+   * 用户管理页。角色与状态徽章的措辞与顶栏一致（管理员/观察者）；停用与锁定是
+   * 两种不同的病：前者是人的决定，后者是服务的保护，图标与文案都不共用。
+   */
+  users: {
+    title: '用户',
+    description: '账号、角色与会话。停用是可逆的，删除不可逆。',
+    refresh: '刷新',
+    create: '新建用户',
+    columns: {
+      subject: '账号',
+      role: '角色',
+      status: '状态',
+      sessions: '会话',
+      createdAt: '创建时间',
+      lastSeen: '最后登录',
+      actions: '操作',
+    },
+    status: {
+      normal: '正常',
+      disabled: '已停用',
+      locked: '已锁定',
+      lockedUntil: (when: string) => `锁定至 ${when}`,
+      never: '从未登录',
+    },
+    roleAdmin: '管理员',
+    roleViewer: '观察者',
+    selfNote: '这是你自己的账号',
+    createTitle: '新建用户',
+    createDescription: '密码请通过安全渠道交给对方；对方首次登录后可自行修改。',
+    editTitle: (subject: string) => `编辑用户 ${subject}`,
+    editRole: '角色',
+    editRoleHint: '降级最后一个可用管理员会被拒绝 —— 面板需要至少一个能开门的人。',
+    editDisabled: '停用这个账号',
+    editDisabledHint: '停用后无法登录，已有会话立刻失效；可以随时恢复。',
+    unlock: '解除锁定',
+    unlockHint: '清除失败计数并立即解锁。',
+    save: '保存修改',
+    rowMenu: (subject: string) => `${subject} 的操作`,
+    edit: '编辑',
+    remove: '删除',
+    deleteTitle: (subject: string) => `删除用户 ${subject}？`,
+    deleteBody: '立即生效：会话全部作废，账号不可恢复。最后一个用户不可删除。',
+    deleteSelfNote: '这是你自己的账号。删除后你会立刻退出。',
+    confirm: '删除',
+    created: (subject: string) => `${subject} 已创建，密码请通过安全渠道交给对方。`,
+    updated: (subject: string) => `${subject} 已更新`,
+    deleted: (subject: string) => `${subject} 已删除`,
+    unlocked: (subject: string) => `${subject} 已解锁`,
+    errors: {
+      subject_taken: '这个账号名已经有人用了。',
+      last_admin: '面板需要至少一个可用的管理员，这个改动被拒绝。',
+      last_user: '至少要保留一个用户 —— 删空会重新打开首次部署入口。',
+      not_found: '这个用户已经不存在了，刷新一下列表。',
+      forbidden: '这个操作需要管理员权限。',
+      invalid_input: '输入不合法：账号 1-128 字符，密码 12-1024 位，角色是 admin 或 viewer。',
+      no_password: '这个账号不是用密码登录的（比如走了 SSO）。',
+      unknown: (message: string) => `操作失败：${message}`,
+    },
+    loadFailed: (message: string) => `加载用户列表失败：${message}`,
+    empty: {
+      title: '没有其他用户',
+      description: '新建一个用户，把账号和密码通过安全渠道交给对方。',
+    },
   },
 
   auth: {
@@ -468,6 +559,11 @@ export const t = {
       'routes.reorder': '调整顺序',
       'defaults.update': '修改默认值',
       'config.publish': '发布配置',
+      'auth.password': '修改密码',
+      'auth.recover': '恢复令牌重置',
+      'user.create': '新建用户',
+      'user.update': '修改用户',
+      'user.delete': '删除用户',
     } as Record<string, string>,
     viewDetail: '看详情',
     detailTitle: '审计详情',
@@ -481,17 +577,10 @@ export const t = {
 
   /**
    * 已规划但还没有后端的功能。UI 只提供入口和一句实话，不做假界面 ——
-   * 空壳按钮比没有按钮更让人以为坏了。
+   * 空壳按钮比没有按钮更让人以为坏了。用户管理已经落地，从这张表里毕业了。
    */
   planned: {
     badge: '待开发',
-    users: {
-      title: '用户与会话',
-      description:
-        '数据库里已经有 role、disabled、失败次数和锁定时间这些字段，但还没有对应的接口和界面。',
-      items: ['新增账号、改角色、停用与恢复', '解锁被锁定的账号', '踢掉某个会话'],
-      note: '在这些做出来之前：建号只能靠首次部署的 bootstrap，改密码走登录页的「恢复令牌」，解锁靠等 15 分钟或用恢复令牌重置。',
-    },
     history: {
       title: '发布历史与回滚',
       description:

@@ -33,6 +33,40 @@ const sha256 = async (value: string): Promise<string> => {
 
 const nowSeconds = (): number => Math.floor(Date.now() / 1000);
 
+/**
+ * The raw session token from a Cookie header, or undefined.
+ *
+ * One parser, three users (resolveSession, destroySession, the password
+ * change's keep-current-session clause): resolveSession does its own matching
+ * on purpose, because getCookie would strip the name it needs to see.
+ */
+const tokenFromCookie = (cookie: string | undefined): string | undefined => {
+  if (cookie === undefined) {
+    return undefined;
+  }
+  const match = cookie
+    .split(';')
+    .map((part) => part.trim())
+    .find((part) => part.startsWith(`${SESSION_COOKIE}=`));
+  if (match === undefined) {
+    return undefined;
+  }
+  const token = match.slice(SESSION_COOKIE.length + 1);
+  return token === '' ? undefined : token;
+};
+
+/**
+ * The SHA-256 of the request's own session token — the D1-side identity of the
+ * current session. The password change needs it to revoke every *other*
+ * session while keeping the one the request arrived on.
+ */
+export const sessionTokenHashFromCookie = async (
+  cookie: string | undefined,
+): Promise<string | undefined> => {
+  const token = tokenFromCookie(cookie);
+  return token === undefined ? undefined : await sha256(token);
+};
+
 export const createSession = async (
   store: SessionStore,
   user: { id: number },
@@ -81,15 +115,8 @@ export const resolveSession = async (
   if (cookie === undefined) {
     return undefined;
   }
-  const match = cookie
-    .split(';')
-    .map((part) => part.trim())
-    .find((part) => part.startsWith(`${SESSION_COOKIE}=`));
-  if (match === undefined) {
-    return undefined;
-  }
-  const token = match.slice(SESSION_COOKIE.length + 1);
-  if (token === '') {
+  const token = tokenFromCookie(cookie);
+  if (token === undefined) {
     return undefined;
   }
   const tokenHash = await sha256(token);
@@ -127,19 +154,13 @@ export const destroySession = async (
   store: SessionStore,
   cookie: string | undefined,
 ): Promise<void> => {
-  if (cookie === undefined) {
-    return;
-  }
-  const match = cookie
-    .split(';')
-    .map((part) => part.trim())
-    .find((part) => part.startsWith(`${SESSION_COOKIE}=`));
-  if (match === undefined) {
+  const token = tokenFromCookie(cookie);
+  if (token === undefined) {
     return;
   }
   await store
     .prepare('DELETE FROM sessions WHERE token_hash = ?')
-    .bind(await sha256(match.slice(SESSION_COOKIE.length + 1)))
+    .bind(await sha256(token))
     .run();
 };
 

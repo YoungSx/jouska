@@ -110,6 +110,14 @@ export const api = {
     return { user: asUser(data.user), bootstrapable: data.bootstrapable === true };
   },
 
+  /**
+   * 修改自己的密码。成功后当前会话保留（服务端只吊销其他会话），所以不重置
+   * 会话状态 —— SPA 缓存的身份仍然有效，弹窗自己负责把结果说清楚。
+   */
+  changePassword: async (currentPassword: string, newPassword: string): Promise<void> => {
+    await request('POST', '/api/auth/password', { currentPassword, newPassword });
+  },
+
   bootstrap: async (subject: string, password: string): Promise<void> => {
     await request('POST', '/api/auth/bootstrap', { subject, password });
   },
@@ -185,6 +193,29 @@ export const api = {
     return { revision: typeof data.revision === 'number' ? data.revision : 0 };
   },
 
+  /* ---------- 用户管理（admin only） ---------- */
+
+  listUsers: async (): Promise<UserEntry[]> => {
+    const data = await request('GET', '/api/users');
+    return Array.isArray(data.users) ? (data.users as UserEntry[]) : [];
+  },
+
+  /** role 不传时服务端缺省 viewer：一次点击不该造出一个管理员。 */
+  createUser: async (subject: string, password: string, role: Role): Promise<void> => {
+    await request('POST', '/api/users', { subject, password, role });
+  },
+
+  updateUser: async (
+    id: number,
+    patch: { readonly role?: Role; readonly disabled?: boolean; readonly unlock?: boolean },
+  ): Promise<void> => {
+    await request('PATCH', `/api/users/${String(id)}`, patch);
+  },
+
+  deleteUser: async (id: number): Promise<void> => {
+    await request('DELETE', `/api/users/${String(id)}`);
+  },
+
   /* ---------- 审计 ---------- */
 
   audit: async (limit: number): Promise<AuditEntry[]> => {
@@ -240,6 +271,26 @@ export interface AuditEntry {
   readonly action: string;
   readonly target: string | null;
   readonly detail: string | null;
+}
+
+/**
+ * GET /api/users 的行。形状逐字段对齐 store.ts 的 listUsers —— 密码哈希列从不
+ * 出现在这份响应里，那是服务端 SELECT 清单的责任，前端类型只认这些字段。
+ */
+export interface UserEntry {
+  readonly id: number;
+  readonly subject: string;
+  readonly email: string | null;
+  readonly role: Role;
+  readonly disabled: boolean;
+  /** 秒级时间戳，与 RouteEntry.updatedAt 同一纪元。 */
+  readonly createdAt: number;
+  /** null = 从未登录过（只创建还没用过的账号）。 */
+  readonly lastSeen: number | null;
+  readonly failedAttempts: number;
+  /** null = 没有被锁。 */
+  readonly lockedUntil: number | null;
+  readonly sessions: number;
 }
 
 /** 一个绑定来源：workers.dev 子域、自定义域，或 zone route（可能是通配）。 */
