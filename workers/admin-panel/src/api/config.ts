@@ -12,6 +12,7 @@ import { readJsonObject } from '../body.js';
 import { compileConfig, type RouteRow } from '../compile.js';
 import { dangerFlags, type FieldRisk } from '../danger.js';
 import { asLiveState, documentDigest, LIVE_KEY } from '../fingerprint.js';
+import { publishDraft } from '../publish.js';
 import { requireAdmin } from '../middleware.js';
 import {
   audit,
@@ -36,9 +37,6 @@ import {
   MAX_NOTE_LENGTH,
   strictBoolean,
 } from '../validate.js';
-
-/** The KV key the reverse proxy reads via fromKV(..., CONFIG_KEY ?? 'routes'). */
-const KV_KEY = 'routes';
 
 export interface PreviewResult {
   readonly ok: boolean;
@@ -145,8 +143,8 @@ configRoutes.put('/routes-order', requireAdmin, async (c) => {
   const known = new Set((await listAllRoutes(c.env.DB)).map((r) => r.id));
   // A permutation, checked as one: right length, all known, and no duplicates.
   // Without the duplicate check `['a','a']` passes the first two and leaves
-  // some other route unpositioned while two rows claim the same slot — which
-  // the position unique index then rejects as a 500.
+  // some other route unpositioned — the table has no uniqueness constraint on
+  // position, so the drift would persist silently into every compile.
   if (
     ids.length !== known.size ||
     new Set(ids).size !== ids.length ||
@@ -233,81 +231,45 @@ configRoutes.get('/preview', async (c) => {
 /**
  * Publish: compile, validate, gate on dangers, one KV write, audit.
  *
- * The KV document carries `meta`, so the proxy's own logs can answer "who
- * changed this" without querying the panel.
+ * The pipeline itself lives in `publish.ts` — rollback must run the exact same
+ * gates, so this handler only maps the shared outcome onto HTTP.
  */
 configRoutes.post('/publish', requireAdmin, async (c) => {
   const body = await readJsonObject(c);
-  const rows: RouteRow[] = await listEnabledRoutes(c.env.DB);
-  const defaults = await getSetting(c.env.DB, 'defaults');
-  const compiled = compileConfig(rows, defaults);
-  if (!compiled.ok) {
-    return c.json<PreviewResult>(
-      {
-        ok: false,
-        issues: compiled.issues,
-        ...(compiled.empty === true ? { empty: true } : {}),
-      },
-      422,
-    );
-  }
-
-  const dangers: Record<string, readonly FieldRisk[]> = {};
-  for (const row of rows) {
-    if (typeof row.definition === 'object' && row.definition !== null) {
-      const flags = dangerFlags(row.definition as Record<string, unknown>);
-      if (flags.length > 0) {
-        dangers[row.id] = flags;
-      }
-    }
-  }
-  const hasDangers = Object.keys(dangers).length > 0;
-  if (hasDangers && body.confirm !== true) {
-    return c.json<PreviewResult>(
-      {
-        ok: false,
-        dangers,
-        shadowWarnings: compiled.shadowWarnings,
-        error: 'confirmation_required',
-      },
-      409,
-    );
-  }
-
   const user = c.get('user');
-  const stored = await getSetting(c.env.DB, 'revision');
-  // A revision must be a positive integer: a corrupt or hand-edited value must
-  // not produce `NaN + 1` or walk backwards over an existing revision.
-  const previous =
-    typeof stored === 'number' && Number.isInteger(stored) && stored >= 0 ? stored : 0;
-  const revision = previous + 1;
   const note = boundedString(body.note, MAX_NOTE_LENGTH);
-  const meta = {
-    updatedAt: new Date().toISOString(),
-    updatedBy: user.subject,
-    revision,
+  const result = await publishDraft(c.env, {
+    actor: user.subject,
     ...(note === undefined ? {} : { note }),
-  };
-  const document = { ...compiled.document, meta };
-
-  // The one and only KV write in this worker.
-  await c.env.CONFIG_KV.put(KV_KEY, JSON.stringify(document));
-  await putSetting(c.env.DB, 'revision', revision);
-  // Record what went live so `/api/preview` can tell draft from published
-  // without reading KV back. Digested without `meta`, matching preview.
-  await putSetting(c.env.DB, LIVE_KEY, {
-    revision,
-    digest: await documentDigest(compiled.document),
+    confirm: body.confirm === true,
+    action: 'config.publish',
   });
-  await audit(c.env.DB, user.subject, 'config.publish', KV_KEY, {
-    revision,
-    routeCount: rows.length,
-    shadowWarnings: compiled.shadowWarnings,
-    dangers,
-    ...(note === undefined ? {} : { note }),
+  if (!result.ok) {
+    return result.reason === 'compile_failed'
+      ? c.json<PreviewResult>(
+          {
+            ok: false,
+            issues: result.issues,
+            ...(result.empty === true ? { empty: true } : {}),
+          },
+          422,
+        )
+      : c.json<PreviewResult>(
+          {
+            ok: false,
+            dangers: result.dangers,
+            shadowWarnings: result.shadowWarnings,
+            error: 'confirmation_required',
+          },
+          409,
+        );
+  }
+  return c.json({
+    ok: true,
+    revision: result.revision,
+    shadowWarnings: result.shadowWarnings,
+    dangers: result.dangers,
   });
-
-  return c.json({ ok: true, revision, shadowWarnings: compiled.shadowWarnings, dangers });
 });
 
 configRoutes.get('/audit', async (c) => {

@@ -223,6 +223,35 @@ export const api = {
     return Array.isArray(data.entries) ? (data.entries as AuditEntry[]) : [];
   },
 
+  /* ---------- 发布历史与回滚 ---------- */
+
+  listRevisions: async (): Promise<RevisionEntry[]> => {
+    const data = await request('GET', '/api/revisions');
+    return Array.isArray(data.entries) ? asRevisions(data.entries) : [];
+  },
+
+  diffRevisions: async (from: number, to: number): Promise<DiffEntry[]> => {
+    const data = await request('GET', `/api/revisions/diff?from=${String(from)}&to=${String(to)}`);
+    return Array.isArray(data.entries) ? asDiffEntries(data.entries) : [];
+  },
+
+  /**
+   * 回滚。`confirm` 语义与发布完全相同：只有用户已在弹窗里认过危险开关之后
+   * 才为 true —— 第一次就带 true 等于把服务端的二次确认绕过去了。
+   */
+  rollback: async (
+    sourceRevision: number,
+    note: string | undefined,
+    confirm: boolean,
+  ): Promise<{ revision: number }> => {
+    const data = await request('POST', '/api/revisions/rollback', {
+      sourceRevision,
+      ...(note === undefined || note === '' ? {} : { note }),
+      ...(confirm ? { confirm: true } : {}),
+    });
+    return { revision: typeof data.revision === 'number' ? data.revision : 0 };
+  },
+
   /* ---------- 域名发现 ---------- */
 
   /**
@@ -292,6 +321,84 @@ export interface UserEntry {
   readonly lockedUntil: number | null;
   readonly sessions: number;
 }
+
+/* ---------- 发布历史与回滚 ---------- */
+
+/** 历史列表的一条。snapshot: 'none' = 该次发布早于历史功能，没有快照可对比或回滚。 */
+export interface RevisionEntry {
+  readonly revision: number;
+  readonly at: number;
+  readonly actor: string;
+  readonly note: string | null;
+  /** 回滚产生的新版本会带上它复制的那个 revision。 */
+  readonly rollbackOf: number | null;
+  readonly routeCount: number | null;
+  readonly snapshot: 'full' | 'none';
+  readonly live: boolean;
+}
+
+/**
+ * 服务端 diff 的一个字段。from/to 是快照里的原值（可能不是字符串），moved 的
+ * 两侧是 0 起始的数组下标。值一律由调用方按需格式化，这里不做形状假设。
+ */
+export interface DiffEntry {
+  readonly path: string;
+  readonly kind: 'added' | 'removed' | 'changed' | 'moved';
+  readonly from?: unknown;
+  readonly to?: unknown;
+  readonly fromPosition?: number;
+  readonly toPosition?: number;
+}
+
+const asRevisions = (raw: readonly unknown[]): RevisionEntry[] => {
+  const entries: RevisionEntry[] = [];
+  for (const item of raw) {
+    if (typeof item !== 'object' || item === null) {
+      continue;
+    }
+    const record = item as Record<string, unknown>;
+    if (typeof record.revision !== 'number' || typeof record.at !== 'number') {
+      continue;
+    }
+    entries.push({
+      revision: record.revision,
+      at: record.at,
+      actor: typeof record.actor === 'string' ? record.actor : '',
+      note: typeof record.note === 'string' ? record.note : null,
+      rollbackOf: typeof record.rollbackOf === 'number' ? record.rollbackOf : null,
+      routeCount: typeof record.routeCount === 'number' ? record.routeCount : null,
+      snapshot: record.snapshot === 'full' ? 'full' : 'none',
+      live: record.live === true,
+    });
+  }
+  return entries;
+};
+
+const asDiffEntries = (raw: readonly unknown[]): DiffEntry[] => {
+  const entries: DiffEntry[] = [];
+  for (const item of raw) {
+    if (typeof item !== 'object' || item === null) {
+      continue;
+    }
+    const record = item as Record<string, unknown>;
+    if (typeof record.path !== 'string') {
+      continue;
+    }
+    const kind = record.kind;
+    entries.push({
+      path: record.path,
+      kind:
+        kind === 'added' || kind === 'removed' || kind === 'changed' || kind === 'moved'
+          ? kind
+          : 'changed',
+      ...(record.from === undefined ? {} : { from: record.from }),
+      ...(record.to === undefined ? {} : { to: record.to }),
+      ...(typeof record.fromPosition === 'number' ? { fromPosition: record.fromPosition } : {}),
+      ...(typeof record.toPosition === 'number' ? { toPosition: record.toPosition } : {}),
+    });
+  }
+  return entries;
+};
 
 /** 一个绑定来源：workers.dev 子域、自定义域，或 zone route（可能是通配）。 */
 export type BindingKind = 'workers_dev' | 'custom_domain' | 'route';

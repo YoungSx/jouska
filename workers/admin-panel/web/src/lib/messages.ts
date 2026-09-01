@@ -559,6 +559,7 @@ export const t = {
       'routes.reorder': '调整顺序',
       'defaults.update': '修改默认值',
       'config.publish': '发布配置',
+      'config.rollback': '回滚配置',
       'auth.password': '修改密码',
       'auth.recover': '恢复令牌重置',
       'user.create': '新建用户',
@@ -576,22 +577,85 @@ export const t = {
   },
 
   /**
+   * 发布历史与回滚。文案口径与发布弹窗保持同一套：回滚不是倒带计数，而是
+   * 把旧版本重新发布成一个新 revision —— 措辞里始终说「成为新版本」。
+   */
+  history: {
+    title: '发布历史',
+    description: '每一次发布都是一个 revision。选两张卡对比改动，或把任意一版重新发布。',
+    refresh: '刷新',
+    liveBadge: '正在服务',
+    rolledBackFrom: (revision: number) => `回滚自 #${revision}`,
+    routes: (count: number) => `${count} 条路由`,
+    routesUnknown: '路由数未知',
+    snapshotNone: '无快照',
+    snapshotNoneReason: '这次发布早于历史功能，只留下了审计记录 —— 能看，不能对比或回滚。',
+    gap: (before: number, after: number) => `#${before} 与 #${after} 之间缺了一次记录`,
+    gapReason: '那次发布改动已上线、但面板记录没写成（当时的写入失败），历史无法补记。',
+    empty: {
+      title: '还没有发布过',
+      description: '第一次发布之后，这里会出现完整的时间轴。',
+    },
+    loadFailed: (message: string) => `历史加载失败：${message}`,
+
+    diff: {
+      select: '对比',
+      selected: (revision: number) => `已选 #${revision}`,
+      title: (a: number, b: number) => `对比 #${a} ↔ #${b}`,
+      clear: '清除对比',
+      loading: '正在对比…',
+      empty: '两版内容完全一致。',
+      failed: (message: string) => `对比失败：${message}`,
+      groups: {
+        added: '新增',
+        removed: '删除',
+        changed: '修改',
+        moved: '移序',
+      } as Record<string, string>,
+      defaultsTitle: '表级默认值',
+      routesTitle: '路由',
+      fromLabel: '原值',
+      toLabel: '新值',
+      valueLabel: (value: string) => `改为 ${value}`,
+      positionLabel: (from: number, to: number) =>
+        `第 ${String(from + 1)} 位 → 第 ${String(to + 1)} 位`,
+      truncated: '（过长已截断）',
+      unavailable: '有一侧没有快照，对比不了。',
+      corrupt: '有一侧快照损坏，对比不了。',
+    },
+
+    rollback: {
+      action: '回滚',
+      title: (revision: number) => `回滚到 revision ${revision}`,
+      body: '回滚不是倒带：这一版会被重新发布成一个新 revision，历史照常向前走。',
+      draftWarning:
+        '草稿会同时被重置为这一版 —— 没发布的改动会丢弃；草稿里停用的路由不会被删，只是继续保持停用。',
+      dangerLead: '这一版带着下面这些危险开关：',
+      confirmSwitches: '我确认这些开关是有意打开的。',
+      noteLabel: '备注（可选）',
+      notePlaceholder: '为什么回滚，说一句就够了。',
+      cancel: '取消',
+      confirmAction: '确认回滚',
+      ok: (source: number, revision: number) =>
+        `已回滚到 #${source}，成为新 revision ${revision}。线上约 3 分钟内全面生效。`,
+      failed: (message: string) => `回滚失败：${message}`,
+      forbidden: '只有管理员能回滚。',
+      errors: {
+        snapshot_unavailable: '这一版没有快照，回不了。',
+        snapshot_corrupt: '这一版的快照数据损坏，回不了。',
+        revision_not_compatible: '这一版的配置在当前 schema 下不再合法，回不了。',
+        already_live: '线上正在服务的就是这一版的内容，不用回。',
+      } as Record<string, string>,
+    },
+  },
+
+  /**
    * 已规划但还没有后端的功能。UI 只提供入口和一句实话，不做假界面 ——
-   * 空壳按钮比没有按钮更让人以为坏了。用户管理已经落地，从这张表里毕业了。
+   * 空壳按钮比没有按钮更让人以为坏了。用户管理与发布历史都已落地，
+   * 从这张表里毕业了，剩下的是路由运行时数据。
    */
   planned: {
     badge: '待开发',
-    history: {
-      title: '发布历史与回滚',
-      description:
-        'revision 已经在自增，每次发布的操作者和备注也写进了 KV 的 meta，但还没有历史列表、diff 和回滚。',
-      items: [
-        '按 revision 浏览每一次发布',
-        '两个 revision 之间对比改了什么',
-        '回滚到某个 revision',
-      ],
-      note: '现在能看到的历史在「审计」页 —— config.publish 那些条目就是每一次发布。',
-    },
     observability: {
       title: '路由运行时数据',
       description:

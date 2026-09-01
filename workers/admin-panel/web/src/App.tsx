@@ -31,6 +31,7 @@ import { ThemeToggle } from '@/components/theme-toggle';
 import { AuthView } from '@/views/auth-view';
 import { AuditView } from '@/views/audit-view';
 import { DomainsView } from '@/views/domains-view';
+import { HistoryView } from '@/views/history-view';
 import { PreviewView } from '@/views/preview-view';
 import { RouteEditor } from '@/views/route-editor';
 import { RoutesView } from '@/views/routes-view';
@@ -56,8 +57,7 @@ type View =
   | 'preview'
   | 'audit'
   | 'users'
-  /** 已规划未实现的功能入口：只说实话，不做假界面。 */
-  | 'planned-history';
+  | 'history';
 
 interface NavItem {
   readonly id: View;
@@ -72,8 +72,8 @@ const NAV_ITEMS: readonly NavItem[] = [
   { id: 'domains', label: t.nav.domains },
   { id: 'preview', label: t.nav.preview },
   { id: 'audit', label: t.nav.audit },
+  { id: 'history', label: t.nav.history },
   { id: 'users', label: t.nav.users, adminOnly: true },
-  { id: 'planned-history', label: t.nav.history, planned: true },
 ];
 
 const App = () => {
@@ -437,10 +437,10 @@ const App = () => {
           />
         )}
         {view === 'audit' && <AuditView />}
+        {view === 'history' && <HistoryView isAdmin={isAdmin} onConfigChanged={reloadQuietly} />}
         {view === 'users' && (
           <UsersView selfSubject={user.subject} onSelfRoleChanged={() => void session.refresh()} />
         )}
-        {view === 'planned-history' && <PlannedView />}
       </main>
 
       {/* 闸门轨道：无论在哪一页，草稿与线上的差异都摆在这里。 */}
@@ -491,36 +491,6 @@ const App = () => {
 
       <Toaster position="top-center" richColors />
     </div>
-  );
-};
-
-/**
- * 待开发功能的入口页。只说实话：这个功能还没有，数据库里哪些字段在等它。
- * 空壳按钮比没有按钮更让人以为坏了 —— 所以这里是一张说明卡，不是假表单。
- */
-const PlannedView = () => {
-  const entry = t.planned.history;
-  return (
-    <Card>
-      <CardHeader>
-        <div className="flex items-center gap-2">
-          <CardTitle>{entry.title}</CardTitle>
-          <Badge variant="secondary">{t.planned.badge}</Badge>
-        </div>
-        <CardDescription>{entry.description}</CardDescription>
-      </CardHeader>
-      <CardContent className="flex flex-col gap-2">
-        <ul className="text-muted-foreground list-disc space-y-1 pl-5 text-sm">
-          {entry.items.map((item) => (
-            <li key={item}>{item}</li>
-          ))}
-        </ul>
-        {/* 标注成 string：as const 把 note 收窄成字面量，与 '' 的比较会被判为死代码。 */}
-        {(entry.note as string) !== '' && (
-          <p className="text-muted-foreground text-xs">{entry.note}</p>
-        )}
-      </CardContent>
-    </Card>
   );
 };
 

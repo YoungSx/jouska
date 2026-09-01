@@ -10,6 +10,7 @@ import { Hono } from 'hono';
 import { authRoutes } from './api/auth.js';
 import { configRoutes } from './api/config.js';
 import { domainRoutes } from './api/domains.js';
+import { revisionRoutes } from './api/revisions.js';
 import { userRoutes } from './api/users.js';
 import { requireSameOrigin, requireUser } from './middleware.js';
 import type { AppEnv } from './env.js';
@@ -27,14 +28,10 @@ app.get('/api/health', (c) => c.json({ ok: true }));
 app.use('/api/*', requireSameOrigin);
 
 app.route('/api/auth', authRoutes);
-
-// Everything below is authenticated; admin-only writes are gated next to
-// their handlers in api/config.ts, so viewers keep read access.
-app.use('/api/*', requireUser);
-
 app.route('/api', configRoutes);
 app.route('/api', domainRoutes);
 app.route('/api', userRoutes);
+app.route('/api', revisionRoutes);
 
 export default {
   async fetch(request, env, ctx): Promise<Response> {

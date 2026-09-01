@@ -29,13 +29,16 @@ export const getSetting = async (db: D1Database, key: string): Promise<unknown> 
 };
 
 export const putSetting = async (db: D1Database, key: string, value: unknown): Promise<void> => {
-  await db
+  await settingStmt(db, key, value).run();
+};
+
+/** Statement form of `putSetting`, for composing into a `db.batch` transaction. */
+export const settingStmt = (db: D1Database, key: string, value: unknown): D1PreparedStatement =>
+  db
     .prepare(
       'INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value',
     )
-    .bind(key, JSON.stringify(value))
-    .run();
-};
+    .bind(key, JSON.stringify(value));
 
 /**
  * Sets a password and spends the recovery token in one batch.
@@ -202,11 +205,26 @@ export const audit = async (
   target: string | undefined,
   detail: unknown,
 ): Promise<void> => {
-  await db
-    .prepare('INSERT INTO audit_log (at, actor, action, target, detail) VALUES (?, ?, ?, ?, ?)')
-    .bind(nowSeconds(), actor, action, target, detail === undefined ? null : JSON.stringify(detail))
-    .run();
+  await auditStmt(db, actor, action, target, detail).run();
 };
+
+/** Statement form of `audit`, for composing into a `db.batch` transaction. */
+export const auditStmt = (
+  db: D1Database,
+  actor: string,
+  action: string,
+  target: string | undefined,
+  detail: unknown,
+): D1PreparedStatement =>
+  db
+    .prepare('INSERT INTO audit_log (at, actor, action, target, detail) VALUES (?, ?, ?, ?, ?)')
+    .bind(
+      nowSeconds(),
+      actor,
+      action,
+      target,
+      detail === undefined ? null : JSON.stringify(detail),
+    );
 
 export interface AuditEntry {
   readonly id: number;
@@ -220,6 +238,22 @@ export interface AuditEntry {
 export const listAudit = async (db: D1Database, limit: number): Promise<AuditEntry[]> => {
   const { results } = await db
     .prepare('SELECT id, at, actor, action, target, detail FROM audit_log ORDER BY id DESC LIMIT ?')
+    .bind(limit)
+    .all<AuditEntry>();
+  return results;
+};
+
+/**
+ * Publish-shaped audit entries only (config.publish / config.rollback), oldest
+ * first. The history list backfills pre-feature revisions from these; unlike
+ * `listAudit` the filter runs in SQL, so a long-lived log's route edits cannot
+ * crowd the publish entries out of the result.
+ */
+export const listPublishAudit = async (db: D1Database, limit: number): Promise<AuditEntry[]> => {
+  const { results } = await db
+    .prepare(
+      "SELECT id, at, actor, action, target, detail FROM audit_log WHERE action IN ('config.publish', 'config.rollback') ORDER BY id ASC LIMIT ?",
+    )
     .bind(limit)
     .all<AuditEntry>();
   return results;
@@ -429,4 +463,206 @@ export const changePasswordAndRevokeOthers = async (
       .bind(args.userId, args.keepTokenHash),
   ]);
   return revoked?.meta.changes ?? 0;
+};
+
+/* ---------- Revisions: the snapshot of every publish. ---------- */
+
+export interface RevisionRow {
+  readonly revision: number;
+  /** Compiled document exactly as published, minus `meta` (regenerated per publish). */
+  readonly document: unknown;
+  readonly actor: string;
+  readonly at: number;
+  readonly note: string | null;
+  /** Set when this revision was produced by a rollback to another revision. */
+  readonly rollbackOf: number | null;
+  readonly routeCount: number;
+}
+
+/** Newest first. Ordering is by revision, which is the publish sequence. */
+export const listRevisions = async (db: D1Database, limit: number, offset: number) => {
+  const { results } = await db
+    .prepare(
+      'SELECT revision, document, actor, at, note, rollback_of, route_count FROM revisions ORDER BY revision DESC LIMIT ? OFFSET ?',
+    )
+    .bind(limit, offset)
+    .all<{
+      revision: number;
+      document: string;
+      actor: string;
+      at: number;
+      note: string | null;
+      rollback_of: number | null;
+      route_count: number;
+    }>();
+  return results.map((r): RevisionRow => ({
+    revision: r.revision,
+    document: parseColumn(r.document),
+    actor: r.actor,
+    at: r.at,
+    note: r.note,
+    rollbackOf: r.rollback_of,
+    routeCount: r.route_count,
+  }));
+};
+
+/**
+ * Highest revision recorded in the snapshot table, 0 when empty.
+ *
+ * The publish counter normally lives in `settings`, but this is the ground
+ * truth it must never fall behind — publish takes the max of the two so a
+ * lost or corrupted counter cannot replay revision numbers.
+ */
+export const maxRevision = async (db: D1Database): Promise<number> => {
+  const row = await db.prepare('SELECT MAX(revision) AS max FROM revisions').first<{
+    max: number | null;
+  }>();
+  return row?.max ?? 0;
+};
+
+export const getRevision = async (
+  db: D1Database,
+  revision: number,
+): Promise<RevisionRow | undefined> => {
+  const row = await db
+    .prepare(
+      'SELECT revision, document, actor, at, note, rollback_of, route_count FROM revisions WHERE revision = ?',
+    )
+    .bind(revision)
+    .first<{
+      revision: number;
+      document: string;
+      actor: string;
+      at: number;
+      note: string | null;
+      rollback_of: number | null;
+      route_count: number;
+    }>();
+  if (row === null) {
+    return undefined;
+  }
+  return {
+    revision: row.revision,
+    document: parseColumn(row.document),
+    actor: row.actor,
+    at: row.at,
+    note: row.note,
+    rollbackOf: row.rollback_of,
+    routeCount: row.route_count,
+  };
+};
+
+export const insertRevision = async (
+  db: D1Database,
+  args: {
+    readonly revision: number;
+    readonly document: unknown;
+    readonly actor: string;
+    readonly note: string | undefined;
+    readonly rollbackOf: number | undefined;
+    readonly routeCount: number;
+  },
+): Promise<void> => {
+  await revisionStmt(db, args).run();
+};
+
+/** Statement form of `insertRevision`, for composing into a `db.batch` transaction. */
+export const revisionStmt = (
+  db: D1Database,
+  args: {
+    readonly revision: number;
+    readonly document: unknown;
+    readonly actor: string;
+    readonly note: string | undefined;
+    readonly rollbackOf: number | undefined;
+    readonly routeCount: number;
+  },
+): D1PreparedStatement =>
+  db
+    .prepare(
+      'INSERT INTO revisions (revision, document, actor, at, note, rollback_of, route_count) VALUES (?, ?, ?, ?, ?, ?, ?)',
+    )
+    .bind(
+      args.revision,
+      JSON.stringify(args.document),
+      args.actor,
+      nowSeconds(),
+      args.note ?? null,
+      args.rollbackOf ?? null,
+      args.routeCount,
+    );
+
+/**
+ * Statement that drops everything older than `keep` revisions, or undefined
+ * when there is nothing to prune.
+ *
+ * Composed into the publish batch, so history and live state agree on what
+ * exists. Called with the freshly written revision; the newest `keep` rows
+ * survive.
+ */
+export const pruneRevisionsStmt = (
+  db: D1Database,
+  latest: number,
+  keep: number,
+): D1PreparedStatement | undefined =>
+  latest <= keep
+    ? undefined
+    : db.prepare('DELETE FROM revisions WHERE revision <= ?').bind(latest - keep);
+
+/**
+ * Replaces the whole draft with a snapshot's content: one batch, so there is
+ * no window where the draft is half old and half restored (the position index
+ * would reject that anyway, mid-transaction as it may be).
+ *
+ * Every restored route is enabled and repositioned from zero — the snapshot
+ * holds only the routes that were live, and publish order is priority. The
+ * operator performing the rollback becomes the last editor of every row, which
+ * is what the audit trail should show.
+ */
+export const restoreDraftFromSnapshot = async (
+  db: D1Database,
+  routes: readonly { readonly id: string; readonly definition: unknown }[],
+  defaults: unknown,
+  actor: string,
+): Promise<void> => {
+  const now = nowSeconds();
+  const insert = db.prepare(
+    'INSERT INTO routes (id, definition, enabled, position, updated_at, updated_by) VALUES (?, ?, 1, ?, ?, ?)',
+  );
+  // Snapshots only contain enabled routes (compile output), so a blind
+  // DELETE+INSERT would permanently destroy disabled rows — templates the
+  // operator parked on purpose. Instead: upsert the snapshot routes at the
+  // front and park every route the snapshot does not mention as disabled,
+  // preserving its definition for the next re-enable.
+  const snapshotIds = routes.map((route) => route.id);
+  const statements: D1PreparedStatement[] = [];
+  let placeholders = '';
+  const params: (string | number)[] = [];
+  for (const [i, id] of snapshotIds.entries()) {
+    placeholders += i === 0 ? '?' : ', ?';
+    params.push(id);
+  }
+  if (placeholders !== '') {
+    statements.push(db.prepare(`DELETE FROM routes WHERE id IN (${placeholders})`).bind(...params));
+  }
+  statements.push(
+    ...routes.map((route, position) =>
+      insert.bind(route.id, JSON.stringify(route.definition), position, now, actor),
+    ),
+    // An empty snapshot disables everything; `NOT IN ()` is not valid SQL, so
+    // the two shapes need separate statements.
+    placeholders === ''
+      ? db
+          .prepare('UPDATE routes SET enabled = 0, position = ?, updated_at = ?, updated_by = ?')
+          .bind(0, now, actor)
+      : db
+          .prepare(
+            `UPDATE routes SET enabled = 0, position = ?, updated_at = ?, updated_by = ? WHERE id NOT IN (${placeholders})`,
+          )
+          .bind(snapshotIds.length, now, actor, ...params),
+    // Absent defaults are stored as null: getSetting then reads null, which
+    // compile treats as "no table-wide defaults", matching the snapshot.
+    settingStmt(db, 'defaults', defaults ?? null),
+  );
+  await db.batch(statements);
 };

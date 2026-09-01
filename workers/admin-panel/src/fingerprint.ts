@@ -31,8 +31,11 @@ export interface LiveState {
  * produces the same digest. `JSON.stringify` preserves insertion order, and
  * route definitions are stored as operator-authored JSON, so key order is not
  * stable across an edit that changed nothing semantically.
+ *
+ * Exported because the revision diff must apply the exact same rule: "does
+ * this differ" has one answer, whether asked by the digest or the diff.
  */
-const canonicalize = (value: unknown): unknown => {
+export const canonicalize = (value: unknown): unknown => {
   if (Array.isArray(value)) {
     // Array order is meaningful here (route order is priority), so it is kept.
     return value.map(canonicalize);
