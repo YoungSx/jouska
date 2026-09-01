@@ -249,7 +249,8 @@ authRoutes.post('/password', requireUser, async (c) => {
   const body = await readJsonObject(c);
   // Passwords are never run through boundedString: it trims, and a leading or
   // trailing space is part of the password. Same checks as bootstrap/login.
-  const currentPassword = typeof body.currentPassword === 'string' ? body.currentPassword : undefined;
+  const currentPassword =
+    typeof body.currentPassword === 'string' ? body.currentPassword : undefined;
   const newPassword = typeof body.newPassword === 'string' ? body.newPassword : undefined;
   if (
     currentPassword === undefined ||
@@ -267,9 +268,7 @@ authRoutes.post('/password', requireUser, async (c) => {
     );
   }
 
-  const user = await c.env.DB.prepare(
-    'SELECT id, password, locked_until FROM users WHERE id = ?',
-  )
+  const user = await c.env.DB.prepare('SELECT id, password, locked_until FROM users WHERE id = ?')
     .bind(c.get('user').userId)
     .first<{ id: number; password: string | null; locked_until: number | null }>();
 

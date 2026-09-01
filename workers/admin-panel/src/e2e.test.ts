@@ -96,12 +96,13 @@ const bootstrapAdmin = async (): Promise<void> => {
 };
 
 /** Creates the viewer through the panel's own admin API — the operator path. */
-const createViewer = async (adminCookie: string): Promise<void> => {
+// 参数名避开模块级 adminCookie（no-shadow）：这里直接收 auth 对象，与测试体同款。
+const createViewer = async (auth: { cookie: string }): Promise<void> => {
   const res = await call(
     'POST',
     '/api/users',
     { subject: 'viewer', password: 'viewer-password-123', role: 'viewer' },
-    { cookie: adminCookie },
+    auth,
   );
   expect(res.status, JSON.stringify(await res.json())).toBe(201);
 };
@@ -308,7 +309,7 @@ describe('admin panel end-to-end', () => {
   it('viewers may read but not write', async () => {
     await bootstrapAdmin();
     adminCookie = cookieFrom(await login('root', 'correct-horse-battery'));
-    await createViewer(adminCookie);
+    await createViewer({ cookie: adminCookie });
     const viewerLogin = await login('viewer', 'viewer-password-123');
     expect(viewerLogin.status).toBe(200);
     viewerCookie = cookieFrom(viewerLogin);

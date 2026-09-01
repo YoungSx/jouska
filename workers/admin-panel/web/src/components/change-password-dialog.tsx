@@ -82,7 +82,11 @@ export const ChangePasswordDialog = ({ open, onOpenChange }: ChangePasswordDialo
     } catch (cause) {
       if (cause instanceof NetworkError) {
         setError(t.common.networkError);
-      } else if (cause instanceof ApiError && cause.status === 401 && cause.code !== 'wrong_password') {
+      } else if (
+        cause instanceof ApiError &&
+        cause.status === 401 &&
+        cause.code !== 'wrong_password'
+      ) {
         // 会话过期撞上了同一状态码：文案得说的是「先去登录」而不是「密码不对」。
         setError(t.common.sessionExpired);
         onOpenChange(false);
@@ -140,7 +144,10 @@ export const ChangePasswordDialog = ({ open, onOpenChange }: ChangePasswordDialo
             />
             {tooShort && (
               <FieldError>
-                {t.changePassword.errors.invalid_input(LIMITS.minPasswordLength, LIMITS.maxPasswordLength)}
+                {t.changePassword.errors.invalid_input(
+                  LIMITS.minPasswordLength,
+                  LIMITS.maxPasswordLength,
+                )}
               </FieldError>
             )}
           </Field>
@@ -167,7 +174,12 @@ export const ChangePasswordDialog = ({ open, onOpenChange }: ChangePasswordDialo
           )}
 
           <DialogFooter>
-            <Button type="button" variant="outline" onClick={() => onOpenChange(false)} disabled={busy}>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => onOpenChange(false)}
+              disabled={busy}
+            >
               {t.common.cancel}
             </Button>
             <Button type="submit" disabled={busy || !canSubmit}>

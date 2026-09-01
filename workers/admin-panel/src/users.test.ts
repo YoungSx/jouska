@@ -73,7 +73,9 @@ const ROOT_PW = 'correct-horse-battery';
 const OTHER_PW = 'a-different-long-password';
 const NEW_PW = 'the-replacement-password';
 
-const userRow = async (subject: string): Promise<{
+const userRow = async (
+  subject: string,
+): Promise<{
   id: number;
   password: string | null;
   failed_attempts: number;
@@ -169,20 +171,48 @@ describe('POST /api/auth/password', () => {
     const before = await userRow('root');
 
     expect(
-      (await call('POST', '/api/auth/password', { currentPassword: ROOT_PW, newPassword: 'x'.repeat(MIN_PASSWORD_LENGTH - 1) }, { cookie })).status,
+      (
+        await call(
+          'POST',
+          '/api/auth/password',
+          { currentPassword: ROOT_PW, newPassword: 'x'.repeat(MIN_PASSWORD_LENGTH - 1) },
+          { cookie },
+        )
+      ).status,
     ).toBe(400);
     expect(
-      (await call('POST', '/api/auth/password', { currentPassword: ROOT_PW, newPassword: 'x'.repeat(MAX_PASSWORD_LENGTH + 1) }, { cookie })).status,
+      (
+        await call(
+          'POST',
+          '/api/auth/password',
+          { currentPassword: ROOT_PW, newPassword: 'x'.repeat(MAX_PASSWORD_LENGTH + 1) },
+          { cookie },
+        )
+      ).status,
     ).toBe(400);
     expect(
-      (await call('POST', '/api/auth/password', { currentPassword: 'x'.repeat(MAX_PASSWORD_LENGTH + 1), newPassword: NEW_PW }, { cookie })).status,
+      (
+        await call(
+          'POST',
+          '/api/auth/password',
+          { currentPassword: 'x'.repeat(MAX_PASSWORD_LENGTH + 1), newPassword: NEW_PW },
+          { cookie },
+        )
+      ).status,
     ).toBe(400);
 
     const after = await userRow('root');
     expect(after?.failed_attempts).toBe(before?.failed_attempts); // shape errors are not guesses
     // The floor itself still works: exactly MIN chars goes through.
     expect(
-      (await call('POST', '/api/auth/password', { currentPassword: ROOT_PW, newPassword: 'x'.repeat(MIN_PASSWORD_LENGTH) }, { cookie })).status,
+      (
+        await call(
+          'POST',
+          '/api/auth/password',
+          { currentPassword: ROOT_PW, newPassword: 'x'.repeat(MIN_PASSWORD_LENGTH) },
+          { cookie },
+        )
+      ).status,
     ).toBe(200);
   });
 
@@ -249,9 +279,14 @@ describe('POST /api/auth/password', () => {
     );
     expect(evil.status).toBe(403);
 
-    await call('POST', '/api/auth/password', { currentPassword: ROOT_PW, newPassword: NEW_PW }, {
-      cookie,
-    });
+    await call(
+      'POST',
+      '/api/auth/password',
+      { currentPassword: ROOT_PW, newPassword: NEW_PW },
+      {
+        cookie,
+      },
+    );
     expect(await auditActions()).toContain('auth.password');
   });
 });
@@ -259,7 +294,12 @@ describe('POST /api/auth/password', () => {
 describe('GET /api/users', () => {
   it('lists users with session counts and never leaks the hash column', async () => {
     const adminCookie = await loginCookie('root', ROOT_PW);
-    await call('POST', '/api/users', { subject: 'scout', password: OTHER_PW, role: 'viewer' }, { cookie: adminCookie });
+    await call(
+      'POST',
+      '/api/users',
+      { subject: 'scout', password: OTHER_PW, role: 'viewer' },
+      { cookie: adminCookie },
+    );
     await login('scout', OTHER_PW); // one live session for scout
     await login('scout', OTHER_PW); // second one
 
@@ -290,7 +330,12 @@ describe('GET /api/users', () => {
   it('is admin-only and requires a session', async () => {
     expect((await get('/api/users')).status).toBe(401);
     const adminCookie = await loginCookie('root', ROOT_PW);
-    await call('POST', '/api/users', { subject: 'scout', password: OTHER_PW, role: 'viewer' }, { cookie: adminCookie });
+    await call(
+      'POST',
+      '/api/users',
+      { subject: 'scout', password: OTHER_PW, role: 'viewer' },
+      { cookie: adminCookie },
+    );
     const viewerCookie = await loginCookie('scout', OTHER_PW);
     expect((await get('/api/users', { cookie: viewerCookie })).status).toBe(403);
   });
@@ -324,17 +369,22 @@ describe('POST /api/users', () => {
     expect(
       (await create({ subject: 'x'.repeat(MAX_SUBJECT_LENGTH + 1), password: OTHER_PW })).status,
     ).toBe(400);
-    expect((await create({ subject: 'scout', password: 'x'.repeat(MIN_PASSWORD_LENGTH - 1) })).status).toBe(
-      400,
-    );
-    expect((await create({ subject: 'scout', password: OTHER_PW, role: 'superadmin' })).status).toBe(
-      400,
-    );
+    expect(
+      (await create({ subject: 'scout', password: 'x'.repeat(MIN_PASSWORD_LENGTH - 1) })).status,
+    ).toBe(400);
+    expect(
+      (await create({ subject: 'scout', password: OTHER_PW, role: 'superadmin' })).status,
+    ).toBe(400);
   });
 
   it('is admin-only', async () => {
     const adminCookie = await loginCookie('root', ROOT_PW);
-    await call('POST', '/api/users', { subject: 'scout', password: OTHER_PW, role: 'viewer' }, { cookie: adminCookie });
+    await call(
+      'POST',
+      '/api/users',
+      { subject: 'scout', password: OTHER_PW, role: 'viewer' },
+      { cookie: adminCookie },
+    );
     const viewerCookie = await loginCookie('scout', OTHER_PW);
     expect(
       (
@@ -355,7 +405,14 @@ describe('PATCH /api/users/:id', () => {
     const deputy = await secondAdmin(adminCookie);
 
     expect(
-      (await call('PATCH', `/api/users/${String(deputy.id)}`, { role: 'viewer' }, { cookie: adminCookie })).status,
+      (
+        await call(
+          'PATCH',
+          `/api/users/${String(deputy.id)}`,
+          { role: 'viewer' },
+          { cookie: adminCookie },
+        )
+      ).status,
     ).toBe(200);
     // resolveSession joins the role per request, so this is immediate — no
     // re-login, no grace period.
@@ -367,11 +424,18 @@ describe('PATCH /api/users/:id', () => {
     const row = await userRow('root');
     const id = String(row!.id);
 
-    const demote = await call('PATCH', `/api/users/${id}`, { role: 'viewer' }, { cookie: adminCookie });
+    const demote = await call(
+      'PATCH',
+      `/api/users/${id}`,
+      { role: 'viewer' },
+      { cookie: adminCookie },
+    );
     expect(demote.status).toBe(409);
     expect(((await demote.json()) as { error: string }).error).toBe('last_admin');
 
-    expect((await call('PATCH', `/api/users/${id}`, { disabled: true }, { cookie: adminCookie })).status).toBe(409);
+    expect(
+      (await call('PATCH', `/api/users/${id}`, { disabled: true }, { cookie: adminCookie })).status,
+    ).toBe(409);
     // The row must be untouched by both refusals.
     expect((await userRow('root'))?.role).toBe('admin');
     expect((await userRow('root'))?.disabled).toBe(0);
@@ -382,25 +446,48 @@ describe('PATCH /api/users/:id', () => {
     const deputy = await secondAdmin(adminCookie);
     // Park the deputy first; now root is the only *enabled* admin.
     expect(
-      (await call('PATCH', `/api/users/${String(deputy.id)}`, { disabled: true }, { cookie: adminCookie })).status,
+      (
+        await call(
+          'PATCH',
+          `/api/users/${String(deputy.id)}`,
+          { disabled: true },
+          { cookie: adminCookie },
+        )
+      ).status,
     ).toBe(200);
 
     // Root cannot be disabled or demoted — deputy does not count as a spare.
     const row = await userRow('root');
     const id = String(row!.id);
-    expect((await call('PATCH', `/api/users/${id}`, { disabled: true }, { cookie: adminCookie })).status).toBe(409);
-    expect((await call('PATCH', `/api/users/${id}`, { role: 'viewer' }, { cookie: adminCookie })).status).toBe(409);
+    expect(
+      (await call('PATCH', `/api/users/${id}`, { disabled: true }, { cookie: adminCookie })).status,
+    ).toBe(409);
+    expect(
+      (await call('PATCH', `/api/users/${id}`, { role: 'viewer' }, { cookie: adminCookie })).status,
+    ).toBe(409);
 
     // But the parked deputy can still be demoted: that only shrinks the row
     // count, not the enabled pool.
     expect(
-      (await call('PATCH', `/api/users/${String(deputy.id)}`, { role: 'viewer' }, { cookie: adminCookie })).status,
+      (
+        await call(
+          'PATCH',
+          `/api/users/${String(deputy.id)}`,
+          { role: 'viewer' },
+          { cookie: adminCookie },
+        )
+      ).status,
     ).toBe(200);
   });
 
   it('unlocks by clearing the lockout and the counter together', async () => {
     const adminCookie = await loginCookie('root', ROOT_PW);
-    await call('POST', '/api/users', { subject: 'scout', password: OTHER_PW }, { cookie: adminCookie });
+    await call(
+      'POST',
+      '/api/users',
+      { subject: 'scout', password: OTHER_PW },
+      { cookie: adminCookie },
+    );
     const scout = await userRow('scout');
     await testEnv.DB.prepare('UPDATE users SET failed_attempts = 5, locked_until = ? WHERE id = ?')
       .bind(nowSeconds() + 900, scout!.id)
@@ -422,7 +509,12 @@ describe('PATCH /api/users/:id', () => {
 
   it('updates only the named fields, refuses nonsense, and audits', async () => {
     const adminCookie = await loginCookie('root', ROOT_PW);
-    await call('POST', '/api/users', { subject: 'scout', password: OTHER_PW, role: 'viewer' }, { cookie: adminCookie });
+    await call(
+      'POST',
+      '/api/users',
+      { subject: 'scout', password: OTHER_PW, role: 'viewer' },
+      { cookie: adminCookie },
+    );
     const scout = await userRow('scout');
     const id = String(scout!.id);
 
@@ -433,10 +525,15 @@ describe('PATCH /api/users/:id', () => {
 
     expect((await call('PATCH', `/api/users/${id}`, {}, { cookie: adminCookie })).status).toBe(400);
     expect(
-      (await call('PATCH', `/api/users/${id}`, { disabled: 'yes' }, { cookie: adminCookie })).status,
+      (await call('PATCH', `/api/users/${id}`, { disabled: 'yes' }, { cookie: adminCookie }))
+        .status,
     ).toBe(400);
-    expect((await call('PATCH', '/api/users/999', { role: 'viewer' }, { cookie: adminCookie })).status).toBe(404);
-    expect((await call('PATCH', '/api/users/root', { role: 'viewer' }, { cookie: adminCookie })).status).toBe(404);
+    expect(
+      (await call('PATCH', '/api/users/999', { role: 'viewer' }, { cookie: adminCookie })).status,
+    ).toBe(404);
+    expect(
+      (await call('PATCH', '/api/users/root', { role: 'viewer' }, { cookie: adminCookie })).status,
+    ).toBe(404);
 
     expect(await auditActions()).toContain('user.update');
   });
@@ -445,13 +542,19 @@ describe('PATCH /api/users/:id', () => {
 describe('DELETE /api/users/:id', () => {
   it('deletes a viewer and cascades their sessions out from under the cookie', async () => {
     const adminCookie = await loginCookie('root', ROOT_PW);
-    await call('POST', '/api/users', { subject: 'scout', password: OTHER_PW }, { cookie: adminCookie });
+    await call(
+      'POST',
+      '/api/users',
+      { subject: 'scout', password: OTHER_PW },
+      { cookie: adminCookie },
+    );
     const scoutCookie = await loginCookie('scout', OTHER_PW);
     expect((await get('/api/routes', { cookie: scoutCookie })).status).toBe(200);
     const scout = await userRow('scout');
 
     expect(
-      (await call('DELETE', `/api/users/${String(scout!.id)}`, undefined, { cookie: adminCookie })).status,
+      (await call('DELETE', `/api/users/${String(scout!.id)}`, undefined, { cookie: adminCookie }))
+        .status,
     ).toBe(200);
     expect((await get('/api/routes', { cookie: scoutCookie })).status).toBe(401);
     expect(await userRow('scout')).toBeNull();
@@ -463,17 +566,15 @@ describe('DELETE /api/users/:id', () => {
 
     // One of two admins goes.
     expect(
-      (await call('DELETE', `/api/users/${String(deputy.id)}`, undefined, { cookie: adminCookie })).status,
+      (await call('DELETE', `/api/users/${String(deputy.id)}`, undefined, { cookie: adminCookie }))
+        .status,
     ).toBe(200);
     // Now the same request shape hits a different table state: refused, and
     // the remaining admin is still there.
     const root = await userRow('root');
-    const refused = await call(
-      'DELETE',
-      `/api/users/${String(root!.id)}`,
-      undefined,
-      { cookie: adminCookie },
-    );
+    const refused = await call('DELETE', `/api/users/${String(root!.id)}`, undefined, {
+      cookie: adminCookie,
+    });
     expect(refused.status).toBe(409);
     // Root is now the only row left, so the endpoint names the stricter wall:
     // deleting it would empty the table and reopen bootstrap.
@@ -485,19 +586,26 @@ describe('DELETE /api/users/:id', () => {
     const adminCookie = await loginCookie('root', ROOT_PW);
     // A second admin, parked, so its deletion leaves exactly one row.
     const deputy = await secondAdmin(adminCookie);
-    await call('PATCH', `/api/users/${String(deputy.id)}`, { disabled: true }, { cookie: adminCookie });
-    expect((await call('DELETE', `/api/users/${String(deputy.id)}`, undefined, { cookie: adminCookie })).status).toBe(200);
-
-    const root = await userRow('root');
-    const refused = await call(
-      'DELETE',
-      `/api/users/${String(root!.id)}`,
-      undefined,
+    await call(
+      'PATCH',
+      `/api/users/${String(deputy.id)}`,
+      { disabled: true },
       { cookie: adminCookie },
     );
+    expect(
+      (await call('DELETE', `/api/users/${String(deputy.id)}`, undefined, { cookie: adminCookie }))
+        .status,
+    ).toBe(200);
+
+    const root = await userRow('root');
+    const refused = await call('DELETE', `/api/users/${String(root!.id)}`, undefined, {
+      cookie: adminCookie,
+    });
     expect(refused.status).toBe(409);
     expect(((await refused.json()) as { error: string }).error).toBe('last_user');
-    const count = await testEnv.DB.prepare('SELECT COUNT(*) AS n FROM users').first<{ n: number }>();
+    const count = await testEnv.DB.prepare('SELECT COUNT(*) AS n FROM users').first<{
+      n: number;
+    }>();
     expect(count?.n).toBe(1);
   });
 
@@ -506,12 +614,13 @@ describe('DELETE /api/users/:id', () => {
     const deputy = await secondAdmin(adminCookie);
     // Deputy lists users to learn its own id, then deletes itself.
     const list = await get('/api/users', { cookie: deputy.cookie });
-    const self = (
-      (await list.json()) as { users: { id: number; subject: string }[] }
-    ).users.find((u) => u.subject === 'deputy');
+    const self = ((await list.json()) as { users: { id: number; subject: string }[] }).users.find(
+      (u) => u.subject === 'deputy',
+    );
 
     expect(
-      (await call('DELETE', `/api/users/${String(self!.id)}`, undefined, { cookie: deputy.cookie })).status,
+      (await call('DELETE', `/api/users/${String(self!.id)}`, undefined, { cookie: deputy.cookie }))
+        .status,
     ).toBe(200);
     // The cascade removed the session the request itself was riding on.
     expect((await get('/api/users', { cookie: deputy.cookie })).status).toBe(401);
@@ -521,10 +630,19 @@ describe('DELETE /api/users/:id', () => {
 
   it('answers 404 for unknown and malformed ids, and audits real deletions', async () => {
     const adminCookie = await loginCookie('root', ROOT_PW);
-    expect((await call('DELETE', '/api/users/999', undefined, { cookie: adminCookie })).status).toBe(404);
-    expect((await call('DELETE', '/api/users/root', undefined, { cookie: adminCookie })).status).toBe(404);
+    expect(
+      (await call('DELETE', '/api/users/999', undefined, { cookie: adminCookie })).status,
+    ).toBe(404);
+    expect(
+      (await call('DELETE', '/api/users/root', undefined, { cookie: adminCookie })).status,
+    ).toBe(404);
 
-    await call('POST', '/api/users', { subject: 'scout', password: OTHER_PW }, { cookie: adminCookie });
+    await call(
+      'POST',
+      '/api/users',
+      { subject: 'scout', password: OTHER_PW },
+      { cookie: adminCookie },
+    );
     const scout = await userRow('scout');
     await call('DELETE', `/api/users/${String(scout!.id)}`, undefined, { cookie: adminCookie });
     expect(await auditActions()).toContain('user.delete');

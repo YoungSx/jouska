@@ -40,7 +40,11 @@ const UserDeleteDialog = ({
         <Button variant="outline" onClick={onDismiss}>
           {t.common.cancel}
         </Button>
-        <Button variant="destructive" disabled={target === null} onClick={() => target !== null && onConfirm(target)}>
+        <Button
+          variant="destructive"
+          disabled={target === null}
+          onClick={() => target !== null && onConfirm(target)}
+        >
           <Trash2Icon />
           {t.users.confirm}
         </Button>

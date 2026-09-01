@@ -11,7 +11,8 @@ import { ApiError, api, type UserEntry } from '@/lib/api';
 
 const NOW = 1_700_000_000;
 
-const user = (over: Partial<UserEntry>): UserEntry => ({
+// 工厂不叫 user——测试体里的 userEvent.setup() 惯用这个名字，别撞。
+const makeUser = (over: Partial<UserEntry>): UserEntry => ({
   id: 1,
   subject: 'op',
   email: null,
@@ -47,8 +48,8 @@ const clickMenuItem = async (name: string) => {
 describe('UsersView', () => {
   beforeEach(() => {
     vi.spyOn(api, 'listUsers').mockResolvedValue([
-      user({ id: 1, subject: 'op', role: 'admin' }),
-      user({ id: 2, subject: 'guest', role: 'viewer', lastSeen: null, sessions: 0 }),
+      makeUser({ id: 1, subject: 'op', role: 'admin' }),
+      makeUser({ id: 2, subject: 'guest', role: 'viewer', lastSeen: null, sessions: 0 }),
     ]);
     vi.spyOn(api, 'deleteUser').mockResolvedValue(undefined);
     vi.spyOn(api, 'updateUser').mockResolvedValue(undefined);
@@ -78,7 +79,9 @@ describe('UsersView', () => {
     // 换一行前先把菜单关掉，避免同一屏幕里两个「删除」。
     await userEvent.keyboard('{Escape}');
     await openRowMenu('guest');
-    expect(await screen.findByRole('menuitem', { name: '删除' })).not.toHaveAttribute('aria-disabled');
+    expect(await screen.findByRole('menuitem', { name: '删除' })).not.toHaveAttribute(
+      'aria-disabled',
+    );
   });
 
   it('删除确认后发请求、关弹窗、重拉列表', async () => {

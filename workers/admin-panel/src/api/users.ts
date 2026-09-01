@@ -30,7 +30,7 @@ import {
 
 export const userRoutes = new Hono<AppEnv>();
 
-const bad = (detail: string) => ({ error: 'invalid_input', detail } as const);
+const bad = (detail: string) => ({ error: 'invalid_input', detail }) as const;
 
 /** Row ids are integers; anything else was never a user and is 404, not a bind error. */
 const idParam = (raw: string | undefined): number | undefined =>

@@ -438,10 +438,7 @@ const App = () => {
         )}
         {view === 'audit' && <AuditView />}
         {view === 'users' && (
-          <UsersView
-            selfSubject={user.subject}
-            onSelfRoleChanged={() => void session.refresh()}
-          />
+          <UsersView selfSubject={user.subject} onSelfRoleChanged={() => void session.refresh()} />
         )}
         {view === 'planned-history' && <PlannedView />}
       </main>
