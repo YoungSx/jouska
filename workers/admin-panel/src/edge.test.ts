@@ -220,12 +220,22 @@ describe('session edge cases', () => {
 });
 
 describe('compile boundaries', () => {
-  it('rejects an empty route table rather than publishing a config that routes nothing', () => {
-    // An empty table is valid to the schema but means "the proxy forwards
-    // nothing" — a publish that silently blackholes traffic is not a boundary
-    // to pass through quietly.
+  it('refuses an empty route table, marked as empty rather than invalid', () => {
+    // Publishing nothing would leave the proxy with nothing to forward, so it
+    // is refused — but a fresh deployment must not be told its config is
+    // broken, and `configSchema`'s own "expected array to have >=1 items"
+    // says nothing to an operator who simply has not added a route yet.
     const result = compileConfig([], undefined);
     expect(result.ok).toBe(false);
+    expect(result.ok === false && result.empty).toBe(true);
+    expect(result.ok === false && result.issues[0]?.message).not.toContain('Too small');
+  });
+
+  it('does not mark a genuinely invalid table as empty', () => {
+    const rows = [{ id: 'bad', definition: { upstream: 123 }, enabled: true, position: 0 }];
+    const result = compileConfig(rows, undefined);
+    expect(result.ok).toBe(false);
+    expect(result.ok === false && result.empty).toBeUndefined();
   });
 
   it('rejects two rows declaring the same host and path', () => {
@@ -242,6 +252,43 @@ describe('compile boundaries', () => {
     const rows = [{ id: 'a', definition: VALID_ROUTE, enabled: true, position: 0 }];
     const result = compileConfig(rows, [1, 2]);
     expect(result.ok).toBe(false);
+  });
+});
+
+describe('empty and confirmation states over the API', () => {
+  it('reports a fresh deployment as empty, not as a broken config', async () => {
+    const cookie = await adminCookie();
+    const res = await call('GET', '/api/preview', undefined, { cookie });
+    const body = (await res.json()) as { ok: boolean; empty?: boolean };
+    expect(res.status).toBe(200);
+    expect(body.ok).toBe(false);
+    expect(body.empty).toBe(true);
+  });
+
+  it('refuses to publish an empty table and says so as empty', async () => {
+    const cookie = await adminCookie();
+    const res = await call('POST', '/api/publish', {}, { cookie });
+    expect(res.status).toBe(422);
+    expect(((await res.json()) as { empty?: boolean }).empty).toBe(true);
+  });
+
+  it('demands confirmation for a dangerous route before writing KV', async () => {
+    const cookie = await adminCookie();
+    await call(
+      'PUT',
+      '/api/routes/dang',
+      { definition: { ...VALID_ROUTE, upstreamHeaders: { 'x-secret': 'v' } } },
+      { cookie },
+    );
+    // Without `confirm`, publish must refuse -- and must not have written KV.
+    const refused = await call('POST', '/api/publish', {}, { cookie });
+    expect(refused.status).toBe(409);
+    expect(((await refused.json()) as { error?: string }).error).toBe('confirmation_required');
+    expect(await testEnv.CONFIG_KV.get('routes')).toBeNull();
+    // With it, the same publish succeeds.
+    const accepted = await call('POST', '/api/publish', { confirm: true }, { cookie });
+    expect(accepted.status).toBe(200);
+    expect(await testEnv.CONFIG_KV.get('routes')).not.toBeNull();
   });
 });
 

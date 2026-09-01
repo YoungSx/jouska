@@ -47,6 +47,11 @@ export interface PreviewResult {
   readonly document?: unknown;
   readonly routeCount?: number;
   readonly error?: string;
+  /**
+   * Nothing to publish yet, as opposed to something wrong. A fresh deployment
+   * is `ok: false, empty: true` — the UI guides instead of alarming.
+   */
+  readonly empty?: true;
 }
 
 const routeIdFrom = (raw: string | undefined): string | undefined =>
@@ -179,7 +184,11 @@ configRoutes.get('/preview', async (c) => {
   const defaults = await getSetting(c.env.DB, 'defaults');
   const compiled = compileConfig(rows, defaults);
   if (!compiled.ok) {
-    return c.json<PreviewResult>({ ok: false, issues: compiled.issues });
+    return c.json<PreviewResult>({
+      ok: false,
+      issues: compiled.issues,
+      ...(compiled.empty === true ? { empty: true } : {}),
+    });
   }
   const dangers: Record<string, readonly FieldRisk[]> = {};
   for (const row of rows) {
@@ -211,7 +220,14 @@ configRoutes.post('/publish', requireAdmin, async (c) => {
   const defaults = await getSetting(c.env.DB, 'defaults');
   const compiled = compileConfig(rows, defaults);
   if (!compiled.ok) {
-    return c.json<PreviewResult>({ ok: false, issues: compiled.issues }, 422);
+    return c.json<PreviewResult>(
+      {
+        ok: false,
+        issues: compiled.issues,
+        ...(compiled.empty === true ? { empty: true } : {}),
+      },
+      422,
+    );
   }
 
   const dangers: Record<string, readonly FieldRisk[]> = {};
