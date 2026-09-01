@@ -314,7 +314,7 @@ const App = () => {
           <nav
             ref={navRef}
             onScroll={syncNavTail}
-            className="nav-scroll min-w-0 flex-1 overflow-x-auto"
+            className="nav-scroll min-w-0 flex-1"
             aria-label={t.app.title}
           >
             <Tabs value={view} onValueChange={(value) => setView(value as View)}>

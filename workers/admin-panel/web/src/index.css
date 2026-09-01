@@ -193,9 +193,15 @@
   border-color: color-mix(in oklch, var(--destructive) 30%, transparent);
 }
 
-/* 顶栏导航的横滚提示：还有没进屏的项时，右缘淡出一道底色，提示「往右还有」。
-   滚到头就收掉——不可滚动时留着它是撒谎。判断交给 scroll-tail 选择器（JS 置位）。 */
+/* 顶栏导航的滚动政策：只许横滚，竖向溢出（Tab 激活线的 ::after 伸出底部约
+   2px）一律剪掉——CSS 里一轴可滚会把另一轴的 visible 算成 auto，竖滚动条
+   就从这条缝里钻出来。clip 意在「永远不是竖向滚动容器」；与 auto 同用时
+   按规范折算为 hidden，正好。滚动提示（右缘淡出）见下方 mask：滚到头就
+   收掉——不可滚动时留着它是撒谎。判断交给 scroll-tail 选择器（JS 置位）。 */
 @utility nav-scroll {
+  overflow-x: auto;
+  overflow-y: clip;
+
   /* mask 让滚动内容本身在右缘渐隐，比叠一层渐变色块更干净：不遮挡点击。 */
   mask-image: linear-gradient(to right, black calc(100% - 1.5rem), transparent);
   mask-repeat: no-repeat;
