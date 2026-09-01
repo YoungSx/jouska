@@ -1,0 +1,201 @@
+/**
+ * 路由定义的前端类型与字段元数据。
+ *
+ * 这里的字段、默认值与取值范围逐条对齐 `packages/jouska/src/config.ts` 的 zod
+ * schema。前端不做第二套校验 —— 权威判定永远在服务端 `/api/preview` 上，用的是
+ * 反代运行时的同一份 schema。这里的边界只用来提前给出提示（number input 的
+ * min/max、表单里的默认值占位），把明显的错拦在一次网络往返之前。
+ *
+ * 后果：schema 改了这里也要改。所以每个约束都注明它对应的 schema 行为，让漂移
+ * 在 code review 时看得见。
+ */
+
+export interface RouteMatch {
+  host?: string;
+  path?: string;
+  methods?: string[];
+}
+
+export interface BodyRewrite {
+  rewriteLinks?: boolean;
+  replace?: { from: string; to: string }[];
+  contentTypes?: string[];
+  rewriteStyles?: boolean;
+  fallbackCharset?: string;
+}
+
+export interface CorsRules {
+  origins?: string[];
+  allowMethods?: string[];
+  allowHeaders?: string[];
+  exposeHeaders?: string[];
+  credentials?: boolean;
+  maxAge?: number;
+}
+
+export interface IpRules {
+  allow?: string[];
+  deny?: string[];
+}
+
+export interface RateLimitRules {
+  binding?: string;
+  by?: 'ip' | 'path' | 'route';
+  countPreflight?: boolean;
+}
+
+/**
+ * 一条路由的定义。
+ *
+ * 全部字段可选 —— 编辑器要能承载一份不完整的草稿，用户填到一半时不该被类型拒
+ * 绝。是否合法由服务端说。索引签名让 JSON 视图里手写的、表单不认识的字段能被
+ * 原样保留，而不是保存时被静默丢掉。
+ */
+export interface RouteDefinition {
+  match?: RouteMatch;
+  upstream?: string;
+  scheme?: 'https' | 'http';
+  allowPrivateUpstream?: true;
+  stripPrefix?: boolean;
+  timeoutMs?: number;
+  totalTimeoutMs?: number;
+  retries?: number;
+  retryBackoffMs?: number;
+  rewriteHeaders?: boolean;
+  manualRedirect?: boolean;
+  websocket?: boolean;
+  blockCountries?: string[];
+  allowCountries?: string[];
+  upstreamHeaders?: Record<string, string>;
+  bodyRewrite?: BodyRewrite;
+  cors?: CorsRules;
+  ip?: IpRules;
+  rateLimit?: RateLimitRules;
+  [key: string]: unknown;
+}
+
+/** 预览里的一条校验问题，来自 compileConfig。 */
+export interface Issue {
+  readonly routeId: string | undefined;
+  readonly path: string;
+  readonly message: string;
+}
+
+/** 遮蔽警告：`shadowedId` 收不到流量，被 `byId` 抢先匹配，`probe` 是证据 URL。 */
+export interface ShadowWarning {
+  readonly shadowedId: string;
+  readonly byId: string;
+  readonly probe: string;
+}
+
+/** 危险字段，来自服务端 danger.ts。`path` 是点号路径，reason 是英文原文。 */
+export interface FieldRisk {
+  readonly path: string;
+  readonly level: 'high' | 'medium';
+  readonly reason: string;
+}
+
+/* ---------- schema 边界（对齐 config.ts） ---------- */
+
+/** number 字段的取值范围与默认值，与 routeBehaviour 一致。 */
+export const NUMERIC_BOUNDS = {
+  timeoutMs: { min: 1, max: 30_000, default: 10_000 },
+  totalTimeoutMs: { min: 1, max: 60_000, default: 30_000 },
+  retries: { min: 0, max: 3, default: 0 },
+  retryBackoffMs: { min: 0, max: 5_000, default: 100 },
+} as const;
+
+/** boolean 字段的 schema 默认值，用来在表单上显示"默认 X"。 */
+export const BOOLEAN_DEFAULTS = {
+  stripPrefix: false,
+  rewriteHeaders: true,
+  manualRedirect: true,
+  websocket: true,
+} as const;
+
+export const SCHEME_DEFAULT = 'https' as const;
+
+/** methods 字段可选的值。schema 接受任意 token，这几个覆盖实际用法。 */
+export const HTTP_METHODS = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS'] as const;
+
+/** 路由 ID 的合法形状，与服务端 `routeIdFrom` 的正则一致。 */
+export const ROUTE_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+
+/** 服务端 validate.ts 的输入上限。 */
+export const LIMITS = {
+  definitionBytes: 64 * 1024,
+  defaultsBytes: 64 * 1024,
+  noteLength: 500,
+  minPasswordLength: 12,
+  maxPasswordLength: 1024,
+  maxSubjectLength: 128,
+} as const;
+
+/** 认证策略，用于登录页的说明文案。与 api/auth.ts 的常量一致。 */
+export const AUTH_POLICY = {
+  maxFailedAttempts: 5,
+  lockoutMinutes: 15,
+} as const;
+
+/** 表单视图覆盖到的顶层字段。其余字段落到「表单未覆盖」区，保存时原样保留。 */
+export const FORM_COVERED_KEYS: readonly string[] = [
+  'match',
+  'upstream',
+  'scheme',
+  'allowPrivateUpstream',
+  'stripPrefix',
+  'timeoutMs',
+  'totalTimeoutMs',
+  'retries',
+  'retryBackoffMs',
+  'rewriteHeaders',
+  'manualRedirect',
+  'websocket',
+  'blockCountries',
+  'allowCountries',
+  'upstreamHeaders',
+  'bodyRewrite',
+  'cors',
+  'ip',
+];
+
+/**
+ * 危险字段的点号路径集合，与服务端 danger.ts 的 RULES 一致。
+ *
+ * 表单用它在对应控件旁边就地显示警示，而不是等发布时才说 —— 让手指在按下之前
+ * 就变重。`cors.origins` 不在这里：它的危险状态是"缺失"而不是"存在"，由表单
+ * 自己判断。
+ */
+export const DANGEROUS_PATHS = new Set([
+  'allowPrivateUpstream',
+  'scheme',
+  'bodyRewrite.contentTypes',
+  'bodyRewrite.fallbackCharset',
+  'ip.allow',
+  'ip.deny',
+  'upstreamHeaders',
+]);
+
+/** 危险字段的中文说明。服务端 reason 是英文，面板要用自己的语言说清后果。 */
+export const DANGER_REASONS: Record<string, string> = {
+  allowPrivateUpstream:
+    '放行 loopback、内网和云元数据地址。一个被改坏的上游值就能把代理变成内网探测器。',
+  scheme: '选 http 意味着边缘到上游这一段是明文传输。',
+  'cors.origins':
+    '没有列出 origin 会反射任何调用方的 origin，等于让别的站点通过这个代理读取带凭据的响应。',
+  'cors.origins (absent)':
+    '没有列出 origin 会反射任何调用方的 origin，等于让别的站点通过这个代理读取带凭据的响应。',
+  'bodyRewrite.contentTypes': '列表写宽了会把非文本响应改写成乱码。',
+  'bodyRewrite.fallbackCharset': '用错的字符集解码会把响应体弄坏；猜错比不改写更糟。',
+  'ip.allow': 'allow 列表写错一个字符，就会放进本想排除的地址。',
+  'ip.deny': 'deny 列表写错一个字符，就会挡掉正常的调用方。',
+  upstreamHeaders: '这些头会原样发给上游。凭据类或身份伪装类的头写在这里等于交给第三方。',
+};
+
+/** 保留的上游请求头：jouska 自己从请求推导，写了会被 schema 拒绝。 */
+export const RESERVED_UPSTREAM_HEADERS = new Set([
+  'host',
+  'x-forwarded-host',
+  'x-forwarded-proto',
+  'x-forwarded-for',
+]);

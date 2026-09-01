@@ -15,7 +15,8 @@
   "homepage": "https://github.com/YoungSx/jouska#readme",
   "workspaces": [
     "packages/*",
-    "workers/*"
+    "workers/*",
+    "workers/admin-panel/web"
   ],
   "engines": {
     "node": ">=20"

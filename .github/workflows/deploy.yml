@@ -32,6 +32,10 @@ jobs:
       # exports 指向 ./dist/index.js——wrangler 打包前必须先产出 dist。
       - run: npm run build -w jouska
 
+      # 面板的前端：vite 产物直接落进 admin-panel/public，wrangler deploy 随
+      # 静态资源一起上传。产物不入库（见 .gitignore），所以必须在 CI 里构建。
+      - run: npm run build -w @jouska/admin-panel
+
       # 找到或创建 D1/KV，把真实 id 写进 wrangler.jsonc（runner 是一次性的，
       # 不会污染仓库）。顺序执行而非并行：首次部署时两个 job 赛跑创建同名
       # D1 会让其中一个失败。CI 只跑仓库，个人 id 永远不落进 git。

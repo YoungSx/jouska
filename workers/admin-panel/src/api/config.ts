@@ -11,6 +11,7 @@ import { Hono } from 'hono';
 import { readJsonObject } from '../body.js';
 import { compileConfig, type RouteRow } from '../compile.js';
 import { dangerFlags, type FieldRisk } from '../danger.js';
+import { asLiveState, documentDigest, LIVE_KEY } from '../fingerprint.js';
 import { requireAdmin } from '../middleware.js';
 import {
   audit,
@@ -52,6 +53,15 @@ export interface PreviewResult {
    * is `ok: false, empty: true` — the UI guides instead of alarming.
    */
   readonly empty?: true;
+  /**
+   * What the proxy is serving right now, and whether the draft differs from it.
+   *
+   * Present on every preview, including a failing one: an operator looking at a
+   * broken draft still needs to know that the previous revision is live and
+   * unaffected. `undefined` live means nothing has ever been published.
+   */
+  readonly live?: { readonly revision: number } | null;
+  readonly dirty?: boolean;
 }
 
 const routeIdFrom = (raw: string | undefined): string | undefined =>
@@ -182,12 +192,19 @@ configRoutes.put('/defaults', requireAdmin, async (c) => {
 configRoutes.get('/preview', async (c) => {
   const rows: RouteRow[] = await listEnabledRoutes(c.env.DB);
   const defaults = await getSetting(c.env.DB, 'defaults');
+  const live = asLiveState(await getSetting(c.env.DB, LIVE_KEY));
+  const liveField = live === undefined ? null : { revision: live.revision };
   const compiled = compileConfig(rows, defaults);
   if (!compiled.ok) {
     return c.json<PreviewResult>({
       ok: false,
       issues: compiled.issues,
       ...(compiled.empty === true ? { empty: true } : {}),
+      live: liveField,
+      // A draft that will not compile can never equal what is live, so it is
+      // dirty by definition — unless nothing was ever published and the draft
+      // is empty, which is the untouched first-run state, not a pending change.
+      dirty: !(compiled.empty === true && live === undefined),
     });
   }
   const dangers: Record<string, readonly FieldRisk[]> = {};
@@ -199,12 +216,17 @@ configRoutes.get('/preview', async (c) => {
       }
     }
   }
+  // Digest the same document publish would write, minus `meta` — see
+  // fingerprint.ts for why `meta` is excluded.
+  const digest = await documentDigest(compiled.document);
   return c.json<PreviewResult>({
     ok: true,
     document: compiled.document,
     shadowWarnings: compiled.shadowWarnings,
     dangers,
     routeCount: rows.length,
+    live: liveField,
+    dirty: live === undefined || live.digest !== digest,
   });
 });
 
@@ -271,6 +293,12 @@ configRoutes.post('/publish', requireAdmin, async (c) => {
   // The one and only KV write in this worker.
   await c.env.CONFIG_KV.put(KV_KEY, JSON.stringify(document));
   await putSetting(c.env.DB, 'revision', revision);
+  // Record what went live so `/api/preview` can tell draft from published
+  // without reading KV back. Digested without `meta`, matching preview.
+  await putSetting(c.env.DB, LIVE_KEY, {
+    revision,
+    digest: await documentDigest(compiled.document),
+  });
   await audit(c.env.DB, user.subject, 'config.publish', KV_KEY, {
     revision,
     routeCount: rows.length,
