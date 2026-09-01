@@ -11,6 +11,7 @@
       <span class="brand">jouska 管理面板</span>
       <nav>
         <button data-view="routes" class="navbtn">路由</button>
+        <button data-view="domains" class="navbtn">域名</button>
         <button data-view="preview" class="navbtn">预览</button>
         <button data-view="audit" class="navbtn">审计</button>
       </nav>
@@ -116,6 +117,22 @@
               <button id="editorCancel">取消</button>
             </div>
           </div>
+        </div>
+      </section>
+
+      <!-- 已绑定域名 -->
+      <section id="view-domains" hidden>
+        <div class="card">
+          <div class="cardhead">
+            <h2>反代已绑定的域名 <small id="domainsScript"></small></h2>
+            <button id="refreshDomainsBtn">刷新</button>
+          </div>
+          <p class="muted">
+            这里列的是 Cloudflare 上真正指向反代的入口。写路由的
+            <code>match.host</code> 时照这张表填，才不会写出永远不会被命中的路由。
+          </p>
+          <div id="domainsBody"></div>
+          <p id="domainsMsg" class="msg"></p>
         </div>
       </section>
 

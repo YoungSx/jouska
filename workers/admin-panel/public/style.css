@@ -168,6 +168,18 @@ button:disabled {
   color: var(--ok);
 }
 
+/* issue/shadow 块里的清单：默认的缩进在窄边框里会顶出去。 */
+.issue ul,
+.shadow ul {
+  margin: 0.4rem 0;
+  padding-left: 1.2rem;
+}
+.issue pre {
+  margin: 0.4rem 0 0;
+  white-space: pre-wrap;
+  color: var(--dim);
+}
+
 .badge {
   display: inline-block;
   padding: 0.1rem 0.5rem;
@@ -239,6 +251,7 @@ button:disabled {
 #recoverBox .ph {
   color: var(--warn);
 }
+/* 引导性文案：恢复流程、预览页的空表提示、域名页的说明都用它。 */
 .muted {
   color: var(--dim);
 }

@@ -49,13 +49,16 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: npx wrangler d1 migrations apply jouska-admin --remote
 
+      # 域名发现要读账号 id。它不是密钥，但也不该写进被 git 跟踪的
+      # wrangler.jsonc——用 CI 已有的 secret 在部署时注入，仓库里始终只有占位符。
       - name: Deploy admin panel and health-check
         working-directory: workers/admin-panel
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: |
-          out=$(npx wrangler deploy 2>&1)
+          out=$(npx wrangler deploy \
+            --var CF_ACCOUNT_ID:"$CLOUDFLARE_ACCOUNT_ID" 2>&1)
           echo "$out"
           url=$(echo "$out" | grep -oE 'https://[a-zA-Z0-9.-]+\.workers\.dev' | head -1)
           if [ -z "$url" ]; then
@@ -72,6 +75,34 @@ jobs:
           done
           echo "health check failed at $url/api/health" >&2
           exit 1
+
+      # 「域名」页要调 Cloudflare API，凭据复用部署用的这一个。
+      #
+      # 权限：三个来源都靠这一个 token。Cloudflare 的 Edit 含 Read，所以部署
+      # token 原有的 Workers Scripts Edit 覆盖 workers.dev 与 Custom Domains，
+      # Workers Routes Edit 覆盖 zone 路由查询（两条已实测确认）。列举账号下的
+      # zone 还要 Zone Read——部署本身不需要它，是为这个功能补上的。
+      # 任一来源读不到都不报错：那一项显示"读不到"并说明缺什么，其余照常。
+      #
+      # 代价说清楚：这个 token 带写权限（Workers/KV/D1 Edit），远超域名发现需要
+      # 的三个读权限。面板被打穿，攻击者拿到的就是能改配置的凭据，而不是只能看
+      # 域名。换成单独的只读 token 能消掉这一层，但要手工维护第二个 secret。
+      #
+      # secret put 从 stdin 读，token 不出现在命令行里（ps 和构建日志都看不到）。
+      # 幂等：已存在就覆盖成同值。失败不阻断部署——面板照常工作，只是「域名」页
+      # 会说凭据缺失。
+      - name: Wire the panel's API token for hostname discovery
+        working-directory: workers/admin-panel
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          if printf '%s' "$CLOUDFLARE_API_TOKEN" \
+            | npx wrangler secret put CF_API_TOKEN >/dev/null 2>&1; then
+            echo "::notice::CF_API_TOKEN set; the 域名 screen can read bound hostnames"
+          else
+            echo "::warning::could not set CF_API_TOKEN — the 域名 screen will report it as missing"
+          fi
 
       # 面板先上（写 KV），反代后上（读 KV）——顺序即依赖方向。
       - name: Deploy reverse proxy
