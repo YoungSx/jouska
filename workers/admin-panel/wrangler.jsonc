@@ -33,6 +33,23 @@
     },
   ],
 
+  // Hostname discovery (the 「域名」screen) reads two values that are deliberately
+  // NOT in this file, because this file is tracked by git:
+  //
+  //   CF_ACCOUNT_ID  — identifies the account. `npm run cf:setup` writes it to
+  //                    the git-ignored .dev.vars for local runs; deployments
+  //                    take it from CI's own CLOUDFLARE_ACCOUNT_ID.
+  //   CF_API_TOKEN   — a secret. `wrangler secret put CF_API_TOKEN`, with READ
+  //                    scopes only: Workers Scripts Read covers workers.dev and
+  //                    Custom Domains, plus Zone Read and Workers Routes Read
+  //                    for zone routes. A write-scoped token here would turn a
+  //                    panel compromise into account-wide reconfiguration.
+  //
+  // Both optional: without them the screen explains what to set instead of
+  // erroring, and every other screen works. PROXY_SCRIPT_NAME overrides the
+  // proxy's script name when it is not the reference "jouska"; it is not
+  // account-specific, so it can be set here.
+
   "observability": {
     "enabled": true,
   },

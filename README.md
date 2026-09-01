@@ -592,6 +592,70 @@ npx wrangler d1 migrations apply jouska-admin --local -c workers/admin-panel/wra
 npx wrangler dev -c workers/admin-panel/wrangler.jsonc
 ```
 
+### Hostname discovery
+
+The 「域名」screen answers the question an operator has while writing
+`match.host`: which hostnames actually arrive at the proxy? That fact lives in
+the Cloudflare account, so the panel reads it from there — three sources, in
+ascending order of cost:
+
+| Source         | Calls | What it yields                                   |
+| -------------- | ----- | ------------------------------------------------ |
+| workers.dev    | 2     | `<script>.<subdomain>.workers.dev`, when enabled |
+| Custom Domains | 1     | exact hostnames, filtered to the proxy's script  |
+| Zone routes    | 1 + N | route _patterns_, N = zones examined (capped)    |
+
+Route patterns are not hostnames — `*.example.com/*` is a pattern, and the
+screen labels it as one rather than presenting it as somewhere you can browse.
+The screen also cross-references both directions: a bound hostname no route
+claims, and an enabled route whose `match.host` matches nothing bound.
+
+Two settings, `CF_ACCOUNT_ID` and `CF_API_TOKEN`, both optional. The CI deploy
+job wires both from the secrets it already has, so a tag deploy needs nothing
+extra. Neither is ever written to a tracked file: the account id is injected at
+deploy time with `--var`, and the token is set as a Worker secret from stdin.
+
+Permissions, when reusing the deploy token (what CI does): Cloudflare's Edit
+permissions include Read, so the token's existing `Workers Scripts Edit` covers
+workers.dev and Custom Domains, and `Workers Routes Edit` covers the zone route
+query — both verified against the live API. Enumerating the account's zones
+additionally needs `Zone Read`, which a deploy has no reason to carry, so it is
+the one permission to add for this feature. Any source that cannot be read is
+reported as unreadable with the permission named, while the others answer
+normally.
+
+Reusing the deploy token has a cost worth stating: it carries write scopes, so a
+compromised panel yields a credential that can reconfigure Workers, KV and D1
+rather than one that can only list hostnames. A separate token with just
+`Workers Scripts Read` (+ `Zone Read` and `Workers Routes Read`) removes that
+exposure at the price of a second secret to maintain:
+
+```sh
+npx wrangler secret put CF_API_TOKEN -c workers/admin-panel/wrangler.jsonc
+```
+
+Either way the panel never writes through the token and never returns it.
+
+Without the credentials the screen explains what to set; it does not error, and
+no other screen is affected. Sources fail independently, so a token with
+`Workers Scripts Read` alone still answers two of the three questions and says
+so about the third. Zones beyond the per-request budget are named rather than
+silently dropped, so "no routes found" is never confused with "did not look".
+
+Discovery is a read: it writes nothing to D1, KV or the audit log, and answers
+are cached in isolate memory for 60 seconds so a burst of screen-opens costs one
+round of API calls. Any signed-in user can read it — hostnames are public by
+construction, being what the proxy answers on.
+
+Why not detect it from the proxy itself: Cloudflare's edge validates the `Host`
+header against the _certificate's_ scope, not against the Worker's bound
+hostname. Verified against the edge, `x.<script>.<subdomain>.workers.dev`
+reaches a Worker bound only at `<script>.<subdomain>.workers.dev`, and with a
+zone's default `*.example.com` certificate every sibling subdomain passes the
+same check. A Worker that reported the hostnames it saw would therefore report
+hostnames it is not bound to, including any an attacker chose — the opposite of
+what a screen for authoring `match.host` should show.
+
 ### Architecture notes
 
 - **Publish is the only KV write.** Editing routes or defaults only changes

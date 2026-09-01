@@ -42,7 +42,7 @@ const esc = (s) =>
 
 /* ---------- 视图切换 ---------- */
 
-const views = ['routes', 'preview', 'audit'];
+const views = ['routes', 'domains', 'preview', 'audit'];
 const show = (name) => {
   for (const v of views) $(`#view-${v}`).hidden = v !== name;
   document
@@ -402,6 +402,128 @@ const publish = async (confirmed) => {
 
 $('#publishBtn').addEventListener('click', () => publish(false));
 
+/* ---------- 已绑定域名 ---------- */
+
+/** 每种来源的说法：确切域名和路由模式不是一回事，不能混着说。 */
+const KIND_LABEL = {
+  workers_dev: { text: 'workers.dev', badge: 'on', note: '' },
+  custom_domain: { text: 'Custom Domain', badge: 'on', note: '' },
+  route: {
+    text: '路由模式',
+    badge: 'warn',
+    note: '这是 Cloudflare 的路由模式，不一定是一个能访问的域名',
+  },
+};
+
+/** 凭证没配齐时的指引。功能缺一块，不是出错了。 */
+const UNCONFIGURED_HINT = {
+  missing_both: '没配 Cloudflare 凭证，所以查不了。',
+  missing_account_id: '缺 CF_ACCOUNT_ID。',
+  missing_token: '缺 CF_API_TOKEN。',
+};
+
+const SOURCE_LABEL = {
+  workers_dev: 'workers.dev',
+  custom_domain: 'Custom Domain',
+  route: '路由（zone）',
+};
+
+const domainsHtml = (d) => {
+  if (d.configured !== true) {
+    const hint = UNCONFIGURED_HINT[d.reason] ?? '缺 Cloudflare 凭证。';
+    return `
+      <p class="muted">${esc(hint)}配好之后这里会自动列出反代
+      <code>${esc(d.script ?? '')}</code> 的所有入口域名。</p>
+      <div class="issue">
+        <p>面板只需要<b>只读</b>权限，给多了反而危险。到 Cloudflare 建一个 API Token：</p>
+        <ul>
+          <li><code>Workers Scripts Read</code>（账号级）——查 workers.dev 和 Custom Domain</li>
+          <li><code>Zone Read</code> + <code>Workers Routes Read</code>（可选）——再查 zone 上的路由</li>
+        </ul>
+        <p>然后设进面板：</p>
+        <pre>wrangler secret put CF_API_TOKEN
+# CF_ACCOUNT_ID 不是密钥，写进 wrangler.jsonc 的 vars 就行</pre>
+      </div>`;
+  }
+
+  let html = '';
+
+  // 先说读不到的部分。少了一块就直说少了哪块，不能让人误以为看到的是全部。
+  for (const f of d.failures ?? []) {
+    html += `<div class="issue">读不到<b>${esc(SOURCE_LABEL[f.source] ?? f.source)}</b>：${esc(f.message)}
+      ${f.source === 'route' ? '（想查 zone 路由，token 要加 <code>Zone Read</code> 和 <code>Workers Routes Read</code>）' : ''}</div>`;
+  }
+  if ((d.skippedZones ?? []).length > 0) {
+    html += `<div class="shadow">⚠ 这些 zone 没查：<code>${esc((d.skippedZones ?? []).join('、'))}</code>。
+      单次请求能发的子请求有限，或者 token 读不到它们。</div>`;
+  }
+
+  const hosts = d.hosts ?? [];
+  if (hosts.length === 0) {
+    html +=
+      (d.failures ?? []).length > 0
+        ? `<p class="muted">能读到的来源里没有域名。</p>`
+        : `<p class="muted">反代 <code>${esc(d.script ?? '')}</code> 目前没有任何入口域名：
+         workers.dev 没开，也没有 Custom Domain 或路由。到 Cloudflare 绑一个，再回来刷新。</p>`;
+  } else {
+    html += `<table><thead><tr><th>域名</th><th>来源</th><th>zone</th><th>命中的路由</th></tr></thead><tbody>`;
+    for (const h of hosts) {
+      const kind = KIND_LABEL[h.kind] ?? { text: h.kind, badge: '', note: '' };
+      const claimed = h.routeIds ?? [];
+      html += `<tr>
+        <td><code>${esc(h.host)}</code>${
+          h.pattern !== undefined && h.pattern !== h.host
+            ? `<br /><small>模式 <code>${esc(h.pattern)}</code></small>`
+            : ''
+        }</td>
+        <td><span class="badge ${kind.badge}">${esc(kind.text)}</span>${
+          kind.note === '' ? '' : `<br /><small>${kind.note}</small>`
+        }</td>
+        <td><small>${esc(h.zone ?? '')}</small></td>
+        <td>${
+          claimed.length === 0
+            ? `<span class="badge bad">没有路由接它</span>`
+            : claimed.map((id) => `<code>${esc(id)}</code>`).join(' ')
+        }</td>
+      </tr>`;
+    }
+    html += `</tbody></table>`;
+  }
+
+  // 反过来的那一半：路由写了 host，但没有任何入口域名符合它。
+  const unmatched = d.unmatchedRouteHosts ?? [];
+  if (unmatched.length > 0) {
+    html +=
+      `<p>下面这些启用中的路由，它们的 <code>match.host</code> 对不上任何入口域名——
+       要么域名还没绑，要么写错了：</p>` +
+      unmatched
+        .map(
+          (u) =>
+            `<div class="shadow">⚠ 路由 <b>${esc(u.routeId)}</b> 等的是
+             <code>${esc(u.host)}</code>，但没有入口域名符合它。</div>`,
+        )
+        .join('');
+  }
+
+  return html;
+};
+
+const loadDomains = async () => {
+  const box = $('#domainsBody');
+  const msg = $('#domainsMsg');
+  setMsg(msg, '正在查…');
+  try {
+    const d = await api('GET', '/api/domains');
+    $('#domainsScript').textContent = d.script === undefined ? '' : `（${d.script}）`;
+    box.innerHTML = domainsHtml(d);
+    setMsg(msg, '');
+  } catch (err) {
+    setMsg(msg, `查不了：${err.message}`, 'err');
+  }
+};
+
+$('#refreshDomainsBtn').addEventListener('click', loadDomains);
+
 /* ---------- 审计 ---------- */
 
 const loadAudit = async () => {
@@ -431,6 +553,7 @@ $('#refreshPreviewBtn').addEventListener('click', loadPreview);
 document.querySelectorAll('.navbtn').forEach((b) =>
   b.addEventListener('click', () => {
     show(b.dataset.view);
+    if (b.dataset.view === 'domains') loadDomains();
     if (b.dataset.view === 'preview') loadPreview();
     if (b.dataset.view === 'audit') loadAudit();
   }),

@@ -20,6 +20,9 @@ import path from 'node:path';
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
 const ADMIN_CONFIG = path.join(ROOT, 'workers/admin-panel/wrangler.jsonc');
 const PROXY_CONFIG = path.join(ROOT, 'workers/reverse-proxy/wrangler.jsonc');
+// Git-ignored, so account-specific values and secrets live here rather than in
+// the tracked wrangler.jsonc templates.
+const ADMIN_DEV_VARS = path.join(ROOT, 'workers/admin-panel/.dev.vars');
 
 const D1_NAME = 'jouska-admin';
 const KV_TITLE = 'CONFIG_KV';
@@ -95,13 +98,61 @@ function patch(file, replacements) {
 }
 
 // Fail before touching anything if unauthenticated, not mid-patch.
+let whoami;
 try {
-  wrangler(['whoami']);
+  whoami = wrangler(['whoami']);
 } catch {
   console.error(
     '✗ Not authenticated. Run `npx wrangler login` first, or export CLOUDFLARE_API_TOKEN.',
   );
   process.exit(1);
+}
+
+// The account id the panel needs for hostname discovery. Prefer the explicit
+// environment variable (CI sets it); otherwise read it out of `whoami`'s table,
+// which prints it as a 32-char hex id.
+//
+// It is written to `.dev.vars`, never to wrangler.jsonc: that file is tracked by
+// git, and an account id landing in it is one `git add -A` away from being
+// published. Not a credential, but it identifies the account — and the habit of
+// writing account-specific values into tracked files is how the token would
+// eventually follow. Deployments get the same value from CI's own
+// CLOUDFLARE_ACCOUNT_ID instead.
+function accountIdFrom(text) {
+  if (process.env.CLOUDFLARE_ACCOUNT_ID) return process.env.CLOUDFLARE_ACCOUNT_ID;
+  const ids = [...text.matchAll(/\b[0-9a-f]{32}\b/g)].map((m) => m[0]);
+  // More than one account means the choice is not this script's to make.
+  return new Set(ids).size === 1 ? ids[0] : null;
+}
+
+/**
+ * Adds or replaces one key in `.dev.vars`, leaving the operator's other lines
+ * alone — including CF_API_TOKEN, which they may have put there by hand and
+ * which this script must never overwrite or read back.
+ */
+function putDevVar(file, key, value) {
+  const line = `${key}=${value}`;
+  let text = '';
+  try {
+    text = readFileSync(file, 'utf8');
+  } catch {
+    // No file yet: the first run creates it.
+  }
+  const lines = text.split('\n');
+  const at = lines.findIndex((l) => l.startsWith(`${key}=`));
+  if (at !== -1) {
+    if (lines[at] === line) {
+      console.log(`\u00b7 ${path.relative(ROOT, file)} already has ${key}`);
+      return;
+    }
+    lines[at] = line;
+  } else {
+    // Keep the file newline-terminated without accumulating blank lines.
+    if (text !== '' && lines.at(-1) !== '') lines.push('');
+    lines.splice(lines.length - (lines.at(-1) === '' ? 1 : 0), 0, line);
+  }
+  writeFileSync(file, lines.join('\n'));
+  console.log(`\u2713 wrote ${key} to ${path.relative(ROOT, file)} (git-ignored)`);
 }
 
 const d1Id = ensure(
@@ -120,6 +171,15 @@ patch(ADMIN_CONFIG, [
   ['REPLACE_WITH_REAL_KV_ID', kvId],
 ]);
 
+const accountId = accountIdFrom(whoami);
+if (accountId) {
+  putDevVar(ADMIN_DEV_VARS, 'CF_ACCOUNT_ID', accountId);
+} else {
+  console.log(
+    '\u00b7 could not determine a single account id; put CF_ACCOUNT_ID in workers/admin-panel/.dev.vars by hand to enable the 域名 screen locally',
+  );
+}
+
 // The reverse proxy ships with the KV binding commented out so it deploys
 // standalone with its vars fallback. Wire it so it reads what the panel writes.
 patch(PROXY_CONFIG, [
@@ -128,6 +188,15 @@ patch(PROXY_CONFIG, [
     `"kv_namespaces": [{ "binding": "CONFIG", "id": "${kvId}" }],`,
   ],
 ]);
+
+console.log(
+  '\nHostname discovery (the 域名 screen) also needs CF_API_TOKEN. Deploys wire it\n' +
+    'from the CI secret automatically; for local dev, add a line to\n' +
+    '  workers/admin-panel/.dev.vars   ->   CF_API_TOKEN=<token>\n' +
+    'A deploy-scoped token already works (Edit includes Read). Add Zone Read to\n' +
+    'also enumerate zones for route patterns. Skip it and every other screen still\n' +
+    'works; the 域名 screen says what is missing rather than erroring.',
+);
 
 console.log('\nDone. Patched locally — keep these out of commits:');
 console.log(`  ${path.relative(ROOT, ADMIN_CONFIG)}`);
