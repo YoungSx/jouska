@@ -37,6 +37,51 @@ export const putSetting = async (db: D1Database, key: string, value: unknown): P
     .run();
 };
 
+/**
+ * Sets a password and spends the recovery token in one batch.
+ *
+ * `db.batch` is a single transaction, which is the point: deleting the token in
+ * a second round-trip would leave a window where two concurrent requests both
+ * see a live token and both set a password. The DELETE is conditional on the
+ * value still being the one that was checked, so the loser of a race writes
+ * nothing and its own delete affects zero rows.
+ *
+ * Sessions of the target account go too — a recovery whose old cookies keep
+ * working has not recovered anything.
+ */
+export const consumeRecoveryAndSetPassword = async (
+  db: D1Database,
+  args: {
+    readonly recoveryKey: string;
+    readonly expectedValue: string;
+    readonly userId: number;
+    readonly passwordHash: string;
+  },
+): Promise<boolean> => {
+  const [deleted] = await db.batch([
+    db
+      .prepare('DELETE FROM settings WHERE key = ? AND value = ?')
+      .bind(args.recoveryKey, args.expectedValue),
+    db
+      .prepare(
+        'UPDATE users SET password = ?, failed_attempts = 0, locked_until = NULL WHERE id = ?',
+      )
+      .bind(args.passwordHash, args.userId),
+    db.prepare('DELETE FROM sessions WHERE user_id = ?').bind(args.userId),
+  ]);
+  // meta.changes === 0 means another request spent the same token first.
+  return (deleted?.meta.changes ?? 0) > 0;
+};
+
+/** Raw stored text for a setting, for callers that must compare it verbatim. */
+export const getSettingRaw = async (db: D1Database, key: string): Promise<string | undefined> => {
+  const row = await db
+    .prepare('SELECT value FROM settings WHERE key = ?')
+    .bind(key)
+    .first<{ value: string }>();
+  return row === null ? undefined : row.value;
+};
+
 /** Enabled routes in publish order. */
 export const listEnabledRoutes = async (db: D1Database): Promise<RouteRow[]> => {
   const { results } = await db

@@ -225,3 +225,20 @@ button:disabled {
   max-height: 88vh;
   overflow: auto;
 }
+
+/* 恢复令牌说明里的 SQL：可横向滚动，不撑破卡片 */
+#recoverBox pre {
+  overflow-x: auto;
+  padding: 0.6rem;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  font-size: 0.85em;
+  line-height: 1.5;
+}
+#recoverBox .ph {
+  color: var(--warn);
+}
+.muted {
+  color: var(--dim);
+}
