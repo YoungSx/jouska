@@ -213,6 +213,13 @@ export const t = {
     discardBody: '这个弹窗里的修改还没有存进草稿。',
     discardConfirm: '放弃改动',
     discardCancel: '继续编辑',
+    /**
+     * host 下拉候选来自 /api/domains（issue #19）。读不到的原因（未配凭据、
+     * 接口失败、账号没绑定）由域名页负责解释，这里只留一行安静的小字：
+     * 降级绝不锁输入。
+     */
+    hostFallbackNote: '读不到已绑定的域名，仍可直接输入。',
+    hostEmpty: '没有匹配的域名，可直接输入',
   },
 
   /** 表单化编辑器的字段文案。help 直接对齐 README 的路由选项表。 */
@@ -235,6 +242,7 @@ export const t = {
       label: 'host',
       placeholder: 'app.example.com',
       help: '要匹配的主机名。`*.example.com` 匹配子域，不匹配 example.com 本身。留空匹配任意 host。',
+      dropdown: '从已绑定的域名里选一个',
     },
     matchPath: {
       label: 'path 前缀',

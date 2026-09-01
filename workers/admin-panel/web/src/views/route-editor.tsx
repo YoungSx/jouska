@@ -12,11 +12,20 @@
  */
 
 import * as React from 'react';
+import { Autocomplete } from '@base-ui/react';
 import { PlusIcon, SaveIcon, Trash2Icon, TriangleAlertIcon } from 'lucide-react';
 import { toast } from 'sonner';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import { Checkbox } from '@/components/ui/checkbox';
+import {
+  ComboboxCollection,
+  ComboboxContent,
+  ComboboxEmpty,
+  ComboboxInput,
+  ComboboxItem,
+  ComboboxList,
+} from '@/components/ui/combobox';
 import {
   Dialog,
   DialogContent,
@@ -47,6 +56,7 @@ import { Switch } from '@/components/ui/switch';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Textarea } from '@/components/ui/textarea';
 import { api, ApiError, NetworkError } from '@/lib/api';
+import type { HostBinding } from '@/lib/api';
 import { jsonByteLength, parseList, stableStringify } from '@/lib/format';
 import { t } from '@/lib/messages';
 import {
@@ -203,6 +213,102 @@ const TextProperty = ({
     {hasText(error) && <FieldError>{error}</FieldError>}
   </Field>
 );
+
+/**
+ * host 候选项：host 本身是值，来源与 pattern 只做标注（issue #19）。同一 host
+ * 可能来自多个 kind，去重后以第一次出现的为准，保持 Cloudflare 返回的顺序。
+ */
+interface HostOption {
+  readonly value: string;
+  readonly kind: HostBinding['kind'];
+  readonly pattern?: string;
+}
+
+const toHostOptions = (bindings: readonly HostBinding[]): readonly HostOption[] =>
+  [...new Map(bindings.map((binding) => [binding.host, binding])).values()].map((binding) => ({
+    value: binding.host,
+    kind: binding.kind,
+    pattern: binding.pattern,
+  }));
+
+interface HostPropertyProps {
+  readonly id: string;
+  readonly label: string;
+  readonly hint: string;
+  readonly placeholder: string;
+  readonly value: string;
+  /** 已绑定域名候选；空数组 = 无候选，控件退化为纯输入框，手输照常。 */
+  readonly options: readonly HostOption[];
+  /** 候选读不到时的一行低调说明；undefined = 不显示。 */
+  readonly fallbackNote?: string;
+  readonly onChange: (value: string) => void;
+}
+
+/**
+ * host 字段：下拉选已绑定域名，同时保留自由输入（issue #19）。
+ *
+ * 单一受控通道：input 文本本身就是值。根件用 Base UI 的 Autocomplete.Root ——
+ * 官方 base-nova 的 Combobox Root 是纯选择模型，类型层面没有 inputValue /
+ * onInputValueChange，既回填不了既有 host 也观察不了打字；Autocomplete 与它
+ * 共享同一套部件 context，官方 shadcn 的 Input/List/Item 原样可用。value +
+ * onValueChange 是文本通道，「选」和「打」是同一控件的两条路径，不同步两份
+ * 状态。过滤不需要自定义 —— Autocomplete 默认就是大小写不敏感的 contains，
+ * 打 `example.com` 搜得到 `*.example.com`。
+ *
+ * 无候选时只藏下拉的装饰（chevron 与浮层），输入路径原封不动 —— 降级绝不
+ * 锁输入（auth-view「挂载即锁死」的教训）。
+ */
+const HostProperty = ({
+  id,
+  label,
+  hint,
+  placeholder,
+  value,
+  options,
+  fallbackNote,
+  onChange,
+}: HostPropertyProps) => {
+  const hasOptions = options.length > 0;
+
+  return (
+    <Field>
+      <FieldLabel htmlFor={id}>{label}</FieldLabel>
+      <Autocomplete.Root items={options} value={value} onValueChange={onChange}>
+        <ComboboxInput
+          id={id}
+          className="w-full font-mono"
+          placeholder={placeholder}
+          showTrigger={hasOptions}
+        />
+        {hasOptions && (
+          <ComboboxContent>
+            <ComboboxList>
+              <ComboboxEmpty>{t.editor.hostEmpty}</ComboboxEmpty>
+              <ComboboxCollection>
+                {(option) => (
+                  <ComboboxItem key={option.value} value={option}>
+                    <div className="flex min-w-0 flex-col">
+                      <span className="font-mono text-xs">{option.value}</span>
+                      {option.kind === 'route' && option.pattern !== undefined && (
+                        <span className="text-muted-foreground truncate text-xs">
+                          {t.domains.kinds.route} · {option.pattern}
+                        </span>
+                      )}
+                    </div>
+                  </ComboboxItem>
+                )}
+              </ComboboxCollection>
+            </ComboboxList>
+          </ComboboxContent>
+        )}
+      </Autocomplete.Root>
+      <FieldDescription>
+        <Hint text={hint} />
+        {fallbackNote !== undefined && <span className="mt-1 block">{fallbackNote}</span>}
+      </FieldDescription>
+    </Field>
+  );
+};
 
 interface NumberPropertyProps {
   readonly id: string;
@@ -543,6 +649,12 @@ export const RouteEditor = ({
   const [jsonError, setJsonError] = React.useState<string | null>(null);
   const [saving, setSaving] = React.useState(false);
   const [confirmDiscard, setConfirmDiscard] = React.useState(false);
+  /**
+   * 已绑定域名候选（issue #19）。null = 还在读。读不到的原因（未配凭据、接口
+   * 失败、账号没绑定）不在这里区分 —— UI 结果一样：没候选 + 一行低调小字，
+   * 原因的解释是域名页的职责。
+   */
+  const [hostBindings, setHostBindings] = React.useState<readonly HostBinding[] | null>(null);
 
   /** jsonText 反映的是哪个版本的 definition（稳定序列化签名）。 */
   const jsonSignature = React.useRef<string | null>(null);
@@ -556,6 +668,34 @@ export const RouteEditor = ({
     stableStringify(definition) !== initialSignature ||
     id !== initialId ||
     enabled !== initialEnabled;
+
+  /** 弹窗每开一次都重读：绑定可能在上次关闭后变了；服务端有 60s 缓存兜底。 */
+  React.useEffect(() => {
+    if (!open) {
+      return;
+    }
+    // 先清掉上一次打开留下的候选，别让旧数据顶在新弹窗里。
+    setHostBindings(null);
+    let cancelled = false;
+    api.domains().then(
+      (result) => {
+        if (!cancelled) {
+          setHostBindings(result.configured ? (result.hosts ?? []) : []);
+        }
+      },
+      () => {
+        if (!cancelled) {
+          setHostBindings([]);
+        }
+      },
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [open]);
+
+  // 同一 host 可能来自多个 kind：Map 去重以第一次出现的为准，保 API 顺序。
+  const hostOptions = hostBindings === null ? [] : toHostOptions(hostBindings);
 
   const errors = collectErrors(createMode, id, definition);
   const hasErrors = Object.keys(errors).length > 0;
@@ -822,13 +962,18 @@ export const RouteEditor = ({
                   <Hint text={t.fields.sections.matchHint} />
                 </FieldDescription>
 
-                <TextProperty
+                <HostProperty
                   id="route-editor-match-host"
                   label={t.fields.matchHost.label}
                   hint={t.fields.matchHost.help}
                   placeholder={t.fields.matchHost.placeholder}
-                  mono
                   value={definition.match?.host ?? ''}
+                  options={hostOptions}
+                  fallbackNote={
+                    hostBindings !== null && hostOptions.length === 0
+                      ? t.editor.hostFallbackNote
+                      : undefined
+                  }
                   onChange={(value) => setMatchKey('host', value === '' ? undefined : value)}
                 />
                 <TextProperty
