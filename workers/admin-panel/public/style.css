@@ -13,6 +13,11 @@
 * {
   box-sizing: border-box;
 }
+/* hidden 属性必须永远赢过任何 display 规则，否则 .overlay 的
+   display:grid 会让"关不掉的弹窗"复活（真机抓到的 bug） */
+[hidden] {
+  display: none !important;
+}
 body {
   margin: 0;
   background: var(--bg);
