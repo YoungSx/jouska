@@ -1,5 +1,6 @@
 import { CONFIG_VERSION, configSchema, type ConfigInput, type RouteInput } from 'jouska';
 import { shadowWarnings, type ShadowWarning } from './shadow.js';
+import { CORRUPT } from './validate.js';
 
 /**
  * Compiles the admin panel's rows into a route-table document.
@@ -45,6 +46,16 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
 const assembleRoute = (
   row: RouteRow,
 ): { readonly route?: RouteInput; readonly issue?: CompileIssue } => {
+  if (row.definition === CORRUPT) {
+    return {
+      issue: {
+        routeId: row.id,
+        path: 'definition',
+        message:
+          'stored JSON will not parse — the row was written outside this panel or a migration failed; re-save the route to replace it',
+      },
+    };
+  }
   if (!isRecord(row.definition)) {
     return { issue: { routeId: row.id, path: 'definition', message: 'must be a JSON object' } };
   }
@@ -107,6 +118,22 @@ const issueToCompile = (
 export const compileConfig = (rows: readonly RouteRow[], defaults: unknown): CompileResult => {
   const routes: RouteInput[] = [];
   const issues: CompileIssue[] = [];
+  // An empty table validates fine but means "the proxy forwards nothing".
+  // Publishing it would blackhole live traffic without a single error, so it
+  // is refused here where the operator still sees why.
+  if (rows.length === 0) {
+    return {
+      ok: false,
+      issues: [
+        {
+          routeId: undefined,
+          path: 'routes',
+          message:
+            'no enabled routes — publishing this would leave the proxy with nothing to forward; add or enable a route first',
+        },
+      ],
+    };
+  }
   for (const row of rows) {
     // Disabled rows are dead config: they parse fine but must not ship to the
     // proxy, where they would take live traffic.

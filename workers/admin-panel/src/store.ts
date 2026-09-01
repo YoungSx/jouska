@@ -5,15 +5,27 @@
  * queries are few and the SQL is the documentation.
  */
 import type { RouteRow } from './compile.js';
+import { CORRUPT, parseJsonSafe } from './validate.js';
 
 const nowSeconds = (): number => Math.floor(Date.now() / 1000);
+
+const parseColumn = (raw: string): unknown => {
+  const parsed = parseJsonSafe(raw);
+  return parsed.ok ? parsed.value : CORRUPT;
+};
 
 export const getSetting = async (db: D1Database, key: string): Promise<unknown> => {
   const row = await db
     .prepare('SELECT value FROM settings WHERE key = ?')
     .bind(key)
     .first<{ value: string }>();
-  return row === null ? undefined : JSON.parse(row.value);
+  if (row === null) {
+    return undefined;
+  }
+  const parsed = parseJsonSafe(row.value);
+  // A corrupt setting reads as absent: settings all have working defaults, so
+  // "unset" is a safe interpretation, unlike a route definition.
+  return parsed.ok ? parsed.value : undefined;
 };
 
 export const putSetting = async (db: D1Database, key: string, value: unknown): Promise<void> => {
@@ -34,7 +46,7 @@ export const listEnabledRoutes = async (db: D1Database): Promise<RouteRow[]> => 
     .all<{ id: string; definition: string; enabled: number; position: number }>();
   return results.map((r) => ({
     id: r.id,
-    definition: JSON.parse(r.definition) as unknown,
+    definition: parseColumn(r.definition),
     enabled: r.enabled === 1,
     position: r.position,
   }));
@@ -64,7 +76,7 @@ export const listAllRoutes = async (db: D1Database): Promise<RouteListEntry[]> =
     }>();
   return results.map((r) => ({
     id: r.id,
-    definition: JSON.parse(r.definition) as unknown,
+    definition: parseColumn(r.definition),
     enabled: r.enabled === 1,
     position: r.position,
     updatedAt: r.updated_at,
@@ -91,7 +103,7 @@ export const getRoute = async (db: D1Database, id: string): Promise<RouteListEnt
   }
   return {
     id: row.id,
-    definition: JSON.parse(row.definition) as unknown,
+    definition: parseColumn(row.definition),
     enabled: row.enabled === 1,
     position: row.position,
     updatedAt: row.updated_at,
