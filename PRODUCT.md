@@ -65,6 +65,7 @@ jouska 是 Hono 上的反向代理中间件，运行在 Cloudflare Workers。管
 - 表级 `defaults` 块，逐字段填补空缺。
 - 发布预览：编译 + 校验 + 遮蔽检测 + 危险开关分类，不写 KV。
 - 发布：三重闸门（必须编译通过、危险开关需显式 `confirm`、全部进审计日志），一次发布恰好一次 KV 写，`meta` 带 revision/操作者/备注。
+- 发布历史与回滚：每次发布存一份快照（含 `defaults` 与全部启用路由，滚动保留 50 版），时间轴可按 revision 浏览、任选两版做服务端字段级 diff；回滚把目标快照恢复进草稿并复用同一条发布管道——它是发布成新 revision，不是倒带计数，`rollbackOf` 记录出处；目标快照先过 schema 校验、再重过全部发布闸门。历史功能之前的旧发布以审计日志回填为「无快照」条目，能看、不能比。
 - 审计日志，最多 200 条每页。
 - 登录、登出、会话；连续 5 次失败锁 15 分钟。
 - 带外密码恢复：一次性令牌，可钉到账号，用过即废，走审计（`auth.recover`）。
@@ -80,7 +81,6 @@ jouska 是 Hono 上的反向代理中间件，运行在 Cloudflare Workers。管
 明确的缺口（真实存在的表与字段，但零 UI，未来工作要接上，不许假装已有）：
 
 - `users` 表已有 `role` / `disabled` / `failed_attempts` / `locked_until`，但面板没有任何用户管理界面：加号、改角色、停用、解锁、踢会话、改密码都做不到。唯一的建号途径是首次 bootstrap。
-- `revision` 在 settings 里自增、`meta` 已写进 KV，但看不到发布历史、无法 diff、无法回滚到某个 revision。
 - 路由级运行时可观测（请求量、错误率、p95、上游健康）的数据源尚不存在，需要 Analytics Engine 之类的接入。
 
 ## Brand Commitments
@@ -97,7 +97,7 @@ jouska 是 Hono 上的反向代理中间件，运行在 Cloudflare Workers。管
 - `packages/jouska/src/config.ts`：权威 zod schema，含归一化规则与安全注释。
 - `workers/admin-panel/src/danger.ts`：8 条危险字段分类，每条带 level 与人类可读的 reason。
 - `workers/admin-panel/src/shadow.ts`：遮蔽检测，产出 `shadowedId` / `byId` / `probe`。
-- `workers/admin-panel/migrations/`：`0001_init.sql`、`0002_tables.sql` 的真实表结构。
+- `workers/admin-panel/migrations/`：`0001_init.sql`、`0002_tables.sql`、`0003_revisions.sql` 的真实表结构。
 - `workers/admin-panel/src/cloudflare.ts`：域名发现的三个来源与它们各自的失败模式。
 - `workers/admin-panel/src/recovery.ts`：恢复令牌的窗口、过期与一次性消费语义。
 
