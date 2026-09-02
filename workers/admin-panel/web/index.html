@@ -2,7 +2,16 @@
 <html lang="zh-CN" class="dark">
   <head>
     <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <!--
+      interactive-widget=resizes-content：软键盘弹起时让 layout viewport 一起收缩，
+      dvh 随之变小，全屏编辑器会自己让开键盘。默认的 resizes-visual 只缩视觉视口，
+      弹窗留在原处被键盘盖住 —— 实测 375×667 下表单区可见 0px。iOS Safari 还不认
+      这个属性（会忽略），所以编辑器不能只靠它：窄屏改用全屏 sheet 才是兜底。
+    -->
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, interactive-widget=resizes-content"
+    />
     <meta name="color-scheme" content="dark light" />
     <meta name="robots" content="noindex, nofollow" />
     <title>jouska 管理面板</title>

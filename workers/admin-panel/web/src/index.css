@@ -5,6 +5,16 @@
 
 @custom-variant dark (&:is(.dark *));
 
+/* 编辑器只在屏幕又够宽又够高时才做居中卡片，否则全屏接管。单独的宽度断点看不见
+   横屏手机：844×390 宽得过 sm，高度却只有 390px —— 居中卡片在那里只放得下一个半
+   字段（实测滚动区 32px）。两个条件写在一个变体里，也就不必赌 sm 与高度变体谁先
+   进 CSS。32rem 是分界：iPhone 横屏 390–430px 落在下面，iPad 横屏 768px 在上面。 */
+@custom-variant roomy (@media (min-width: 40rem) and (min-height: 32rem));
+
+/* 手指在用这个界面的时候。命中区兜底在文件末尾按 data-slot 做，这个变体留给那些
+   必须动布局才能变大的地方（比如换行的复选框组：命中面互相盖住不算变大）。 */
+@custom-variant touch (@media (pointer: coarse));
+
 @theme inline {
   --font-heading: var(--font-sans);
   --font-sans: 'Geist Variable', sans-serif;
@@ -227,4 +237,61 @@
 
 @utility gate-icon {
   animation: gate-land 200ms ease-out;
+}
+
+/* ---------------------------------------------------------------------------
+   粗指针（手指）下的命中区。nova 的紧凑尺寸是这个面板的承诺 —— 28px 的图标钮、
+   25px 的 tab、18px 的开关 —— 桌面上鼠标点得准，手指点不准。这里只用伪元素把
+   可点面撑到 44px：伪元素不参与布局，所以视觉尺寸、行高、密度一个都不动。
+
+   只补高度不补宽度：横向相邻的控件间距只有 8px（头名输入 + 删除钮），向两边扩
+   会让人点 A 命中 B。输入框不在此列 —— 它高 32px 但通栏宽，Fitts 定律下宽度已
+   经补偿了高度，而给 20 多个字段各加 12px 会把好不容易腾出来的可视区吃回去。
+
+   min(0px, …) 是护栏：控件本来就 ≥44px 时算出正值会反向收缩命中区，钳到 0。
+   --------------------------------------------------------------------------- */
+@media (pointer: coarse) {
+  /* nova 的 button 基类没有 relative，::after 需要一个定位上下文。 */
+  [data-slot='button'] {
+    position: relative;
+  }
+
+  [data-slot='button']::after {
+    content: '';
+    position: absolute;
+    inset-inline: 0;
+    inset-block: min(0px, calc((100% - 44px) / 2));
+  }
+
+  /* 弹窗关闭钮不在此列（Base UI 的 render 把它的 data-slot 换成了 dialog-close）：
+     它 absolute 贴在弹窗右上角，而全屏态的弹窗是 overflow-hidden —— 向外铺的命中面
+     会被裁掉一半，实测有效高度反而从 26px 掉到 10px。它改为真的长大（touch:size-11，
+     见 dialog.tsx）：absolute 元素变大不推开任何东西。 */
+
+  /* tab 的 ::after 是激活线（见上方 nav-scroll 注释），命中区只能走 ::before。 */
+  [data-slot='tabs-trigger']::before {
+    content: '';
+    position: absolute;
+    inset-inline: 0;
+    inset-block: min(0px, calc((100% - 44px) / 2));
+  }
+
+  /* Switch 出厂就带 ::after 命中面（-inset-x-3 / -inset-y-2），横向那一档留着，
+     纵向从 34px 补到 44px。它每行只有一个，纵向放开不会撞到谁。
+
+     Checkbox 刻意不在此列：HTTP 方法那一组会换行，行距只有 8px，44px 的命中面上下
+     相邻就互相盖住 —— 实测有效命中高度从 32px 掉到 2px，比不扩还糟。它改为让包着它
+     的 <label> 用 touch:py-3.5 真的长到 44px（见 route-editor），命中面互不重叠。 */
+  [data-slot='switch']::after {
+    inset-block: min(0px, calc((100% - 44px) / 2));
+  }
+
+  /* 浮层里的菜单项竖向紧邻，扩命中面会互吞 —— 它们靠自身高度长大，
+     浮层变高不占页面的可视区。 */
+  [data-slot='select-item'],
+  [data-slot='combobox-item'],
+  [data-slot='dropdown-menu-item'],
+  [data-slot='dropdown-menu-checkbox-item'] {
+    min-height: 44px;
+  }
 }

@@ -50,7 +50,7 @@ function DialogContent({
       <DialogPrimitive.Popup
         data-slot="dialog-content"
         className={cn(
-          'fixed top-1/2 left-1/2 z-50 grid w-full max-w-[calc(100%-2rem)] -translate-x-1/2 -translate-y-1/2 gap-4 rounded-xl bg-popover p-4 text-sm text-popover-foreground ring-1 ring-foreground/10 duration-100 outline-none sm:max-w-sm data-open:animate-in data-open:fade-in-0 data-open:zoom-in-95 data-closed:animate-out data-closed:fade-out-0 data-closed:zoom-out-95',
+          'fixed top-1/2 left-1/2 z-50 grid max-h-[calc(100dvh-2rem)] w-full max-w-[calc(100%-2rem)] -translate-x-1/2 -translate-y-1/2 gap-4 overflow-y-auto rounded-xl bg-popover p-4 text-sm text-popover-foreground ring-1 ring-foreground/10 duration-100 outline-none sm:max-w-sm data-open:animate-in data-open:fade-in-0 data-open:zoom-in-95 data-closed:animate-out data-closed:fade-out-0 data-closed:zoom-out-95',
           className,
         )}
         {...props}
@@ -59,7 +59,15 @@ function DialogContent({
         {showCloseButton && (
           <DialogPrimitive.Close
             data-slot="dialog-close"
-            render={<Button variant="ghost" className="absolute top-2 right-2" size="icon-sm" />}
+            // touch:size-11 —— 它是 absolute 的，变大不推开任何东西；靠伪元素铺
+            // 命中面在这里行不通：弹窗全屏时是 overflow-hidden，向外扩的那一圈会被裁。
+            render={
+              <Button
+                variant="ghost"
+                className="absolute top-2 right-2 touch:size-11"
+                size="icon-sm"
+              />
+            }
           >
             <XIcon />
             <span className="sr-only">Close</span>
@@ -105,7 +113,8 @@ function DialogTitle({ className, ...props }: DialogPrimitive.Title.Props) {
   return (
     <DialogPrimitive.Title
       data-slot="dialog-title"
-      className={cn('font-heading text-base leading-none font-medium', className)}
+      // pr-9 给右上角的关闭按钮让位：它是 absolute 的，不加留白会压在标题上（实测重叠 20px）。
+      className={cn('font-heading pr-9 text-base leading-none font-medium', className)}
       {...props}
     />
   );

@@ -1,6 +1,6 @@
 {
   "schemaVersion": 2,
-  "generatedAt": "2026-09-01T00:00:00Z",
+  "generatedAt": "2026-09-02T00:00:00Z",
   "title": "Design System: jouska 管理面板",
   "extensions": {
     "colorMeta": {
@@ -166,7 +166,11 @@
         "purpose": "发布栏图标在闸门状态翻转时落位一次。全系统唯一自定义动效；key 重挂驱动重放，静止零成本。"
       }
     ],
-    "breakpoints": [{ "name": "sm", "value": "40rem" }]
+    "breakpoints": [
+      { "name": "sm", "value": "40rem" },
+      { "name": "roomy", "value": "(min-width: 40rem) and (min-height: 32rem)" },
+      { "name": "touch", "value": "(pointer: coarse)" }
+    ]
   },
   "components": [
     {

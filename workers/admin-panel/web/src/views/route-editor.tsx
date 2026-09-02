@@ -1050,48 +1050,23 @@ export const RouteEditor = ({
         requestClose();
       }}
     >
-      <DialogContent className="flex max-h-[85dvh] flex-col gap-0 p-0 sm:max-w-2xl">
+      {/*
+        小屏改用贯通上下的全高 sheet，不是居中卡片。居中卡片在 375×667 上只剩 153px
+        表单区（实测），键盘一弹更归零；把上下 127px 留白还给表单之后是 449px。
+
+        水平方向始终居中限宽：横屏 844×390 也走全高（roomy 要求同时够宽够高），若再
+        放开宽度，一行 host 输入框会拉到 812px —— 全高解决的是高度，不是让字变长。
+        sm:max-w-none 那一档必须显式关掉：nova 基类带着 sm:max-w-sm（384px），先前是
+        被 sm:max-w-2xl 压住的，换成 roomy 之后它会在横屏区间冒出来（实测弹窗塌到
+        384px 宽）。
+      */}
+      <DialogContent className="top-0 left-1/2 flex h-dvh max-h-none w-full max-w-none -translate-x-1/2 translate-y-0 flex-col gap-0 overflow-hidden rounded-none p-0 sm:max-w-2xl roomy:top-1/2 roomy:h-auto roomy:max-h-[85dvh] roomy:-translate-y-1/2 roomy:rounded-xl">
         <DialogHeader className="border-b px-4 py-4">
           <DialogTitle>
             {createMode ? t.editor.createTitle : t.editor.editTitle(initialId)}
           </DialogTitle>
           <DialogDescription>{t.editor.description}</DialogDescription>
         </DialogHeader>
-
-        <div className="flex flex-col gap-4 px-4 pt-4">
-          <Field data-invalid={errors.id !== undefined ? true : undefined}>
-            <FieldLabel htmlFor="route-editor-id">{t.editor.idLabel}</FieldLabel>
-            {createMode ? (
-              <Input
-                id="route-editor-id"
-                className="font-mono"
-                value={id}
-                aria-invalid={errors.id !== undefined}
-                onChange={(event) => setId(event.target.value)}
-              />
-            ) : (
-              <Input id="route-editor-id" className="font-mono" value={id} readOnly />
-            )}
-            <FieldDescription>
-              <Hint text={createMode ? t.editor.idHint : t.editor.idImmutable} />
-            </FieldDescription>
-            {errors.id !== undefined && <FieldError>{errors.id}</FieldError>}
-          </Field>
-
-          <Field orientation="horizontal">
-            <Switch
-              id="route-editor-enabled"
-              checked={enabled}
-              onCheckedChange={(checked) => setEnabled(checked)}
-            />
-            <FieldContent>
-              <FieldLabel htmlFor="route-editor-enabled">{t.editor.enabledLabel}</FieldLabel>
-              <FieldDescription>
-                <Hint text={t.editor.enabledHint} />
-              </FieldDescription>
-            </FieldContent>
-          </Field>
-        </div>
 
         <Tabs
           value={tab}
@@ -1105,464 +1080,524 @@ export const RouteEditor = ({
             </TabsList>
           </div>
 
-          {/* 滚动发生在当前视图里：头部与开关常驻可见，长表单也不会把保存按钮顶走。 */}
-          <TabsContent value="form" className="min-h-0 flex-1 overflow-y-auto px-4 py-4">
-            <div className="flex flex-col gap-6">
-              <FieldSet>
-                <FieldLegend>{t.fields.sections.match}</FieldLegend>
-                <FieldDescription>
-                  <Hint text={t.fields.sections.matchHint} />
-                </FieldDescription>
+          {/*
+            唯一的滚动容器。标识（ID 与启用开关）从前常驻在这上面，占 183px 固定高度
+            —— 而 ID 已经写在标题里了，窄屏拿掉重复的那一份，表单区从 153px 涨到
+            477px（375×667 实测）。常驻的只剩标题、视图切换与页脚这三样非它不可的。
+          */}
+          <div className="flex min-h-0 flex-1 flex-col gap-6 overflow-y-auto overscroll-contain px-4 py-4">
+            <FieldSet>
+              <FieldLegend>{t.fields.sections.identity}</FieldLegend>
+              <FieldDescription>
+                <Hint text={t.fields.sections.identityHint} />
+              </FieldDescription>
 
-                <HostProperty
-                  id="route-editor-match-host"
-                  label={t.fields.matchHost.label}
-                  hint={t.fields.matchHost.help}
-                  placeholder={t.fields.matchHost.placeholder}
-                  value={definition.match?.host ?? ''}
-                  options={hostOptions}
-                  fallbackNote={
-                    hostBindings !== null && hostOptions.length === 0
-                      ? t.editor.hostFallbackNote
-                      : undefined
-                  }
-                  onChange={(value) => setMatchKey('host', value === '' ? undefined : value)}
-                />
-                <TextProperty
-                  id="route-editor-match-path"
-                  label={t.fields.matchPath.label}
-                  hint={t.fields.matchPath.help}
-                  placeholder={t.fields.matchPath.placeholder}
-                  mono
-                  value={definition.match?.path ?? ''}
-                  onChange={(value) => setMatchKey('path', value === '' ? undefined : value)}
-                />
-
-                <Field>
-                  <FieldLabel>{t.fields.matchMethods.label}</FieldLabel>
-                  <FieldDescription>
-                    <Hint text={t.fields.matchMethods.help} />
-                  </FieldDescription>
-                  <div className="flex flex-wrap gap-x-4 gap-y-2">
-                    {HTTP_METHODS.map((method) => (
-                      <label key={method} className="flex items-center gap-2">
-                        <Checkbox
-                          checked={definition.match?.methods?.includes(method) ?? false}
-                          aria-label={method}
-                          onCheckedChange={(checked) => toggleMethod(method, checked)}
-                        />
-                        <span className="font-mono text-xs">{method}</span>
-                      </label>
-                    ))}
-                  </div>
-                </Field>
-              </FieldSet>
-
-              <FieldSet>
-                <FieldLegend>{t.fields.sections.upstream}</FieldLegend>
-                <FieldDescription>
-                  <Hint text={t.fields.sections.upstreamHint} />
-                </FieldDescription>
-
-                <TextProperty
-                  id="route-editor-upstream"
-                  label={t.fields.upstream.label}
-                  hint={t.fields.upstream.help}
-                  placeholder={t.fields.upstream.placeholder}
-                  mono
-                  error={errors.upstream}
-                  value={typeof definition.upstream === 'string' ? definition.upstream : ''}
-                  onChange={(value) => {
-                    // upstream 里空格永远是错字，输入时就去掉；协议头交给校验拦。
-                    const next = value.trim();
-                    setTopLevel('upstream', next === '' ? undefined : next);
-                  }}
-                />
-
-                <Field data-invalid={errors.scheme !== undefined ? true : undefined}>
-                  <FieldLabel htmlFor="route-editor-scheme">{t.fields.scheme.label}</FieldLabel>
-                  <Select
-                    value={definition.scheme ?? SCHEME_UNSET}
-                    onValueChange={(value) =>
-                      setTopLevel(
-                        'scheme',
-                        value === 'http' || value === 'https' ? value : undefined,
-                      )
-                    }
-                  >
-                    <SelectTrigger
-                      id="route-editor-scheme"
-                      className="w-44"
-                      aria-label={t.fields.scheme.label}
-                    >
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value={SCHEME_UNSET}>{t.common.unset}</SelectItem>
-                      <SelectItem value="https">https</SelectItem>
-                      <SelectItem value="http">http</SelectItem>
-                    </SelectContent>
-                  </Select>
-                  <FieldDescription>
-                    <Hint text={t.fields.scheme.help} /> {t.common.defaultValue(SCHEME_DEFAULT)}
-                  </FieldDescription>
-                  {errors.scheme !== undefined && <FieldError>{errors.scheme}</FieldError>}
-                </Field>
-                {definition.scheme === 'http' && <DangerNote path="scheme" />}
-
-                <SwitchProperty
-                  id="route-editor-allow-private"
-                  label={t.fields.allowPrivateUpstream.label}
-                  hint={t.fields.allowPrivateUpstream.help}
-                  checked={definition.allowPrivateUpstream === true}
-                  onCheckedChange={(checked) =>
-                    setTopLevel('allowPrivateUpstream', checked ? true : undefined)
-                  }
-                />
-                {definition.allowPrivateUpstream === true && (
-                  <DangerNote path="allowPrivateUpstream" />
+              <Field data-invalid={errors.id !== undefined ? true : undefined}>
+                <FieldLabel htmlFor="route-editor-id">{t.editor.idLabel}</FieldLabel>
+                {createMode ? (
+                  <Input
+                    id="route-editor-id"
+                    className="font-mono"
+                    value={id}
+                    aria-invalid={errors.id !== undefined}
+                    onChange={(event) => setId(event.target.value)}
+                  />
+                ) : (
+                  <Input id="route-editor-id" className="font-mono" value={id} readOnly />
                 )}
-              </FieldSet>
-
-              <FieldSet>
-                <FieldLegend>{t.fields.sections.timing}</FieldLegend>
                 <FieldDescription>
-                  <Hint text={t.fields.sections.timingHint} />
+                  <Hint text={createMode ? t.editor.idHint : t.editor.idImmutable} />
                 </FieldDescription>
+                {errors.id !== undefined && <FieldError>{errors.id}</FieldError>}
+              </Field>
 
-                {NUMERIC_KEYS.map((key) => (
-                  <NumberProperty
-                    key={key}
-                    id={`route-editor-${key}`}
-                    label={NUMERIC_FIELDS[key].label}
-                    unit={NUMERIC_FIELDS[key].unit}
-                    hint={t.fields[key].help}
-                    value={definition[key] === undefined ? '' : String(definition[key])}
-                    min={NUMERIC_BOUNDS[key].min}
-                    max={NUMERIC_BOUNDS[key].max}
-                    error={errors[key]}
-                    onChange={(raw) => {
-                      // 数字直接存，越界与非整数交给校验就地说清；空串 = 未设置。
-                      const next = raw === '' ? undefined : Number(raw);
-                      setTopLevel(key, next !== undefined && Number.isNaN(next) ? undefined : next);
+              <Field orientation="horizontal">
+                <Switch
+                  id="route-editor-enabled"
+                  checked={enabled}
+                  onCheckedChange={(checked) => setEnabled(checked)}
+                />
+                <FieldContent>
+                  <FieldLabel htmlFor="route-editor-enabled">{t.editor.enabledLabel}</FieldLabel>
+                  <FieldDescription>
+                    <Hint text={t.editor.enabledHint} />
+                  </FieldDescription>
+                </FieldContent>
+              </Field>
+            </FieldSet>
+
+            <TabsContent value="form" className="min-h-0">
+              <div className="flex flex-col gap-6">
+                <FieldSet>
+                  <FieldLegend>{t.fields.sections.match}</FieldLegend>
+                  <FieldDescription>
+                    <Hint text={t.fields.sections.matchHint} />
+                  </FieldDescription>
+
+                  <HostProperty
+                    id="route-editor-match-host"
+                    label={t.fields.matchHost.label}
+                    hint={t.fields.matchHost.help}
+                    placeholder={t.fields.matchHost.placeholder}
+                    value={definition.match?.host ?? ''}
+                    options={hostOptions}
+                    fallbackNote={
+                      hostBindings !== null && hostOptions.length === 0
+                        ? t.editor.hostFallbackNote
+                        : undefined
+                    }
+                    onChange={(value) => setMatchKey('host', value === '' ? undefined : value)}
+                  />
+                  <TextProperty
+                    id="route-editor-match-path"
+                    label={t.fields.matchPath.label}
+                    hint={t.fields.matchPath.help}
+                    placeholder={t.fields.matchPath.placeholder}
+                    mono
+                    value={definition.match?.path ?? ''}
+                    onChange={(value) => setMatchKey('path', value === '' ? undefined : value)}
+                  />
+
+                  <Field>
+                    <FieldLabel>{t.fields.matchMethods.label}</FieldLabel>
+                    <FieldDescription>
+                      <Hint text={t.fields.matchMethods.help} />
+                    </FieldDescription>
+                    <div className="flex flex-wrap gap-x-4 gap-y-2">
+                      {HTTP_METHODS.map((method) => (
+                        /*
+                        触摸下靠 label 自己长到 44px，而不是给复选框铺一层看不见的
+                        命中面：这一组在窄屏要换到三行，看不见的命中面会上下叠在一
+                        起，点第二行会命中第一行。label 长高会把行推开，是真的变大。
+                      */
+                        <label key={method} className="flex items-center gap-2 touch:py-3.5">
+                          <Checkbox
+                            checked={definition.match?.methods?.includes(method) ?? false}
+                            aria-label={method}
+                            onCheckedChange={(checked) => toggleMethod(method, checked)}
+                          />
+                          <span className="font-mono text-xs">{method}</span>
+                        </label>
+                      ))}
+                    </div>
+                  </Field>
+                </FieldSet>
+
+                <FieldSet>
+                  <FieldLegend>{t.fields.sections.upstream}</FieldLegend>
+                  <FieldDescription>
+                    <Hint text={t.fields.sections.upstreamHint} />
+                  </FieldDescription>
+
+                  <TextProperty
+                    id="route-editor-upstream"
+                    label={t.fields.upstream.label}
+                    hint={t.fields.upstream.help}
+                    placeholder={t.fields.upstream.placeholder}
+                    mono
+                    error={errors.upstream}
+                    value={typeof definition.upstream === 'string' ? definition.upstream : ''}
+                    onChange={(value) => {
+                      // upstream 里空格永远是错字，输入时就去掉；协议头交给校验拦。
+                      const next = value.trim();
+                      setTopLevel('upstream', next === '' ? undefined : next);
                     }}
                   />
-                ))}
-              </FieldSet>
 
-              <FieldSet>
-                <FieldLegend>{t.fields.sections.rewrite}</FieldLegend>
-                <FieldDescription>
-                  <Hint text={t.fields.sections.rewriteHint} />
-                </FieldDescription>
-
-                {BOOLEAN_KEYS.map((key) => (
-                  <SwitchProperty
-                    key={key}
-                    id={BOOLEAN_FIELDS[key].id}
-                    label={BOOLEAN_FIELDS[key].label}
-                    hint={BOOLEAN_FIELDS[key].help}
-                    defaultNote={t.common.defaultValue(String(BOOLEAN_DEFAULTS[key]))}
-                    checked={boolValue(key)}
-                    onCheckedChange={(checked) => setBoolean(key, checked)}
-                  />
-                ))}
-
-                <Field orientation="horizontal">
-                  <Switch
-                    id="route-editor-body-rewrite"
-                    checked={definition.bodyRewrite !== undefined}
-                    onCheckedChange={(checked) =>
-                      checked ? setSectionOn('bodyRewrite') : setSectionOff('bodyRewrite')
-                    }
-                  />
-                  <FieldContent>
-                    <FieldLabel htmlFor="route-editor-body-rewrite">
-                      {t.fields.bodyRewrite.label}
-                    </FieldLabel>
-                    <FieldDescription>
-                      <Hint text={t.fields.bodyRewrite.help} />
-                    </FieldDescription>
-                  </FieldContent>
-                </Field>
-
-                {definition.bodyRewrite !== undefined && (
-                  <>
-                    <RewriteNote />
-                    {BODY_REWRITE_BOOLEAN_KEYS.map((key) => (
-                      <SwitchProperty
-                        key={key}
-                        id={BODY_REWRITE_BOOLEAN_FIELDS[key].id}
-                        label={BODY_REWRITE_BOOLEAN_FIELDS[key].label}
-                        hint={BODY_REWRITE_BOOLEAN_FIELDS[key].help}
-                        defaultNote={t.common.defaultValue(
-                          String(BODY_REWRITE_BOOLEAN_DEFAULTS[key]),
-                        )}
-                        checked={bodyRewriteBoolValue(key)}
-                        onCheckedChange={(checked) => setBodyRewriteBoolean(key, checked)}
-                      />
-                    ))}
-                    <ListProperty
-                      id="route-editor-body-rewrite-content-types"
-                      label={t.fields.bodyRewrite.contentTypes}
-                      hint={t.fields.bodyRewrite.contentTypesHelp}
-                      value={definition.bodyRewrite.contentTypes}
-                      onChange={(value) => setSectionKey('bodyRewrite', 'contentTypes', value)}
-                    />
-                    {(definition.bodyRewrite.contentTypes?.length ?? 0) > 0 && (
-                      <DangerNote path="bodyRewrite.contentTypes" />
-                    )}
-                    <Field>
-                      <FieldLabel>{t.fields.bodyRewrite.replace}</FieldLabel>
-                      <FieldDescription>
-                        <Hint text={t.fields.bodyRewrite.replaceHelp} />
-                      </FieldDescription>
-                      <ReplaceEditor
-                        value={definition.bodyRewrite.replace}
-                        onChange={(value) => setSectionKey('bodyRewrite', 'replace', value)}
-                      />
-                    </Field>
-                    <TextProperty
-                      id="route-editor-body-rewrite-fallback-charset"
-                      label={t.fields.bodyRewrite.fallbackCharset}
-                      hint={t.fields.bodyRewrite.fallbackCharsetHelp}
-                      mono
-                      value={definition.bodyRewrite.fallbackCharset ?? ''}
-                      onChange={(value) =>
-                        setSectionKey(
-                          'bodyRewrite',
-                          'fallbackCharset',
-                          value === '' ? undefined : value,
+                  <Field data-invalid={errors.scheme !== undefined ? true : undefined}>
+                    <FieldLabel htmlFor="route-editor-scheme">{t.fields.scheme.label}</FieldLabel>
+                    <Select
+                      value={definition.scheme ?? SCHEME_UNSET}
+                      onValueChange={(value) =>
+                        setTopLevel(
+                          'scheme',
+                          value === 'http' || value === 'https' ? value : undefined,
                         )
                       }
-                    />
-                    {hasText(definition.bodyRewrite.fallbackCharset) && (
-                      <DangerNote path="bodyRewrite.fallbackCharset" />
-                    )}
-                  </>
-                )}
-              </FieldSet>
+                    >
+                      {/*
+                      Field vertical 的 `*:w-full` 与 w-44 同特异性且排在后面，普通
+                      w-44 是死代码（实测桌面下这个下拉是 640px 宽，不是 176px），所
+                      以要 important。窄屏留全宽：触摸目标越宽越好按。
+                    */}
+                      <SelectTrigger
+                        id="route-editor-scheme"
+                        className="sm:w-44!"
+                        aria-label={t.fields.scheme.label}
+                      >
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value={SCHEME_UNSET}>{t.common.unset}</SelectItem>
+                        <SelectItem value="https">https</SelectItem>
+                        <SelectItem value="http">http</SelectItem>
+                      </SelectContent>
+                    </Select>
+                    <FieldDescription>
+                      <Hint text={t.fields.scheme.help} /> {t.common.defaultValue(SCHEME_DEFAULT)}
+                    </FieldDescription>
+                    {errors.scheme !== undefined && <FieldError>{errors.scheme}</FieldError>}
+                  </Field>
+                  {definition.scheme === 'http' && <DangerNote path="scheme" />}
 
-              <FieldSet>
-                <FieldLegend>{t.fields.sections.guards}</FieldLegend>
-                <FieldDescription>
-                  <Hint text={t.fields.sections.guardsHint} />
-                </FieldDescription>
-
-                <ListProperty
-                  id="route-editor-block-countries"
-                  label={t.fields.blockCountries.label}
-                  hint={t.fields.blockCountries.help}
-                  placeholder={t.fields.blockCountries.placeholder}
-                  value={definition.blockCountries}
-                  onChange={(value) => setTopLevel('blockCountries', value)}
-                />
-                <ListProperty
-                  id="route-editor-allow-countries"
-                  label={t.fields.allowCountries.label}
-                  hint={t.fields.allowCountries.help}
-                  placeholder={t.fields.allowCountries.placeholder}
-                  value={definition.allowCountries}
-                  onChange={(value) => setTopLevel('allowCountries', value)}
-                />
-
-                <Field orientation="horizontal">
-                  <Switch
-                    id="route-editor-cors"
-                    checked={definition.cors !== undefined}
+                  <SwitchProperty
+                    id="route-editor-allow-private"
+                    label={t.fields.allowPrivateUpstream.label}
+                    hint={t.fields.allowPrivateUpstream.help}
+                    checked={definition.allowPrivateUpstream === true}
                     onCheckedChange={(checked) =>
-                      checked ? setSectionOn('cors') : setSectionOff('cors')
+                      setTopLevel('allowPrivateUpstream', checked ? true : undefined)
                     }
                   />
-                  <FieldContent>
-                    <FieldLabel htmlFor="route-editor-cors">{t.fields.cors.label}</FieldLabel>
-                  </FieldContent>
-                </Field>
+                  {definition.allowPrivateUpstream === true && (
+                    <DangerNote path="allowPrivateUpstream" />
+                  )}
+                </FieldSet>
 
-                {definition.cors !== undefined && (
-                  <>
-                    <ListProperty
-                      id="route-editor-cors-origins"
-                      label={t.fields.cors.origins}
-                      hint={t.fields.cors.originsHelp}
-                      placeholder={t.fields.cors.originsPlaceholder}
-                      value={definition.cors.origins}
-                      onChange={(value) => setSectionKey('cors', 'origins', value)}
-                    />
-                    {/* 这一项的危险状态是「缺失」而不是「存在」。 */}
-                    {(definition.cors.origins?.length ?? 0) === 0 && (
-                      <DangerNote path="cors.origins (absent)" />
-                    )}
-                    <ListProperty
-                      id="route-editor-cors-allow-methods"
-                      label={t.fields.cors.allowMethods}
-                      hint={t.fields.cors.allowMethodsHelp}
-                      placeholder="GET, POST"
-                      value={definition.cors.allowMethods}
-                      onChange={(value) => setSectionKey('cors', 'allowMethods', value)}
-                    />
-                    <ListProperty
-                      id="route-editor-cors-allow-headers"
-                      label={t.fields.cors.allowHeaders}
-                      hint={t.fields.cors.allowHeadersHelp}
-                      value={definition.cors.allowHeaders}
-                      onChange={(value) => setSectionKey('cors', 'allowHeaders', value)}
-                    />
-                    <ListProperty
-                      id="route-editor-cors-expose-headers"
-                      label={t.fields.cors.exposeHeaders}
-                      hint={t.fields.cors.exposeHeadersHelp}
-                      value={definition.cors.exposeHeaders}
-                      onChange={(value) => setSectionKey('cors', 'exposeHeaders', value)}
-                    />
-                    <SwitchProperty
-                      id="route-editor-cors-credentials"
-                      label={t.fields.cors.credentials}
-                      hint={t.fields.cors.credentialsHelp}
-                      defaultNote={t.common.defaultValue('false')}
-                      checked={definition.cors.credentials === true}
-                      onCheckedChange={(checked) =>
-                        // 默认 false：等于默认值不落键，段壳保留。
-                        setSectionKey('cors', 'credentials', checked ? true : undefined)
-                      }
-                    />
+                <FieldSet>
+                  <FieldLegend>{t.fields.sections.timing}</FieldLegend>
+                  <FieldDescription>
+                    <Hint text={t.fields.sections.timingHint} />
+                  </FieldDescription>
+
+                  {NUMERIC_KEYS.map((key) => (
                     <NumberProperty
-                      id="route-editor-cors-max-age"
-                      label={t.fields.cors.maxAge}
-                      unit="秒"
-                      hint={t.fields.cors.maxAgeHelp}
-                      value={
-                        definition.cors.maxAge === undefined ? '' : String(definition.cors.maxAge)
-                      }
-                      min={0}
+                      key={key}
+                      id={`route-editor-${key}`}
+                      label={NUMERIC_FIELDS[key].label}
+                      unit={NUMERIC_FIELDS[key].unit}
+                      hint={t.fields[key].help}
+                      value={definition[key] === undefined ? '' : String(definition[key])}
+                      min={NUMERIC_BOUNDS[key].min}
+                      max={NUMERIC_BOUNDS[key].max}
+                      error={errors[key]}
                       onChange={(raw) => {
-                        // schema 只要求非负整数；没有上限常量就不假装有，交给服务端判。
+                        // 数字直接存，越界与非整数交给校验就地说清；空串 = 未设置。
                         const next = raw === '' ? undefined : Number(raw);
-                        setSectionKey(
-                          'cors',
-                          'maxAge',
-                          next !== undefined &&
-                            (Number.isNaN(next) || !Number.isInteger(next) || next < 0)
-                            ? undefined
-                            : next,
+                        setTopLevel(
+                          key,
+                          next !== undefined && Number.isNaN(next) ? undefined : next,
                         );
                       }}
                     />
-                  </>
-                )}
+                  ))}
+                </FieldSet>
 
-                <Field orientation="horizontal">
-                  <Switch
-                    id="route-editor-ip"
-                    checked={definition.ip !== undefined}
-                    onCheckedChange={(checked) =>
-                      checked ? setSectionOn('ip') : setSectionOff('ip')
-                    }
-                  />
-                  <FieldContent>
-                    <FieldLabel htmlFor="route-editor-ip">{t.fields.ip.label}</FieldLabel>
-                  </FieldContent>
-                </Field>
-
-                {definition.ip !== undefined && (
-                  <>
-                    <ListProperty
-                      id="route-editor-ip-allow"
-                      label={t.fields.ip.allow}
-                      hint={t.fields.ip.allowHelp}
-                      value={definition.ip.allow}
-                      onChange={(value) => setSectionKey('ip', 'allow', value)}
-                    />
-                    {(definition.ip.allow?.length ?? 0) > 0 && <DangerNote path="ip.allow" />}
-                    <ListProperty
-                      id="route-editor-ip-deny"
-                      label={t.fields.ip.deny}
-                      hint={t.fields.ip.denyHelp}
-                      value={definition.ip.deny}
-                      onChange={(value) => setSectionKey('ip', 'deny', value)}
-                    />
-                    {(definition.ip.deny?.length ?? 0) > 0 && <DangerNote path="ip.deny" />}
-                  </>
-                )}
-              </FieldSet>
-
-              <FieldSet data-invalid={reservedHeaders.length > 0 ? true : undefined}>
-                <FieldLegend>{t.fields.sections.headers}</FieldLegend>
-                <FieldDescription>
-                  <Hint text={t.fields.sections.headersHint} />
-                </FieldDescription>
-
-                <Field>
-                  <FieldLabel>{t.fields.upstreamHeaders.label}</FieldLabel>
+                <FieldSet>
+                  <FieldLegend>{t.fields.sections.rewrite}</FieldLegend>
                   <FieldDescription>
-                    <Hint text={t.fields.upstreamHeaders.help} />
+                    <Hint text={t.fields.sections.rewriteHint} />
                   </FieldDescription>
-                  <HeadersEditor
-                    value={definition.upstreamHeaders}
-                    onChange={(value) => setTopLevel('upstreamHeaders', value)}
-                  />
-                  {reservedHeaders.length > 0 && (
-                    <FieldError>
-                      {t.fields.upstreamHeaders.reserved(reservedHeaders.join(', '))}
-                    </FieldError>
+
+                  {BOOLEAN_KEYS.map((key) => (
+                    <SwitchProperty
+                      key={key}
+                      id={BOOLEAN_FIELDS[key].id}
+                      label={BOOLEAN_FIELDS[key].label}
+                      hint={BOOLEAN_FIELDS[key].help}
+                      defaultNote={t.common.defaultValue(String(BOOLEAN_DEFAULTS[key]))}
+                      checked={boolValue(key)}
+                      onCheckedChange={(checked) => setBoolean(key, checked)}
+                    />
+                  ))}
+
+                  <Field orientation="horizontal">
+                    <Switch
+                      id="route-editor-body-rewrite"
+                      checked={definition.bodyRewrite !== undefined}
+                      onCheckedChange={(checked) =>
+                        checked ? setSectionOn('bodyRewrite') : setSectionOff('bodyRewrite')
+                      }
+                    />
+                    <FieldContent>
+                      <FieldLabel htmlFor="route-editor-body-rewrite">
+                        {t.fields.bodyRewrite.label}
+                      </FieldLabel>
+                      <FieldDescription>
+                        <Hint text={t.fields.bodyRewrite.help} />
+                      </FieldDescription>
+                    </FieldContent>
+                  </Field>
+
+                  {definition.bodyRewrite !== undefined && (
+                    <>
+                      <RewriteNote />
+                      {BODY_REWRITE_BOOLEAN_KEYS.map((key) => (
+                        <SwitchProperty
+                          key={key}
+                          id={BODY_REWRITE_BOOLEAN_FIELDS[key].id}
+                          label={BODY_REWRITE_BOOLEAN_FIELDS[key].label}
+                          hint={BODY_REWRITE_BOOLEAN_FIELDS[key].help}
+                          defaultNote={t.common.defaultValue(
+                            String(BODY_REWRITE_BOOLEAN_DEFAULTS[key]),
+                          )}
+                          checked={bodyRewriteBoolValue(key)}
+                          onCheckedChange={(checked) => setBodyRewriteBoolean(key, checked)}
+                        />
+                      ))}
+                      <ListProperty
+                        id="route-editor-body-rewrite-content-types"
+                        label={t.fields.bodyRewrite.contentTypes}
+                        hint={t.fields.bodyRewrite.contentTypesHelp}
+                        value={definition.bodyRewrite.contentTypes}
+                        onChange={(value) => setSectionKey('bodyRewrite', 'contentTypes', value)}
+                      />
+                      {(definition.bodyRewrite.contentTypes?.length ?? 0) > 0 && (
+                        <DangerNote path="bodyRewrite.contentTypes" />
+                      )}
+                      <Field>
+                        <FieldLabel>{t.fields.bodyRewrite.replace}</FieldLabel>
+                        <FieldDescription>
+                          <Hint text={t.fields.bodyRewrite.replaceHelp} />
+                        </FieldDescription>
+                        <ReplaceEditor
+                          value={definition.bodyRewrite.replace}
+                          onChange={(value) => setSectionKey('bodyRewrite', 'replace', value)}
+                        />
+                      </Field>
+                      <TextProperty
+                        id="route-editor-body-rewrite-fallback-charset"
+                        label={t.fields.bodyRewrite.fallbackCharset}
+                        hint={t.fields.bodyRewrite.fallbackCharsetHelp}
+                        mono
+                        value={definition.bodyRewrite.fallbackCharset ?? ''}
+                        onChange={(value) =>
+                          setSectionKey(
+                            'bodyRewrite',
+                            'fallbackCharset',
+                            value === '' ? undefined : value,
+                          )
+                        }
+                      />
+                      {hasText(definition.bodyRewrite.fallbackCharset) && (
+                        <DangerNote path="bodyRewrite.fallbackCharset" />
+                      )}
+                    </>
                   )}
-                </Field>
-                {Object.keys(definition.upstreamHeaders ?? {}).length > 0 && (
-                  <DangerNote path="upstreamHeaders" />
+                </FieldSet>
+
+                <FieldSet>
+                  <FieldLegend>{t.fields.sections.guards}</FieldLegend>
+                  <FieldDescription>
+                    <Hint text={t.fields.sections.guardsHint} />
+                  </FieldDescription>
+
+                  <ListProperty
+                    id="route-editor-block-countries"
+                    label={t.fields.blockCountries.label}
+                    hint={t.fields.blockCountries.help}
+                    placeholder={t.fields.blockCountries.placeholder}
+                    value={definition.blockCountries}
+                    onChange={(value) => setTopLevel('blockCountries', value)}
+                  />
+                  <ListProperty
+                    id="route-editor-allow-countries"
+                    label={t.fields.allowCountries.label}
+                    hint={t.fields.allowCountries.help}
+                    placeholder={t.fields.allowCountries.placeholder}
+                    value={definition.allowCountries}
+                    onChange={(value) => setTopLevel('allowCountries', value)}
+                  />
+
+                  <Field orientation="horizontal">
+                    <Switch
+                      id="route-editor-cors"
+                      checked={definition.cors !== undefined}
+                      onCheckedChange={(checked) =>
+                        checked ? setSectionOn('cors') : setSectionOff('cors')
+                      }
+                    />
+                    <FieldContent>
+                      <FieldLabel htmlFor="route-editor-cors">{t.fields.cors.label}</FieldLabel>
+                    </FieldContent>
+                  </Field>
+
+                  {definition.cors !== undefined && (
+                    <>
+                      <ListProperty
+                        id="route-editor-cors-origins"
+                        label={t.fields.cors.origins}
+                        hint={t.fields.cors.originsHelp}
+                        placeholder={t.fields.cors.originsPlaceholder}
+                        value={definition.cors.origins}
+                        onChange={(value) => setSectionKey('cors', 'origins', value)}
+                      />
+                      {/* 这一项的危险状态是「缺失」而不是「存在」。 */}
+                      {(definition.cors.origins?.length ?? 0) === 0 && (
+                        <DangerNote path="cors.origins (absent)" />
+                      )}
+                      <ListProperty
+                        id="route-editor-cors-allow-methods"
+                        label={t.fields.cors.allowMethods}
+                        hint={t.fields.cors.allowMethodsHelp}
+                        placeholder="GET, POST"
+                        value={definition.cors.allowMethods}
+                        onChange={(value) => setSectionKey('cors', 'allowMethods', value)}
+                      />
+                      <ListProperty
+                        id="route-editor-cors-allow-headers"
+                        label={t.fields.cors.allowHeaders}
+                        hint={t.fields.cors.allowHeadersHelp}
+                        value={definition.cors.allowHeaders}
+                        onChange={(value) => setSectionKey('cors', 'allowHeaders', value)}
+                      />
+                      <ListProperty
+                        id="route-editor-cors-expose-headers"
+                        label={t.fields.cors.exposeHeaders}
+                        hint={t.fields.cors.exposeHeadersHelp}
+                        value={definition.cors.exposeHeaders}
+                        onChange={(value) => setSectionKey('cors', 'exposeHeaders', value)}
+                      />
+                      <SwitchProperty
+                        id="route-editor-cors-credentials"
+                        label={t.fields.cors.credentials}
+                        hint={t.fields.cors.credentialsHelp}
+                        defaultNote={t.common.defaultValue('false')}
+                        checked={definition.cors.credentials === true}
+                        onCheckedChange={(checked) =>
+                          // 默认 false：等于默认值不落键，段壳保留。
+                          setSectionKey('cors', 'credentials', checked ? true : undefined)
+                        }
+                      />
+                      <NumberProperty
+                        id="route-editor-cors-max-age"
+                        label={t.fields.cors.maxAge}
+                        unit="秒"
+                        hint={t.fields.cors.maxAgeHelp}
+                        value={
+                          definition.cors.maxAge === undefined ? '' : String(definition.cors.maxAge)
+                        }
+                        min={0}
+                        onChange={(raw) => {
+                          // schema 只要求非负整数；没有上限常量就不假装有，交给服务端判。
+                          const next = raw === '' ? undefined : Number(raw);
+                          setSectionKey(
+                            'cors',
+                            'maxAge',
+                            next !== undefined &&
+                              (Number.isNaN(next) || !Number.isInteger(next) || next < 0)
+                              ? undefined
+                              : next,
+                          );
+                        }}
+                      />
+                    </>
+                  )}
+
+                  <Field orientation="horizontal">
+                    <Switch
+                      id="route-editor-ip"
+                      checked={definition.ip !== undefined}
+                      onCheckedChange={(checked) =>
+                        checked ? setSectionOn('ip') : setSectionOff('ip')
+                      }
+                    />
+                    <FieldContent>
+                      <FieldLabel htmlFor="route-editor-ip">{t.fields.ip.label}</FieldLabel>
+                    </FieldContent>
+                  </Field>
+
+                  {definition.ip !== undefined && (
+                    <>
+                      <ListProperty
+                        id="route-editor-ip-allow"
+                        label={t.fields.ip.allow}
+                        hint={t.fields.ip.allowHelp}
+                        value={definition.ip.allow}
+                        onChange={(value) => setSectionKey('ip', 'allow', value)}
+                      />
+                      {(definition.ip.allow?.length ?? 0) > 0 && <DangerNote path="ip.allow" />}
+                      <ListProperty
+                        id="route-editor-ip-deny"
+                        label={t.fields.ip.deny}
+                        hint={t.fields.ip.denyHelp}
+                        value={definition.ip.deny}
+                        onChange={(value) => setSectionKey('ip', 'deny', value)}
+                      />
+                      {(definition.ip.deny?.length ?? 0) > 0 && <DangerNote path="ip.deny" />}
+                    </>
+                  )}
+                </FieldSet>
+
+                <FieldSet data-invalid={reservedHeaders.length > 0 ? true : undefined}>
+                  <FieldLegend>{t.fields.sections.headers}</FieldLegend>
+                  <FieldDescription>
+                    <Hint text={t.fields.sections.headersHint} />
+                  </FieldDescription>
+
+                  <Field>
+                    <FieldLabel>{t.fields.upstreamHeaders.label}</FieldLabel>
+                    <FieldDescription>
+                      <Hint text={t.fields.upstreamHeaders.help} />
+                    </FieldDescription>
+                    <HeadersEditor
+                      value={definition.upstreamHeaders}
+                      onChange={(value) => setTopLevel('upstreamHeaders', value)}
+                    />
+                    {reservedHeaders.length > 0 && (
+                      <FieldError>
+                        {t.fields.upstreamHeaders.reserved(reservedHeaders.join(', '))}
+                      </FieldError>
+                    )}
+                  </Field>
+                  {Object.keys(definition.upstreamHeaders ?? {}).length > 0 && (
+                    <DangerNote path="upstreamHeaders" />
+                  )}
+                </FieldSet>
+
+                {unknownKeys.length > 0 && (
+                  <div className="bg-muted/40 rounded-lg border p-3">
+                    <div className="text-sm font-medium">{t.fields.unknownFields.label}</div>
+                    <p className="text-muted-foreground mt-1 text-xs">
+                      <Hint text={t.fields.unknownFields.help} />
+                    </p>
+                    <dl className="mt-2 flex flex-col gap-2">
+                      {unknownKeys.map((key) => (
+                        <div key={key} className="flex flex-col gap-0.5">
+                          <dt className="font-mono text-xs">{key}</dt>
+                          <dd className="text-muted-foreground font-mono text-xs break-all">
+                            {previewValue(definition[key])}
+                          </dd>
+                          {t.fields.unknownFields.keyHelp[key] !== undefined && (
+                            <dd className="text-muted-foreground text-xs">
+                              {t.fields.unknownFields.keyHelp[key]}
+                            </dd>
+                          )}
+                          {dangerousSubPaths(key, definition[key]).map((path) => (
+                            <dd key={path}>
+                              <DangerNote path={path} />
+                            </dd>
+                          ))}
+                        </div>
+                      ))}
+                    </dl>
+                  </div>
                 )}
-              </FieldSet>
+              </div>
+            </TabsContent>
 
-              {unknownKeys.length > 0 && (
-                <div className="bg-muted/40 rounded-lg border p-3">
-                  <div className="text-sm font-medium">{t.fields.unknownFields.label}</div>
-                  <p className="text-muted-foreground mt-1 text-xs">
-                    <Hint text={t.fields.unknownFields.help} />
-                  </p>
-                  <dl className="mt-2 flex flex-col gap-2">
-                    {unknownKeys.map((key) => (
-                      <div key={key} className="flex flex-col gap-0.5">
-                        <dt className="font-mono text-xs">{key}</dt>
-                        <dd className="text-muted-foreground font-mono text-xs break-all">
-                          {previewValue(definition[key])}
-                        </dd>
-                        {t.fields.unknownFields.keyHelp[key] !== undefined && (
-                          <dd className="text-muted-foreground text-xs">
-                            {t.fields.unknownFields.keyHelp[key]}
-                          </dd>
-                        )}
-                        {dangerousSubPaths(key, definition[key]).map((path) => (
-                          <dd key={path}>
-                            <DangerNote path={path} />
-                          </dd>
-                        ))}
-                      </div>
-                    ))}
-                  </dl>
-                </div>
-              )}
-            </div>
-          </TabsContent>
-
-          <TabsContent value="json" className="min-h-0 flex-1 overflow-y-auto px-4 py-4">
-            <Field data-invalid={jsonError !== null ? true : undefined}>
-              <FieldLabel htmlFor="route-editor-json">{t.editor.jsonLabel}</FieldLabel>
-              <Textarea
-                id="route-editor-json"
-                className="min-h-72 font-mono text-xs"
-                spellCheck={false}
-                value={jsonText}
-                aria-invalid={jsonError !== null}
-                onChange={(event) => handleJsonChange(event.target.value)}
-              />
-              {jsonError !== null ? (
-                <FieldError>{jsonError}</FieldError>
-              ) : (
-                <FieldDescription>
-                  <Hint text={t.editor.jsonHint} />
-                </FieldDescription>
-              )}
-            </Field>
-          </TabsContent>
+            <TabsContent value="json" className="min-h-0">
+              <Field data-invalid={jsonError !== null ? true : undefined}>
+                <FieldLabel htmlFor="route-editor-json">{t.editor.jsonLabel}</FieldLabel>
+                {/* 小屏收一档：288px 的编辑框在窄屏或横屏上把 JSON 之外的东西全顶出可视区。 */}
+                <Textarea
+                  id="route-editor-json"
+                  className="min-h-48 font-mono text-xs roomy:min-h-72"
+                  spellCheck={false}
+                  value={jsonText}
+                  aria-invalid={jsonError !== null}
+                  onChange={(event) => handleJsonChange(event.target.value)}
+                />
+                {jsonError !== null ? (
+                  <FieldError>{jsonError}</FieldError>
+                ) : (
+                  <FieldDescription>
+                    <Hint text={t.editor.jsonHint} />
+                  </FieldDescription>
+                )}
+              </Field>
+            </TabsContent>
+          </div>
         </Tabs>
 
         {tooBig && (
@@ -1571,7 +1606,12 @@ export const RouteEditor = ({
           </p>
         )}
 
-        <DialogFooter className="mx-0 mb-0">
+        {/*
+          窄屏也横排：竖排两枚全宽按钮要 105px 高度，那是从表单区借来的。
+          bg-muted 覆盖出厂的 bg-muted/50 —— 页脚下面正滚着表单，半透明会让被切一半
+          的那行字从按钮背后透出来。
+        */}
+        <DialogFooter className="mx-0 mb-0 flex-row justify-end bg-muted">
           <Button variant="outline" onClick={requestClose} disabled={saving}>
             {t.editor.cancel}
           </Button>
