@@ -3,7 +3,9 @@ import { defineConfig, type CacheConfig, type Route } from '../../src/config';
 import { cacheVaryPart } from '../../src/internal/response-cache';
 import {
   CACHE_STATE_HEADER,
+  beginFlight,
   cacheKey,
+  joinFlight,
   readCachedResponse,
   refreshOnce,
   requestCacheable,
@@ -149,12 +151,45 @@ describe('responseCacheable', () => {
     expect(asIs(cacheable())).toBe(true);
   });
 
-  it('refuses anything but 200', () => {
+  it('refuses anything without a window, 200 included', () => {
     for (const status of [204, 206, 301, 304, 404, 500]) {
       expect(asIs(new Response(null, { status, headers: { 'content-type': 'text/css' } }))).toBe(
         false,
       );
     }
+    // An entry for 200 whose window the operator closed with 0 is refused too.
+    expect(
+      responseCacheable(
+        cacheable(),
+        cacheable().headers,
+        cacheWith({ statusTtlSeconds: { 200: 0 } }),
+      ),
+    ).toBe(false);
+  });
+
+  it('admits a status the operator gave a window, with the vetoes still standing', () => {
+    const optedIn = cacheWith({ statusTtlSeconds: { 301: 3600, 404: 60, 410: 60 } });
+    for (const status of [301, 404, 410]) {
+      expect(
+        responseCacheable(
+          new Response(null, { status, headers: { 'content-type': 'text/css' } }),
+          new Headers({ 'content-type': 'text/css' }),
+          optedIn,
+        ),
+      ).toBe(true);
+    }
+    // Opting in by code does not lift the upstream's veto: an opted-in 404 that
+    // sets a cookie or varies is still refused, exactly as a 200 would be.
+    const cookied = new Headers({ 'content-type': 'text/css' });
+    cookied.append('set-cookie', 'a=1');
+    expect(responseCacheable(new Response(null, { status: 404 }), cookied, optedIn)).toBe(false);
+    expect(
+      responseCacheable(
+        new Response(null, { status: 404 }),
+        new Headers({ 'content-type': 'text/css', vary: 'cookie' }),
+        optedIn,
+      ),
+    ).toBe(false);
   });
 
   it('refuses a response that sets a cookie', () => {
@@ -338,6 +373,162 @@ describe('store and read round trip', () => {
         alsoServed: true,
       }),
     ).resolves.toBeUndefined();
+  });
+});
+
+describe('per-status lifetimes', () => {
+  // SWR zeroed so the 404's own window is the only one in play: the default
+  // SWR would keep the entry readable for a minute past its named lifetime.
+  const cache = cacheWith({
+    staleWhileRevalidateSeconds: 0,
+    statusTtlSeconds: { 301: 3600, 404: 60 },
+  });
+  const key = cacheKey(new URL('https://p.dev/nf.css'), 'GET', 'fp')!;
+
+  const store = async (response: Response) => {
+    const target = memoryStore();
+    await storeCachedResponse({
+      store: target,
+      key,
+      response,
+      cache,
+      now: 1_000_000,
+      alsoServed: true,
+    });
+    return target;
+  };
+
+  it('stores and serves an opted-in 404 inside its window', async () => {
+    const target = await store(
+      new Response('nope', { status: 404, headers: { 'content-type': 'text/css' } }),
+    );
+    const found = (await readCachedResponse({ store: target, key, cache, now: 1_030_000 }))!;
+    expect(found.state).toBe('hit');
+    expect(found.response.status).toBe(404);
+    expect(await found.response.text()).toBe('nope');
+    // The stored lifetime covers the entry's own window, so the platform holds it.
+    expect((await target.match(key))!.headers.get('cache-control')).toBe('max-age=60');
+  });
+
+  it('drops the 404 once its window ends, on the healthy path', async () => {
+    const target = await store(
+      new Response('nope', { status: 404, headers: { 'content-type': 'text/css' } }),
+    );
+    expect(await readCachedResponse({ store: target, key, cache, now: 1_060_000 })).toBeUndefined();
+  });
+
+  it('keeps 301 under its own, longer window', async () => {
+    const target = await store(
+      new Response(null, { status: 301, headers: { location: '/b.css' } }),
+    );
+    expect((await readCachedResponse({ store: target, key, cache, now: 4_000_000 }))!.state).toBe(
+      'hit',
+    );
+  });
+});
+
+describe('stale-if-error window', () => {
+  // SWR is zeroed so the failure path is the only way past the TTL: otherwise a
+  // wide default SWR window would swallow the case this describes.
+  const cache = cacheWith({
+    ttlSeconds: 100,
+    staleWhileRevalidateSeconds: 0,
+    staleIfError: { seconds: 3600, on: ['timeout', 'unreachable', '5xx'] },
+  });
+  const key = cacheKey(new URL('https://p.dev/a.css'), 'GET', 'fp')!;
+  const fill = async (now = 1_000_000) => {
+    const target = memoryStore();
+    await storeCachedResponse({
+      store: target,
+      key,
+      response: cacheable(),
+      cache,
+      now,
+      alsoServed: true,
+    });
+    return target;
+  };
+
+  it('serves an expired entry as stale_error past the SWR horizon, on the failure path', async () => {
+    const target = await fill();
+    const found = (await readCachedResponse({
+      store: target,
+      key,
+      cache,
+      now: 1_500_000,
+      allowStaleError: true,
+    }))!;
+    expect(found.state).toBe('stale_error');
+    expect(found.response.headers.get(CACHE_STATE_HEADER)).toBe('stale_error');
+    expect(found.response.headers.get('age')).toBe('500');
+  });
+
+  it('still reports a miss on the healthy path, even with the window configured', async () => {
+    const target = await fill();
+    // Same instant, same entry: the difference is whether the caller has watched
+    // the upstream fail, which is exactly what allowStaleError encodes.
+    expect(await readCachedResponse({ store: target, key, cache, now: 1_500_000 })).toBeUndefined();
+  });
+
+  it('reaches only to the end of the stale-if-error window', async () => {
+    const target = await fill();
+    expect(
+      await readCachedResponse({
+        store: target,
+        key,
+        cache,
+        now: 4_700_000,
+        allowStaleError: true,
+      }),
+    ).toBeUndefined();
+  });
+
+  it('does not widen the healthy horizon by configuring the window', async () => {
+    // The stored lifetime covers both windows, but the healthy read stops at SWR.
+    const target = await fill();
+    expect(await readCachedResponse({ store: target, key, cache, now: 1_100_000 })).toBeUndefined();
+  });
+});
+
+describe('cold-miss flights', () => {
+  const key = (path: string) => new Request(`https://p.dev${path}?__jouska_ck=fp.GET`);
+
+  it('lets one caller lead and the rest join', () => {
+    const k = key('/lead');
+    const release = beginFlight(k);
+    expect(release).toBeDefined();
+    expect(beginFlight(k)).toBeUndefined();
+    release?.();
+  });
+
+  it('wakes the waiter when the leader releases, and releases the slot', async () => {
+    const k = key('/wake');
+    const release = beginFlight(k)!;
+    const joined = joinFlight(k, 5_000);
+    release();
+    await expect(joined).resolves.toBeUndefined();
+    // The slot is gone, so a later miss begins its own flight.
+    expect(beginFlight(k)).toBeDefined();
+  });
+
+  it('joins instantly when no flight is running', async () => {
+    await expect(joinFlight(key('/idle'), 5_000)).resolves.toBeUndefined();
+  });
+
+  it('bounds the wait, rather than pinning the waiter to a dead leader', async () => {
+    const k = key('/bound');
+    beginFlight(k);
+    const started = Date.now();
+    await expect(joinFlight(k, 20)).resolves.toBeUndefined();
+    expect(Date.now() - started).toBeGreaterThanOrEqual(10);
+  });
+
+  it('treats a second release as a no-op, so finally-shaped callers are safe', async () => {
+    const k = key('/twice');
+    const release = beginFlight(k)!;
+    release();
+    expect(() => release()).not.toThrow();
+    expect(beginFlight(k)).toBeDefined();
   });
 });
 

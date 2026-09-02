@@ -49,7 +49,7 @@ export interface ResponseCacheStore {
 }
 
 /** What the cache did with one request. Reported to the client and to `onProxy`. */
-export type CacheState = 'hit' | 'stale' | 'miss' | 'bypass';
+export type CacheState = 'hit' | 'stale' | 'miss' | 'bypass' | 'stale_error';
 
 /**
  * Header naming the cache state on every response from a caching route.
@@ -294,14 +294,37 @@ const varyIsCovered = (value: string | null): boolean => {
 };
 
 /**
+ * The window a response with this status is served as fresh, in seconds.
+ *
+ * 200 keeps `ttlSeconds` unless `statusTtlSeconds` overrides it; every other
+ * status is cached only when the operator named it, and then for the named
+ * window. One lookup feeds both the store gate and the read windows below, so a
+ * status cannot be stored under one lifetime and read back under another.
+ */
+const ttlForStatus = (status: number, cache: CacheConfig): number =>
+  cache.statusTtlSeconds?.[String(status)] ?? (status === 200 ? cache.ttlSeconds : 0);
+
+/**
+ * How far past the TTL a stored entry is held at all, in seconds.
+ *
+ * The stale-while-revalidate and stale-if-error windows are both measured from
+ * the TTL, and a stored copy carries whichever is longer — so an entry stays
+ * visible to `match` for the whole span and this function says which part of
+ * the span still means anything.
+ */
+const holdSeconds = (cache: CacheConfig): number =>
+  Math.max(cache.staleWhileRevalidateSeconds, cache.staleIfError?.seconds ?? 0);
+
+/**
  * Whether this response may be stored.
  *
- * 200 only. A 206 and a `Vary: *` make `put` throw; a 304, a 5xx and a
+ * Statuses first: 200 always, any other status only when `statusTtlSeconds`
+ * names it. A 206 and a `Vary: *` make `put` throw; a 304, a 5xx and a
  * `private`/`no-store`/`no-cache` response are accepted by `put` and then
  * silently absent from `match` — all verified in workerd — so neither the throw
  * nor the silence is a check this can lean on. A 404, on the other hand, *is*
- * stored by the platform, which is exactly why negative caching has to be refused
- * here rather than assumed impossible.
+ * stored by the platform, which is what makes negative caching viable here at
+ * all; the schema refuses the statuses the platform will not hand back.
  *
  * **Two header sources, on purpose.** `Cache-Control`, `Set-Cookie` and `Vary` are
  * read from what the upstream sent, not from the response as it will be delivered.
@@ -309,27 +332,38 @@ const varyIsCovered = (value: string | null): boolean => {
  * personalised, this varies on that — and an operator's `responseHeaders.remove`
  * can delete the statement without changing the fact. Reading them post-rule would
  * make `remove: ['vary']` or `remove: ['cache-control']` a way to cache a private
- * or varying response for every visitor.
+ * or varying response for every visitor. They apply to every stored status: an
+ * opted-in 404 with `Set-Cookie` is refused exactly as a 200 would be.
  *
  * `status` and `Content-Type` are read from the delivered response, because a
  * content type is a label an operator may legitimately correct — an upstream
  * serving CSS as `application/octet-stream` is a real thing — and correcting it
- * says nothing about whether the body is safe to share.
+ * says nothing about whether the body is safe to share. The content-type *list*
+ * itself gates only 200s: it exists to keep personalised documents out of an
+ * asset cache, and a status the operator opted into by code — the scanner 404,
+ * the permanent redirect — is cached whatever body rides along, with the vetoes
+ * above still standing guard.
  */
 export const responseCacheable = (
   response: Response,
   upstreamHeaders: Headers,
   cache: CacheConfig,
 ): boolean =>
-  response.status === 200 &&
+  ttlForStatus(response.status, cache) > 0 &&
   upstreamHeaders.getSetCookie().length === 0 &&
   !forbidsSharedCaching(upstreamHeaders.get('cache-control')) &&
   varyIsCovered(upstreamHeaders.get('vary')) &&
-  contentTypeAllowed(parseContentType(response.headers.get('content-type')), cache.contentTypes);
+  (response.status !== 200 ||
+    contentTypeAllowed(parseContentType(response.headers.get('content-type')), cache.contentTypes));
 
 export interface CachedResponse {
-  /** `hit` inside the TTL, `stale` inside the stale-while-revalidate window. */
-  state: 'hit' | 'stale';
+  /**
+   * `hit` inside the TTL, `stale` inside the stale-while-revalidate window,
+   * `stale_error` when an expired entry was served only because the upstream
+   * could not answer — the state `onProxy` filters on to tell a degradation
+   * apart from a healthy delivery.
+   */
+  state: 'hit' | 'stale' | 'stale_error';
   /** How long the entry has been stored, in whole seconds. */
   ageSeconds: number;
   response: Response;
@@ -341,10 +375,19 @@ export interface ReadCacheOptions {
   cache: CacheConfig;
   /** Injected so the windows are testable without waiting them out. */
   now: number;
+  /**
+   * Whether the stale-if-error window counts. False on the healthy path, where
+   * an entry past TTL and SWR is simply gone; true only on a failure path, and
+   * then an entry inside that window is returned as `stale_error` instead of a
+   * miss. Not a flag a caller can wave to serve stale on a whim: the caller has
+   * just watched the upstream fail to answer.
+   */
+  allowStaleError?: boolean;
 }
 
 /**
- * Reads an entry, classifying it as fresh or stale, or reporting a miss.
+ * Reads an entry, classifying it as fresh, stale or stale-from-error, or
+ * reporting a miss.
  *
  * The internal metadata headers are stripped and the upstream's own
  * `Cache-Control` restored, so what reaches the client is what a miss would have
@@ -355,6 +398,7 @@ export const readCachedResponse = async ({
   key,
   cache,
   now,
+  allowStaleError = false,
 }: ReadCacheOptions): Promise<CachedResponse | undefined> => {
   const stored = await store.match(key);
   if (stored === undefined) {
@@ -369,9 +413,15 @@ export const readCachedResponse = async ({
     return undefined;
   }
   const ageSeconds = Math.max(0, (now - storedAt) / 1000);
-  if (ageSeconds >= cache.ttlSeconds + cache.staleWhileRevalidateSeconds) {
-    // The platform still holds it, because the stored lifetime covers both
-    // windows, but by this route's configuration it is spent.
+  const ttl = ttlForStatus(stored.status, cache);
+  const swrHorizon = ttl + cache.staleWhileRevalidateSeconds;
+  // The healthy path ends at the SWR horizon, exactly as it always has; the
+  // failure path may reach into the stale-if-error window beyond it. Widening
+  // the healthy horizon instead would quietly serve stale to every visitor the
+  // moment `staleIfError` is configured, which is not what that knob buys.
+  if (ageSeconds >= (allowStaleError ? ttl + holdSeconds(cache) : swrHorizon)) {
+    // The platform still holds it, because the stored lifetime covers the whole
+    // span, but by this route's configuration it is spent.
     return undefined;
   }
 
@@ -388,7 +438,13 @@ export const readCachedResponse = async ({
   }
   const whole = Math.floor(ageSeconds);
   headers.set('age', String(whole));
-  const state = ageSeconds < cache.ttlSeconds ? 'hit' : 'stale';
+
+  // `stale_error` is reachable only past the SWR horizon and only with
+  // `allowStaleError` — an entry the healthy path would still have served is
+  // reported as `stale` even on a failure path, so a degradation is not
+  // overstated: it names the entries that exist *only* because of the failure.
+  const state: CachedResponse['state'] =
+    ageSeconds < ttl ? 'hit' : ageSeconds < swrHorizon ? 'stale' : 'stale_error';
   headers.set(CACHE_STATE_HEADER, state);
   return {
     state,
@@ -455,10 +511,14 @@ export const storeCachedResponse = async ({
   headers.set(STORED_AT_HEADER, String(now));
   // The Cache API stores nothing without an explicit lifetime — verified, a
   // response with no `Cache-Control` at all came back a miss — and an entry it
-  // considers expired is invisible rather than stale, so the declared lifetime has
-  // to cover the stale window as well. Which part of it an entry is in is decided
-  // from the timestamp above, not from this number.
-  headers.set('cache-control', `max-age=${cache.ttlSeconds + cache.staleWhileRevalidateSeconds}`);
+  // considers expired is invisible rather than stale, so the declared lifetime
+  // has to cover every window this route may still read through: the TTL, the
+  // stale-while-revalidate window and the stale-if-error one, whichever is
+  // longer. Which part of the span an entry is in is decided from the timestamp
+  // above, not from this number, and the per-status TTL — not `ttlSeconds`
+  // directly — because a 404 stored under `statusTtlSeconds` reads back under
+  // the same window it was stored with.
+  headers.set('cache-control', `max-age=${ttlForStatus(copy.status, cache) + holdSeconds(cache)}`);
   try {
     await store.put(
       key,
@@ -471,6 +531,74 @@ export const storeCachedResponse = async ({
   } catch {
     // See the note above: a cache write may not fail a served response.
   }
+};
+
+/**
+ * Keys with a cold-miss flight in progress, per isolate.
+ *
+ * Same shape as `refreshing` below, but for the other herd: a cold cache turns
+ * the first wave of traffic into one upstream request instead of one each, the
+ * way nginx's `proxy_cache_lock` does. The entry carries the deferred and its
+ * setter apart — the setter is the leader's handle, the deferred the waiters' —
+ * so a caller can only ever release a flight it began.
+ */
+const flights = new Map<string, { done: Promise<void>; release: () => void }>();
+
+/**
+ * The waiter's side of a cold-miss flight.
+ *
+ * Resolves when the leader releases the flight, or after `totalTimeoutMs` —
+ * whichever comes first. The bound is what keeps the lock from turning a slow
+ * upstream into a pile of hung requests: a waiter that times out simply
+ * fetches on its own, exactly as it would have without the lock. Resolving
+ * says nothing about whether an entry appeared; the waiter re-reads the cache
+ * and decides that for itself, which is why the flight carries no payload.
+ */
+export const joinFlight = (key: Request, totalTimeoutMs: number): Promise<void> => {
+  const flight = flights.get(key.url);
+  if (flight === undefined) {
+    return Promise.resolve();
+  }
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  return Promise.race([
+    flight.done,
+    new Promise<void>((resolve) => {
+      timer = setTimeout(resolve, totalTimeoutMs);
+    }),
+  ]).finally(() => {
+    clearTimeout(timer);
+  });
+};
+
+/**
+ * Begins a cold-miss flight for this key, unless one is already running.
+ *
+ * Returns the release function when this caller leads — it runs the fetch, the
+ * cacheability check and the store, then releases once the write has landed
+ * (release-after-write: a waiter woken any earlier would re-read a cache the
+ * entry is not in yet and fetch from the upstream after all) — or undefined
+ * when another caller already leads, and this one should `joinFlight` instead.
+ * Releasing on every path, including a thrown fill, is the caller's duty: a
+ * leader that dies holding the key pins every waiter to its own timeout.
+ *
+ * Releasing removes the key synchronously, so the next cold miss after this one
+ * begins its own flight rather than joining a finished one; a second call is a
+ * no-op, which makes `finally`-shaped callers safe.
+ */
+export const beginFlight = (key: Request): (() => void) | undefined => {
+  if (flights.has(key.url)) {
+    return undefined;
+  }
+  let resolve!: () => void;
+  const done = new Promise<void>((set) => {
+    resolve = set;
+  });
+  const release = (): void => {
+    flights.delete(key.url);
+    resolve();
+  };
+  flights.set(key.url, { done, release });
+  return release;
 };
 
 /**

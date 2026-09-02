@@ -11,6 +11,10 @@ let revision = 0;
 
 /** Set by a test that needs the upstream to start failing. */
 let failing = false;
+/** Set by a test that needs the upstream to answer with a 5xx instead of failing. */
+let fivehundreds = false;
+/** Set by a test that needs the upstream to start answering 404 where it answered 200. */
+let answering404 = false;
 
 const answer = (request: Request, body: string | null, init: ResponseInit): Response =>
   // A real `fetch` answers HEAD with no body. Without this the HEAD cases would
@@ -23,6 +27,13 @@ const upstream: typeof fetch = async (input) => {
   trips += 1;
   if (failing) {
     throw new Error('upstream down');
+  }
+  if (fivehundreds) {
+    // An answer, not an outage: the upstream is alive and saying something.
+    return new Response('down', { status: 503, headers: { 'content-type': 'text/css' } });
+  }
+  if (answering404) {
+    return new Response('gone', { status: 404, headers: { 'content-type': 'text/css' } });
   }
   switch (url.pathname) {
     case '/a.css':
@@ -53,6 +64,11 @@ const upstream: typeof fetch = async (input) => {
       });
     case '/missing':
       return new Response('nope', { status: 404, headers: { 'content-type': 'text/css' } });
+    case '/cookie-missing': {
+      const headers = new Headers({ 'content-type': 'text/css' });
+      headers.append('set-cookie', 'a=1');
+      return new Response('nope', { status: 404, headers });
+    }
     default:
       return new Response('not found', { status: 404 });
   }
@@ -138,6 +154,8 @@ beforeEach(() => {
   trips = 0;
   revision = 0;
   failing = false;
+  fivehundreds = false;
+  answering404 = false;
   events.length = 0;
 });
 
@@ -407,6 +425,235 @@ describe('against the platform cache', () => {
     await fetchWith(app, '/cookie.css');
     const second = await fetchWith(app, '/cookie.css');
     expect(second.headers.get(CACHE_STATE_HEADER)).toBe('miss');
+    expect(trips).toBe(2);
+  });
+});
+
+describe('the cold-miss lock', () => {
+  /**
+   * Fires `count` requests at once and reads every body, the way a burst of
+   * visitors arrives: all before the first has been stored.
+   */
+  const burst = async (app: Hono, count: number): Promise<Response[]> =>
+    Promise.all(Array.from({ length: count }, () => fetchWith(app, '/a.css')));
+
+  it('collapses a burst of cold misses onto one upstream request', async () => {
+    const app = appWith(cachedRoute(), memoryStore());
+    const responses = await burst(app, 50);
+    expect(trips).toBe(1);
+    // Every visitor gets the same bytes, whichever path delivered them.
+    for (const response of responses) {
+      expect(await response.text()).toBe('body{--r:0}');
+    }
+  });
+
+  it('degrades to per-request fetching when the route opts out', async () => {
+    const app = appWith(
+      cachedRoute({ cache: { ttlSeconds: 300, lockMisses: false } }),
+      memoryStore(),
+    );
+    await burst(app, 5);
+    expect(trips).toBe(5);
+  });
+
+  it('reports what happened on both sides of the lock', async () => {
+    const app = appWith(cachedRoute(), memoryStore());
+    await burst(app, 3);
+    const states = events.map((event) => event.cache);
+    // Exactly one caller missed and filled; the rest were served from the entry
+    // the leader put there.
+    expect(states.filter((state) => state === 'miss')).toHaveLength(1);
+    expect(states.filter((state) => state === 'hit')).toHaveLength(2);
+    expect(events.every((event) => event.attempts <= 1)).toBe(true);
+  });
+});
+
+describe('stale-if-error', () => {
+  // SWR zeroed so the failure path is the only way past the TTL: with the
+  // default window this route would still be serving stale for another minute,
+  // and the test would pass without exercising the code it is here for.
+  const errorRoute = () =>
+    cachedRoute({
+      cache: { ttlSeconds: 1, staleWhileRevalidateSeconds: 0, staleIfError: { seconds: 3600 } },
+    });
+
+  const agePastTtl = () => new Promise((resolve) => setTimeout(resolve, 1_100));
+
+  it('serves the expired entry when the upstream refuses to answer', async () => {
+    const app = appWith(errorRoute(), memoryStore());
+    await fetchWith(app, '/a.css');
+    await agePastTtl();
+
+    failing = true;
+    const served = await fetchWith(app, '/a.css');
+    expect(served.headers.get(CACHE_STATE_HEADER)).toBe('stale_error');
+    expect(await served.text()).toBe('body{--r:0}');
+    // Named so it can be filtered: the cache, not the origin, kept the site up.
+    expect(events[1]!.cache).toBe('stale_error');
+    // The delivery succeeded and carries the real attempt count, but the event
+    // keeps nothing of the upstream's failure — the state is the signal for that.
+    expect(events[1]!.outcome).toBe('ok');
+    expect(events[1]!.attempts).toBe(1);
+  });
+
+  it('does not serve stale on a failure the route did not opt into', async () => {
+    const app = appWith(
+      cachedRoute({
+        cache: {
+          ttlSeconds: 1,
+          staleWhileRevalidateSeconds: 0,
+          staleIfError: { seconds: 3600, on: ['timeout'] },
+        },
+      }),
+      memoryStore(),
+    );
+    await fetchWith(app, '/a.css');
+    await agePastTtl();
+
+    failing = true;
+    const served = await fetchWith(app, '/a.css');
+    expect(served.headers.get(CACHE_STATE_HEADER)).toBeNull();
+    expect(served.status).not.toBe(200);
+  });
+
+  it('treats a 5xx as an answer unless the route opted in', async () => {
+    const app = appWith(errorRoute(), memoryStore());
+    await fetchWith(app, '/a.css');
+    await agePastTtl();
+
+    fivehundreds = true;
+    // The upstream spoke — a 503 is an answer, and jouska's own 5xx relays it
+    // rather than covering it with yesterday's page.
+    const served = await fetchWith(app, '/a.css');
+    expect(served.status).toBe(503);
+    expect(served.headers.get(CACHE_STATE_HEADER)).toBe('miss');
+  });
+
+  it('serves stale on a 5xx when the route opted in', async () => {
+    const app = appWith(
+      cachedRoute({
+        cache: {
+          ttlSeconds: 1,
+          staleWhileRevalidateSeconds: 0,
+          staleIfError: { seconds: 3600, on: ['timeout', 'unreachable', '5xx'] },
+        },
+      }),
+      memoryStore(),
+    );
+    await fetchWith(app, '/a.css');
+    await agePastTtl();
+
+    fivehundreds = true;
+    const served = await fetchWith(app, '/a.css');
+    expect(served.status).toBe(200);
+    expect(served.headers.get(CACHE_STATE_HEADER)).toBe('stale_error');
+    expect(await served.text()).toBe('body{--r:0}');
+  });
+
+  it('drops the expired entry once the stale-if-error window ends', async () => {
+    // A one-second window, so the test can wait it out: the memory store never
+    // evicts on its own, so the only thing ending this entry's life is the
+    // read's own arithmetic.
+    const app = appWith(
+      cachedRoute({
+        cache: { ttlSeconds: 1, staleWhileRevalidateSeconds: 0, staleIfError: { seconds: 1 } },
+      }),
+      memoryStore(),
+    );
+    await fetchWith(app, '/a.css');
+    await agePastTtl();
+
+    failing = true;
+    const inside = await fetchWith(app, '/a.css');
+    expect(inside.headers.get(CACHE_STATE_HEADER)).toBe('stale_error');
+    // Past ttl + the window, the entry no longer serves even on the failure path.
+    await new Promise((resolve) => setTimeout(resolve, 1_100));
+    const outside = await fetchWith(app, '/a.css');
+    expect(outside.headers.get(CACHE_STATE_HEADER)).toBeNull();
+    expect(outside.status).not.toBe(200);
+  });
+
+  it('keeps serving stale when the upstream keeps failing, one visitor after another', async () => {
+    const app = appWith(errorRoute(), memoryStore());
+    await fetchWith(app, '/a.css');
+    await agePastTtl();
+
+    failing = true;
+    const first = await fetchWith(app, '/a.css');
+    const second = await fetchWith(app, '/a.css');
+    expect(first.headers.get(CACHE_STATE_HEADER)).toBe('stale_error');
+    expect(second.headers.get(CACHE_STATE_HEADER)).toBe('stale_error');
+    expect(events[1]!.attempts).toBe(1);
+    expect(events[2]!.attempts).toBe(1);
+  });
+});
+
+describe('negative caching', () => {
+  it('caches an opted-in 404 for its window, then goes back to the upstream', async () => {
+    const app = appWith(
+      cachedRoute({
+        cache: { ttlSeconds: 300, staleWhileRevalidateSeconds: 0, statusTtlSeconds: { 404: 1 } },
+      }),
+      memoryStore(),
+    );
+    const first = await fetchWith(app, '/missing');
+    expect(first.status).toBe(404);
+    expect(first.headers.get(CACHE_STATE_HEADER)).toBe('miss');
+    const second = await fetchWith(app, '/missing');
+    expect(second.status).toBe(404);
+    expect(second.headers.get(CACHE_STATE_HEADER)).toBe('hit');
+    expect(trips).toBe(1);
+
+    // Past the scanner's window, the next request asks the upstream again.
+    await new Promise((resolve) => setTimeout(resolve, 1_100));
+    const third = await fetchWith(app, '/missing');
+    expect(third.headers.get(CACHE_STATE_HEADER)).toBe('miss');
+    expect(trips).toBe(2);
+  });
+
+  it('refuses a 404 whose response sets a cookie, as it would a 200', async () => {
+    const app = appWith(
+      cachedRoute({ cache: { ttlSeconds: 300, statusTtlSeconds: { 404: 60 } } }),
+      memoryStore(),
+    );
+    await fetchWith(app, '/cookie-missing');
+    const second = await fetchWith(app, '/cookie-missing');
+    expect(second.headers.get(CACHE_STATE_HEADER)).toBe('miss');
+    expect(trips).toBe(2);
+  });
+
+  it('does not cache 404s at all when no window was named', async () => {
+    const app = appWith(cachedRoute(), memoryStore());
+    for (let i = 0; i < 3; i += 1) {
+      const response = await fetchWith(app, '/missing');
+      expect(response.headers.get(CACHE_STATE_HEADER)).toBe('miss');
+    }
+    expect(trips).toBe(3);
+  });
+
+  it('cannot cover an upstream 404 with a previously stored 200', async () => {
+    // A 200 is stored; the upstream then answers 404 for the same URL past the
+    // healthy window. A 404 is an answer, not an outage, so stale-if-error does
+    // not fire for it even though the route opted in — the old 200 is not dug
+    // out to cover it, and the 404 itself is uncached (no window named).
+    const app = appWith(
+      cachedRoute({
+        cache: {
+          ttlSeconds: 1,
+          staleWhileRevalidateSeconds: 0,
+          staleIfError: { seconds: 3600 },
+        },
+      }),
+      memoryStore(),
+    );
+    await fetchWith(app, '/a.css');
+    await new Promise((resolve) => setTimeout(resolve, 1_100));
+
+    answering404 = true;
+    const served = await fetchWith(app, '/a.css');
+    expect(served.status).toBe(404);
+    expect(served.headers.get(CACHE_STATE_HEADER)).toBe('miss');
+    expect(await served.text()).toBe('gone');
     expect(trips).toBe(2);
   });
 });
