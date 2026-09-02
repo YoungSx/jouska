@@ -78,6 +78,7 @@ Routes are evaluated in order and the first match wins.
 | `upstreams`            | —        | Ordered candidates for failover; see Failover and traffic splitting.       |
 | `trafficSplit`         | —        | Weighted split entries; see Failover and traffic splitting.                |
 | `failover`             | see text | Switch policy and attempt cap for the multi-candidate forms.               |
+| `outlier`              | see text | Passive ejection of failing candidates; see Outlier ejection.              |
 | `stickyBy`             | —        | `'cookie'`: split-assigned callers keep their upstream via a cookie.       |
 | `scheme`               | `https`  | Scheme used to reach the upstream.                                         |
 | `allowPrivateUpstream` | off      | Permit a loopback, private or metadata upstream.                           |
@@ -339,6 +340,34 @@ requests; a cookie naming an upstream the split no longer lists is re-assigned.
 The split winner is the walk's primary: failover from it continues into the
 other participants in declared order. `failover` and `stickyBy` are route-level
 only — they cannot be set in `defaults`.
+
+### Outlier ejection
+
+The failover walk has no memory between requests: a dead primary is paid for in
+full — `timeoutMs`, usually ten seconds — by every visitor, until it comes back.
+The `outlier` block gives the route a memory. Failures that move the walk — a
+`timeout` or `unreachable` named by `failover.on`, an opted-in `'5xx'` — count
+against the candidate that produced them; a client hanging up never counts. Once
+a candidate has failed `outlier.consecutiveFailures` times in a row (default 3),
+it is skipped at the start of the walk for `outlier.ejectSeconds` (default 30),
+so the next visitor goes straight to the backup. Any answer under 500 clears the
+count; the ejection lifts itself when the window expires, and no redeploy is
+involved on either end.
+
+The policy is on by default for multi-candidate routes and cannot be set on a
+single-upstream route, where there is no backup to prefer. When every candidate
+is out, the walk still tries the head of the declared order — ejection reorders,
+it never makes a route unreachable.
+
+The memory lives in the isolate that handled the request, like the native rate
+limit binding's per-datacenter counting: each isolate learns of a dead upstream
+on its own, and a fresh isolate pays the timeout again once. That is the
+deliberate trade for not standing up shared state; what the approximation costs
+is bounded by `ejectSeconds`.
+
+The `onProxy` event carries `ejected` — the candidates this request declined to
+try — which answers "why did this request go straight to B" for an operator
+watching a healthy backup answer first.
 
 ### Body rewriting
 
@@ -1033,6 +1062,7 @@ app.use(
 | `outcome`    | `ok`, `refused`, `timeout`, `unreachable`, or `client_closed`.                                                                                                                |
 | `cache`      | `hit`, `stale`, `miss`, `bypass` or `stale_error`; absent without a `cache` block.                                                                                            |
 | `selection`  | How a split route picked its upstream — present only on `trafficSplit` routes, with the winning entry's `index` and whether a `sticky` cookie or the `weighted` hash decided. |
+| `ejected`    | Candidates the outlier memory removed from the walk before the first attempt. Absent when nothing was skipped, and on routes without an `outlier` policy.                     |
 
 Three more report what happened to the response body, which is what a mirrored
 site is judged by:

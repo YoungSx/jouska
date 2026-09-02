@@ -12,6 +12,7 @@ import {
 import { checkAccess } from '../internal/access.js';
 import { BodyLimitError, forward } from '../internal/forward.js';
 import { checkRateLimit, corsMiddleware, ipMiddleware } from '../internal/guards.js';
+import { ledgerFor, outlierObserver } from '../internal/outlier.js';
 import {
   applyResponseHeaderRules,
   rewriteResponseHeaders,
@@ -136,6 +137,14 @@ export interface ProxyEvent {
    * Absent for routes with a fixed upstream, where there is nothing to explain.
    */
   selection?: Selection;
+  /**
+   * Candidates the outlier memory removed from the walk before the first
+   * attempt, as authorities. The answer to "why did this request go straight
+   * to B" — without it, a healthy backup answering first reads as a primary
+   * that was never configured. Absent when nothing was skipped, and on routes
+   * without an outlier policy.
+   */
+  ejected?: string[];
 }
 
 export interface JouskaOptions {
@@ -233,6 +242,7 @@ export const jouska = ({
       upstream = primary,
       rewrite,
       cache,
+      ejected,
     ): void => {
       if (onProxy === undefined) {
         return;
@@ -260,6 +270,7 @@ export const jouska = ({
           cache,
           // Spread like `rewriteSkipped` above: no split, no key.
           ...(selection !== undefined ? { selection } : {}),
+          ...(ejected !== undefined && ejected.length > 0 ? { ejected } : {}),
         });
       } catch {
         // Observability must not be able to fail a request.
@@ -435,6 +446,7 @@ type Report = (
   upstream?: string,
   rewrite?: RewriteReport,
   cache?: CacheState,
+  ejected?: string[],
 ) => void;
 
 /**
@@ -729,6 +741,7 @@ const proxyRequest = async (
     produced.authority,
     produced.rewrite,
     cacheState,
+    produced.ejected,
   );
 
   const cacheableFill =
@@ -795,6 +808,12 @@ interface Produced {
   outcome: ProxyEvent['outcome'];
   attempts: number;
   /**
+   * Authorities the outlier memory removed before the walk, when the route
+   * ejects. Read from the observer's closure, which survives even a thrown
+   * walk — the skipping happened before the walk, not inside it.
+   */
+  ejected?: string[];
+  /**
    * The candidate that answered, as an authority — or, on a failure, the last
    * one tried. Rewrites and reports follow it: crediting the primary would
    * point a failover-served visitor at a server that never served them.
@@ -829,6 +848,14 @@ const produceResponse = async ({
   selection,
 }: ProduceOptions): Promise<Produced> => {
   const { route } = match;
+  // The per-request view over the route's failure memory. Filtered targets
+  // are handed to `forward` whole: the non-empty guarantee (all candidates
+  // ejected) belongs to the walker, and writing it in two places is a way to
+  // let them drift.
+  const outlier =
+    route.outlier === undefined
+      ? undefined
+      : outlierObserver(ledgerFor(routeId(route, match.index), route.outlier));
   const targets = upstreamCandidates(route, selection?.index ?? 0).map((upstream) =>
     resolveUpstreamUrl(match, url, upstream),
   );
@@ -851,6 +878,7 @@ const produceResponse = async ({
       requestUrl: url,
       fetchImpl: counting,
       detached,
+      outlier,
     });
   } catch (error) {
     // Attributed to the last candidate actually tried: with no response there is
@@ -864,6 +892,9 @@ const produceResponse = async ({
       authority: lastTarget.host,
       fromUpstream: false,
       upstreamHeaders: new Headers(),
+      ...(outlier !== undefined && outlier.ejected().length > 0
+        ? { ejected: outlier.ejected() }
+        : {}),
     };
   }
 
@@ -879,6 +910,9 @@ const produceResponse = async ({
       authority: result.target.host,
       fromUpstream: true,
       upstreamHeaders: result.response.headers,
+      ...(outlier !== undefined && outlier.ejected().length > 0
+        ? { ejected: outlier.ejected() }
+        : {}),
     };
   }
 
@@ -942,6 +976,9 @@ const produceResponse = async ({
     authority,
     fromUpstream: true,
     upstreamHeaders: upstream.headers,
+    ...(outlier !== undefined && outlier.ejected().length > 0
+      ? { ejected: outlier.ejected() }
+      : {}),
     rewrite: {
       bodyRewritten: decision.rewrite,
       ...(decision.rewrite ? {} : { rewriteSkipped: decision.skipped }),
