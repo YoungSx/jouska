@@ -351,6 +351,39 @@ const rateLimit = z.object({
 });
 
 /**
+ * The largest body `maxBodyBytes` may name: 500 MiB, the platform's largest
+ * documented request-body ceiling (Enterprise). A larger value could never take
+ * effect in full — the platform refuses the body first — so config that promises
+ * one is refused rather than accepted as a limit that sometimes applies.
+ */
+const MAX_REQUEST_BODY_BYTES = 524_288_000;
+
+/**
+ * What a matched route accepts before forwarding: which methods, and how large
+ * a request body.
+ *
+ * Distinct from `match.methods` by design — that decides whether the route is
+ * matched at all (a miss is handed back to the app with `next()`), this decides
+ * whether a matched request is refused (with 405 and an `Allow` header). The
+ * distinction is load-bearing: a route matching only GET cannot be told to
+ * refuse POST, because POST never reaches it.
+ */
+const requestPolicy = z.object({
+  /** Methods this route forwards. A matched request outside the set gets 405. */
+  allowedMethods: methods.optional(),
+  /**
+   * Largest accepted request body, enforced twice: a request declaring a larger
+   * `Content-Length` is refused before anything is forwarded, and one without
+   * that header — a chunked upload declares none — is counted while streaming
+   * and cut off mid-flight once it passes the ceiling. The second enforcement
+   * cannot unsend what the upstream already received, so a fast-responding
+   * upstream may see part of the body; the bytes that reach it are bounded by
+   * this number either way.
+   */
+  maxBodyBytes: z.number().int().positive().max(MAX_REQUEST_BODY_BYTES).optional(),
+});
+
+/**
  * ISO 3166-1 alpha-2 country code, uppercased.
  *
  * Cloudflare reports `cf.country` in uppercase, plus `T1` for Tor. Normalising
@@ -730,6 +763,8 @@ const routeBehaviour = {
   bodyRewrite: bodyRewrite.optional(),
   /** CORS handling. Omit to leave the upstream's own CORS headers untouched. */
   cors: cors.optional(),
+  /** Method allow-list and body-size ceiling for matched requests. Omit to admit all. */
+  requestPolicy: requestPolicy.optional(),
   /** IP allow/deny rules. Omit to admit every address. */
   ip: ipRules.optional(),
   /** Rate limiting via the native Cloudflare binding. Omit to disable. */
@@ -830,6 +865,7 @@ const defaults = z
     cache: routeBehaviour.cache,
     bodyRewrite: routeBehaviour.bodyRewrite,
     cors: routeBehaviour.cors,
+    requestPolicy: routeBehaviour.requestPolicy,
     ip: routeBehaviour.ip,
     rateLimit: routeBehaviour.rateLimit,
   })
@@ -1154,6 +1190,25 @@ export const configSchema = z
         }
       }
 
+      // A method allow-list with nothing in common with `match.methods` refuses
+      // every request the route can match: only requests inside `match.methods`
+      // reach the policy check, and none of them is in the allow-list. Like the
+      // cache check above, saying so beats leaving an operator to read a 405 for
+      // everything as the intended behaviour.
+      if (entry.requestPolicy?.allowedMethods !== undefined && entry.match.methods !== undefined) {
+        const allowed = entry.requestPolicy.allowedMethods;
+        if (!entry.match.methods.some((method) => allowed.includes(method))) {
+          ctx.addIssue({
+            code: 'custom',
+            path: ['routes', index, 'requestPolicy', 'allowedMethods'],
+            message:
+              `requestPolicy.allowedMethods (${allowed.join(', ')}) and match.methods ` +
+              `(${entry.match.methods.join(', ')}) have nothing in common, so every ` +
+              `request this route matches is refused with 405`,
+          });
+        }
+      }
+
       /**
        * The three ways of naming upstreams are alternative strategies, not
        * layers: `trafficSplit` picks a winner before anything is sent, while
@@ -1243,6 +1298,7 @@ export type CorsConfig = z.output<typeof cors>;
 export type RateLimitConfig = z.output<typeof rateLimit>;
 export type BodyRewriteConfig = z.output<typeof bodyRewrite>;
 export type CacheConfig = z.output<typeof cache>;
+export type RequestPolicyConfig = z.output<typeof requestPolicy>;
 export type HeaderRulesConfig = HeaderRules;
 export type RouteInput = z.input<typeof anyRoute>;
 /** Input shape, minus the internal bookkeeping field preprocessing supplies. */

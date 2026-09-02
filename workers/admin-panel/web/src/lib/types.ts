@@ -59,6 +59,17 @@ export interface CacheRules {
 }
 
 /**
+ * 请求策略：命中路由后是否转发、body 多大。
+ *
+ * `allowedMethods` 不命中 → 405 + Allow 头，这与 `match.methods` 不同 ——
+ * 后者不命中是交回应用（不匹配），前者是匹配了但拒绝转发。
+ */
+export interface RequestPolicyRules {
+  allowedMethods?: string[];
+  maxBodyBytes?: number;
+}
+
+/**
  * 一条路由的定义。
  *
  * 全部字段可选 —— 编辑器要能承载一份不完整的草稿，用户填到一半时不该被类型拒
@@ -93,6 +104,7 @@ export interface RouteDefinition {
   requestHeaders?: HeaderRules;
   responseHeaders?: HeaderRules;
   cache?: CacheRules;
+  requestPolicy?: RequestPolicyRules;
   bodyRewrite?: BodyRewrite;
   cors?: CorsRules;
   ip?: IpRules;
@@ -210,6 +222,7 @@ export const FORM_COVERED_KEYS: readonly string[] = [
   'bodyRewrite',
   'cors',
   'ip',
+  'requestPolicy',
 ];
 
 /**
@@ -231,6 +244,7 @@ export const DANGEROUS_PATHS = new Set([
   'requestHeaders.remove',
   'responseHeaders.set',
   'cache.contentTypes',
+  'requestPolicy.allowedMethods',
 ]);
 
 /** 危险字段的中文说明。服务端 reason 是英文，面板要用自己的语言说清后果。 */
@@ -253,6 +267,8 @@ export const DANGER_REASONS: Record<string, string> = {
     '这些规则在代理改写之后跑，所以能把 Location 指回上游、能加回一条让改写后页面加载不了自己资源的 CSP、也能加回让客户端从自己缓存里取未改写正文的校验头。',
   'cache.contentTypes':
     '默认只缓存静态资源。把文档类型加进来，一个没带 cookie、也没标 private 的个性化页面就会被发给下一个访客。',
+  'requestPolicy.allowedMethods':
+    '列表写漏一个方法，用它的调用方全部收到 405 —— 拒绝是显式的，不会悄悄放行去别处。',
 };
 
 /**

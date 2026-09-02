@@ -92,6 +92,7 @@ Routes are evaluated in order and the first match wins.
 | `requestHeaders`       | off      | Headers to write or delete on the way upstream; see Header rules.     |
 | `responseHeaders`      | off      | Headers to write or delete on the way back; see Header rules.         |
 | `cache`                | off      | Upstream response caching; see Response caching.                      |
+| `requestPolicy`        | off      | Method allow-list and body size cap; see Guards.                      |
 | `cors`                 | off      | CORS handling; see Guards.                                            |
 | `ip`                   | off      | IP allow/deny rules; see Guards.                                      |
 | `rateLimit`            | off      | Rate limiting via the native binding; see Guards.                     |
@@ -615,6 +616,42 @@ choice. Counting is per-location rather than globally exact — the documented t
 of the native binding, and adequate for abuse control. A missing binding is
 reported as a 500 rather than silently admitting traffic.
 
+### Request policy
+
+`requestPolicy` admits only listed methods and caps the body size:
+
+```ts
+{
+  match: { path: '/api' },
+  upstream: 'api.example.com',
+  requestPolicy: {
+    allowedMethods: ['GET', 'POST'],
+    maxBodyBytes: 10 * 1024 * 1024,
+  },
+}
+```
+
+`allowedMethods` and `match.methods` answer different questions, and a route can
+carry both. `match.methods` decides whether the route is hit at all: a request
+outside it is not matched, falls through to the rest of the app, and is no
+concern of this route. `allowedMethods` decides whether a _matched_ request is
+forwarded: one outside it is refused with 405 and an `Allow` header naming the
+list. The schema refuses a pair with nothing in common — every request the
+route could match would be refused, so the block reads as a guard but works as
+a full stop. A CORS preflight on a route with `cors` is exempt, since jouska
+answers it itself; without `cors` an `OPTIONS` is forwarded and subject to the
+list like any other method.
+
+`maxBodyBytes` is enforced twice, because `Content-Length` cannot be trusted
+and chunked uploads carry none. A declared length over the limit is refused
+with 413 before anything is forwarded. A body that declares nothing — or lies —
+is counted while it streams, and the upload is aborted mid-flight once the
+count passes the limit; the client receives 413. Bytes already handed to
+`fetch` before the cut may have reached the upstream, which is why a declared
+size is refused earlier, before anything is sent. Counting only ever delays
+bytes through a pass-through transform, so the memory cost is one chunk either
+way — the 128MB ceiling is never approached by body size.
+
 ## Response caching
 
 Off unless a route asks for it. When it does, GET and HEAD responses are stored in
@@ -896,6 +933,8 @@ a receiver that does real async I/O is the one that needs `ctx.waitUntil`.
 | ------ | --------------------------------------------------------------- |
 | 403    | Refused by `blockCountries`, `allowCountries`, or an `ip` rule. |
 | 403    | A per-caller rate limit with no identifiable caller.            |
+| 405    | Method outside `requestPolicy.allowedMethods`; carries `Allow`. |
+| 413    | Body over `requestPolicy.maxBodyBytes`.                         |
 | 429    | Rate limit exceeded.                                            |
 | 499    | The client hung up before the upstream answered.                |
 | 500    | The `rateLimit` binding named in config is missing.             |

@@ -9,7 +9,7 @@ import {
   type ContentType,
   type Replacement,
 } from '../internal/body.js';
-import { forward } from '../internal/forward.js';
+import { BodyLimitError, forward } from '../internal/forward.js';
 import { checkRateLimit, corsMiddleware, ipMiddleware } from '../internal/guards.js';
 import {
   applyResponseHeaderRules,
@@ -255,6 +255,47 @@ export const jouska = ({
       }
     };
 
+    // Method refusal is the cheapest guard there is — a set lookup, no header
+    // reads, no I/O — so it runs before the guards below. `match.methods` chose
+    // whether this route matched at all; `requestPolicy.allowedMethods` chooses
+    // whether a matched request is forwarded. A miss on the latter is a refusal,
+    // not a pass-through: handing it back to the app would make the allow-list
+    // read as "these methods are free" while every other method wandered off to
+    // whatever the app does next.
+    //
+    // The one exemption is a CORS preflight on a route that has `cors`: the
+    // preflight is answered by jouska itself and never reaches the upstream, so
+    // refusing it with 405 would break cross-origin calls to every method the
+    // allow-list does permit. Without `cors` there is no such negotiation — the
+    // OPTIONS would be forwarded verbatim — so it is subject to the list like
+    // any other method.
+    const isPreflight = c.req.method === 'OPTIONS' && c.req.header('origin') !== undefined;
+    const policy = route.requestPolicy;
+    const preflightExempt = isPreflight && route.cors !== undefined;
+    if (
+      policy?.allowedMethods !== undefined &&
+      !preflightExempt &&
+      !policy.allowedMethods.includes(c.req.method)
+    ) {
+      report(405, 'refused', 0);
+      // RFC 9110 §15.5.5: the response to a refused method names what is
+      // allowed. Empty allow-lists cannot occur — the schema requires nonempty.
+      c.header('allow', policy.allowedMethods.join(', '));
+      return c.json({ error: 'method_not_allowed', allow: policy.allowedMethods }, 405);
+    }
+
+    // A declared size is refused before anything is forwarded; the undetectable
+    // case — a chunked body, which declares no length — is caught on the stream
+    // by the counting wrapper in `forward`, and surfaces here as BodyLimitError.
+    const maxBody = policy?.maxBodyBytes;
+    if (maxBody !== undefined) {
+      const declared = contentLength(c.req.raw);
+      if (declared !== undefined && declared > maxBody) {
+        report(413, 'refused', 0);
+        return c.json({ error: 'payload_too_large', maxBodyBytes: maxBody }, 413);
+      }
+    }
+
     const geo = checkGeo(route, c.req.raw);
     if (geo !== undefined) {
       report(403, 'refused', 0);
@@ -269,7 +310,8 @@ export const jouska = ({
       }
     }
 
-    const isPreflight = c.req.method === 'OPTIONS' && c.req.header('origin') !== undefined;
+    // The preflight check computed above for the method guard decides rate-limit
+    // accounting too, so it is not re-derived here.
     if (route.rateLimit !== undefined && (route.rateLimit.countPreflight || !isPreflight)) {
       const verdict = await checkRateLimit(
         route.rateLimit,
@@ -838,11 +880,29 @@ const decideRewrite = (
   return { rewrite: true, config, charset: charset.charset, transcoded: charset.transcoded };
 };
 
+/**
+ * The declared request-body size, or undefined when the header is absent or not
+ * a plain integer. A chunked upload carries no such header, which is why a
+ * `maxBodyBytes` route also counts on the stream — see `forward`.
+ */
+const contentLength = (request: Request): number | undefined => {
+  const raw = request.headers.get('content-length');
+  if (raw === null || !/^\d+$/.test(raw)) {
+    return undefined;
+  }
+  const value = Number(raw);
+  return Number.isSafeInteger(value) ? value : undefined;
+};
+
 /** Classifies a forward failure for reporting. */
 const failureOutcome = (error: unknown): ProxyEvent['outcome'] => {
   const name = error instanceof Error ? error.name : '';
   if (name === 'AbortError') {
     return 'client_closed';
+  }
+  // The client's body outgrew the route's ceiling: a refusal, not a fault.
+  if (error instanceof BodyLimitError) {
+    return 'refused';
   }
   return name === 'TimeoutError' || name === 'TotalTimeoutError' ? 'timeout' : 'unreachable';
 };
@@ -859,6 +919,12 @@ const upstreamFailure = (error: unknown, c: Context, target: URL): Response => {
     return Response.json({ error: 'client_closed_request' }, { status: 499 });
   }
   const timedOut = name === 'TimeoutError' || name === 'TotalTimeoutError';
+  // A chunked body that grew past `maxBodyBytes` mid-upload. Not an upstream
+  // fault, so it must not read as one: it is the client's body that is too
+  // large, and 413 says so rather than 502.
+  if (error instanceof BodyLimitError) {
+    return c.json({ error: 'payload_too_large', maxBodyBytes: error.limitBytes }, 413);
+  }
   return c.json(
     { error: timedOut ? 'upstream_timeout' : 'upstream_unreachable', upstream: target.host },
     timedOut ? 504 : 502,
