@@ -393,14 +393,24 @@ export const t = {
       help: '上游在根路径提供服务时需要打开。',
     },
     timeoutMs: {
-      label: '单次尝试超时',
+      label: '单次尝试等响应头',
       unit: '毫秒',
-      help: '每一次尝试各自的时限。',
+      help: '只管到上游发出响应头为止；正文有自己的两个时限。',
     },
     totalTimeoutMs: {
-      label: '总时限',
+      label: '重试总时限',
       unit: '毫秒',
-      help: '所有尝试加退避的总上限。',
+      help: '所有尝试加退避的总上限，同样只管到响应头。',
+    },
+    firstChunkTimeoutMs: {
+      label: '等正文第一个字节',
+      unit: '毫秒',
+      help: '响应头之后等首字节；模型思考很久属于正常，这里要给够。',
+    },
+    streamIdleTimeoutMs: {
+      label: '正文空闲时限',
+      unit: '毫秒',
+      help: '两个字节之间最长静默；只要还在滴数据就一直转发，没有总时长上限。',
     },
     retries: {
       label: '额外重试次数',

@@ -132,6 +132,8 @@ export interface RouteDefinition {
   stripPrefix?: boolean;
   timeoutMs?: number;
   totalTimeoutMs?: number;
+  firstChunkTimeoutMs?: number;
+  streamIdleTimeoutMs?: number;
   retries?: number;
   retryBackoffMs?: number;
   rewriteHeaders?: boolean;
@@ -203,9 +205,11 @@ export interface FieldRisk {
 
 /** number 字段的取值范围与默认值，与 routeBehaviour 一致。 */
 export const NUMERIC_BOUNDS = {
-  timeoutMs: { min: 1, max: 30_000, default: 10_000 },
-  totalTimeoutMs: { min: 1, max: 60_000, default: 30_000 },
-  retries: { min: 0, max: 3, default: 0 },
+  timeoutMs: { min: 1, max: 120_000, default: 10_000 },
+  totalTimeoutMs: { min: 1, max: 300_000, default: 30_000 },
+  firstChunkTimeoutMs: { min: 1, max: 600_000, default: 60_000 },
+  streamIdleTimeoutMs: { min: 1, max: 600_000, default: 60_000 },
+  retries: { min: 0, max: 100, default: 0 },
   retryBackoffMs: { min: 0, max: 5_000, default: 100 },
 } as const;
 
@@ -267,6 +271,8 @@ export const FORM_COVERED_KEYS: readonly string[] = [
   'stripPrefix',
   'timeoutMs',
   'totalTimeoutMs',
+  'firstChunkTimeoutMs',
+  'streamIdleTimeoutMs',
   'retries',
   'retryBackoffMs',
   'rewriteHeaders',

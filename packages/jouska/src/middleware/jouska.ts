@@ -3,6 +3,7 @@ import type { CacheConfig, Config, Route } from '../config.js';
 import {
   contentTypeAllowed,
   htmlRewriter,
+  isStreamingMedia,
   parseContentType,
   resolveCharset,
   textRewriteStream,
@@ -37,6 +38,7 @@ import {
   type ResponseCacheStore,
 } from '../internal/response-cache.js';
 import { stickyCookie, selectUpstream, type Selection } from '../internal/selection.js';
+import { watchStream, type StreamReport } from '../internal/stream-watch.js';
 import {
   matchUrl,
   resolveUpstreamUrl,
@@ -60,6 +62,9 @@ import {
  *   does. Distinct from `bodyless_status`, where the status itself forbids a
  *   body: here the status permits one and none arrived.
  * - `content_type` — the type is outside `bodyRewrite.contentTypes`.
+ * - `streaming_media` — the type is one whose whole value is arriving
+ *   incrementally; see `isStreamingMedia`. Refused whatever the
+ *   route's `contentTypes` says, which is why it is a reason of its own.
  * - `charset_undecodable` — a declared charset this runtime cannot decode, with
  *   no usable `fallbackCharset`. The hardest of the five to diagnose: the config
  *   reads correctly, the page renders, and the links simply do not change.
@@ -76,6 +81,7 @@ export type RewriteSkipReason =
   | 'bodyless_status'
   | 'no_body'
   | 'content_type'
+  | 'streaming_media'
   | 'charset_undecodable'
   | 'served_from_cache';
 
@@ -145,6 +151,30 @@ export interface ProxyEvent {
    * without an outlier policy.
    */
   ejected?: string[];
+  /**
+   * How the response body stream ended, resolved once it has.
+   *
+   * A promise rather than a second callback, and rather than delaying this event
+   * until the body drained. Delaying it would hold every `waitUntil` the host
+   * queued from here until the client had finished reading — on a streamed answer
+   * that is minutes. A second callback would fire for every response with a body,
+   * including every static asset, doubling the event volume to say "it finished"
+   * about responses that finish in one chunk.
+   *
+   * So the fact is offered, not pushed: a host that wants it awaits this inside
+   * `ctx.waitUntil`, and one that does not simply ignores it. It never rejects —
+   * an ignored rejected promise is an unhandled rejection — so every ending,
+   * deadline and reset included, arrives as a resolved value.
+   *
+   * Absent when nothing streamed from an upstream: a guard refusal, a 101
+   * handshake, a bodyless response, a cache hit, or jouska's own error page.
+   *
+   * `outcome` is the one to alert on. `idle_timeout` and `first_chunk_timeout`
+   * mean this proxy cut a response the client had already been told was `200 OK`
+   * — unrecoverable by construction, because the headers are long gone, and
+   * invisible in `status`, which will read 200 for it.
+   */
+  stream?: Promise<StreamReport>;
 }
 
 export interface JouskaOptions {
@@ -243,6 +273,7 @@ export const jouska = ({
       rewrite,
       cache,
       ejected,
+      stream,
     ): void => {
       if (onProxy === undefined) {
         return;
@@ -271,6 +302,7 @@ export const jouska = ({
           // Spread like `rewriteSkipped` above: no split, no key.
           ...(selection !== undefined ? { selection } : {}),
           ...(ejected !== undefined && ejected.length > 0 ? { ejected } : {}),
+          ...(stream !== undefined ? { stream } : {}),
         });
       } catch {
         // Observability must not be able to fail a request.
@@ -447,6 +479,7 @@ type Report = (
   rewrite?: RewriteReport,
   cache?: CacheState,
   ejected?: string[],
+  stream?: Promise<StreamReport>,
 ) => void;
 
 /**
@@ -733,7 +766,8 @@ const proxyRequest = async (
   // Reported before the body is read, deliberately. The rewrite is a stream
   // transform, so a report that waited for its result would hold the event — and
   // any `waitUntil` the host queued from it — until the client had finished
-  // reading. Everything the event states is already known.
+  // reading. Everything the event states is already known, and what is not yet
+  // known — how the stream ends — is carried as a promise rather than waited on.
   report(
     produced.status,
     produced.outcome,
@@ -742,6 +776,7 @@ const proxyRequest = async (
     produced.rewrite,
     cacheState,
     produced.ejected,
+    produced.stream,
   );
 
   const cacheableFill =
@@ -835,6 +870,11 @@ interface Produced {
   upstreamHeaders: Headers;
   /** Absent when nothing was proxied, which is what `report` expects. */
   rewrite?: RewriteReport;
+  /**
+   * How the body stream ended. Absent for a bodyless response and for jouska's
+   * own error responses, neither of which streams anything from an upstream.
+   */
+  stream?: Promise<StreamReport>;
 }
 
 /** Forwards the request upstream and rewrites the response. */
@@ -916,7 +956,17 @@ const produceResponse = async ({
     };
   }
 
-  const upstream = result.response;
+  // The body's own deadlines go on here, before anything else touches the
+  // stream. The monitor measures whether the *upstream* is still sending, so it
+  // has to sit against the upstream body: stacked outside the rewriter it would
+  // measure what the rewriter had released, and a rewriter legitimately holds
+  // bytes back across a chunk boundary — a live stream would read as idle.
+  //
+  // A response with no body has nothing to wait for; the 101 handshake returned
+  // above, before this.
+  const watch =
+    result.response.body === null ? undefined : watchBody(result.response, route, result.abort);
+  const upstream = watch?.response ?? result.response;
   const target = result.target;
   const authority = target.host;
   const contentType = parseContentType(upstream.headers.get('content-type'));
@@ -979,11 +1029,53 @@ const produceResponse = async ({
     ...(outlier !== undefined && outlier.ejected().length > 0
       ? { ejected: outlier.ejected() }
       : {}),
+    ...(watch !== undefined ? { stream: watch.report } : {}),
     rewrite: {
       bodyRewritten: decision.rewrite,
       ...(decision.rewrite ? {} : { rewriteSkipped: decision.skipped }),
       redirectRewritten,
     },
+  };
+};
+
+/**
+ * Puts the body's deadlines on a response, returning it rebuilt around the
+ * monitored stream plus the promise of how that stream ended.
+ *
+ * The promise never rejects: it is handed to an observer that may well ignore
+ * it, and an ignored rejected promise is an unhandled rejection in the isolate.
+ * Every ending — including a deadline and a reset — arrives as a resolved
+ * {@link StreamReport}.
+ */
+const watchBody = (
+  upstream: Response,
+  route: Route,
+  abort: (reason: Error) => void,
+): { response: Response; report: Promise<StreamReport> } | undefined => {
+  const body = upstream.body;
+  if (body === null) {
+    return undefined;
+  }
+  let settle: (report: StreamReport) => void;
+  const report = new Promise<StreamReport>((resolve) => {
+    settle = resolve;
+  });
+  const monitored = watchStream({
+    body,
+    firstChunkTimeoutMs: route.firstChunkTimeoutMs,
+    streamIdleTimeoutMs: route.streamIdleTimeoutMs,
+    abort,
+    // Assigned synchronously by the Promise executor above, so this is defined
+    // by the time any chunk can arrive.
+    onEnd: (ended) => settle(ended),
+  });
+  return {
+    response: new Response(monitored, {
+      status: upstream.status,
+      statusText: upstream.statusText,
+      headers: upstream.headers,
+    }),
+    report,
   };
 };
 
@@ -1044,6 +1136,10 @@ const decideRewrite = (
   }
   if (upstream.body === null) {
     return { rewrite: false, skipped: 'no_body' };
+  }
+  // Before the operator's own list, because this one is not theirs to override.
+  if (isStreamingMedia(contentType)) {
+    return { rewrite: false, skipped: 'streaming_media' };
   }
   if (!contentTypeAllowed(contentType, config.contentTypes)) {
     return { rewrite: false, skipped: 'content_type' };

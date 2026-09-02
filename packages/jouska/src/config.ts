@@ -195,6 +195,30 @@ const upstreamAllowingPrivate = z
   });
 
 /**
+ * Upper bound shared by every candidate and condition list in a route.
+ *
+ * One constant rather than a number per field, because the bound answers one
+ * question for all of them: how much per-request work a single route may
+ * declare. Each entry costs an array slot the router materialises and, for
+ * candidates, at most one sequential upstream attempt.
+ *
+ * 64 is a ceiling on pathological configuration, not a defence. Measured with
+ * `matchUrl` in workerd: 1000 routes carrying one condition each cost 20µs per
+ * request in the all-miss worst case, and 6 routes carrying 16 conditions each
+ * cost 2µs — both far under the 10ms CPU budget. An earlier comment justified a
+ * 16-condition cap by that budget, which did not survive the measurement: the
+ * expensive dimension is the route count, and that is deliberately unbounded
+ * because a mirror of many sites is the point. So the honest statement is the
+ * one above — this stops a config nobody meant to write, and nothing more.
+ *
+ * nginx bounds none of the equivalents (`proxy_next_upstream_tries` defaults to
+ * `0`, meaning unlimited; an `upstream` block takes any number of `server`
+ * lines; `weight` has no maximum), and where a bound here cannot name what it
+ * bounds, it does not exist.
+ */
+const MAX_LIST = 64;
+
+/**
  * Sequential failover across multiple upstream candidates.
  *
  * Candidates are tried strictly in order: the next one only sees the request
@@ -219,11 +243,16 @@ const failover = z.object({
     .default(['timeout', 'unreachable']),
   /**
    * How many candidates may be tried. Defaults to every candidate the route
-   * declares. Capped at 6 to mirror the platform's per-request connection cap:
-   * the attempts are sequential so the cap is not a concurrency limit, but an
-   * unbounded walk would make one request's worst case hard to reason about.
+   * declares, and is clamped to the list's own length at walk time.
+   *
+   * Bounded by {@link MAX_LIST} because a walk cannot visit more candidates
+   * than a route may declare. The operative limit on a walk is time, not count:
+   * `totalTimeoutMs` ends it whatever this says. The cap used to be 6, said to
+   * "mirror the platform's per-request connection cap" while admitting in the
+   * same sentence that sequential attempts are not concurrent ones — a number
+   * borrowed from a limit that does not apply.
    */
-  maxAttempts: z.number().int().min(1).max(6).default(6),
+  maxAttempts: z.number().int().min(1).max(MAX_LIST).default(MAX_LIST),
 });
 
 /**
@@ -260,18 +289,28 @@ const trafficSplitEntry = z.object({
    * Relative weight, not a percentage: 95/5 and 19/1 are the same split, and
    * demanding a sum of 100 makes a three-way split like 50/30/20 arithmetic
    * the operator should not have to do.
+   *
+   * The ceiling is what keeps the sum of every weight inside the safe integer
+   * range that `selectUpstream` adds them up in — `MAX_LIST` candidates at a
+   * million apiece is six orders of magnitude clear of it. nginx leaves `weight`
+   * unbounded; this bound names the arithmetic it protects.
    */
-  weight: z.number().int().min(1).max(1000),
+  weight: z.number().int().min(1).max(1_000_000),
 });
 
 /**
  * Weighted traffic split across upstreams, for canary and version-migration
  * routes. The winner is decided before the request is forwarded, so every
  * downstream step — URL resolution, body rewriting, event reporting — sees the
- * candidate that was actually hit. Bounded at 6 like `upstreams`, for the same
- * legibility of a route's worst case.
+ * candidate that was actually hit.
+ *
+ * Bounded by {@link MAX_LIST}. It used to be 6, "like `upstreams`, for the same
+ * legibility of a route's worst case" — a reason copied from a field it does not
+ * fit: a split picks exactly one candidate and never walks, so it has no
+ * multi-attempt worst case to keep legible. A migration across eight versions
+ * was refused by the schema for no reason anyone could state.
  */
-const trafficSplit = z.array(trafficSplitEntry).min(1).max(6);
+const trafficSplit = z.array(trafficSplitEntry).min(1).max(MAX_LIST);
 
 /** How a split request remembers which upstream it was assigned to. */
 const stickyBy = z.enum(['cookie']);
@@ -401,11 +440,10 @@ const cookieCondition = z
   });
 
 /**
- * Bound on conditions per family. Matching runs per request per candidate
- * route, and a route table edited from a panel must not be able to turn that
- * walk into unbounded work on a runtime that bills 10 ms of CPU per request.
+ * Bound on conditions per family; see {@link MAX_LIST} for what the number
+ * bounds and what it deliberately does not claim to defend against.
  */
-const MAX_MATCH_CONDITIONS = 16;
+const MAX_MATCH_CONDITIONS = MAX_LIST;
 
 const match = z
   .object({
@@ -930,6 +968,23 @@ const cacheKey = z.object({
  * the *unrewritten* body from its own cache — so a cached entry cannot be
  * revalidated against the upstream. Freshness is TTL and nothing else.
  */
+/**
+ * Upper bound on every cache lifetime: TTL, the stale-while-revalidate window,
+ * the stale-if-error window and the per-status TTLs.
+ *
+ * One year, because that is the lifetime the immutable-asset convention already
+ * uses (`Cache-Control: max-age=31536000`), and a proxy that caches such an
+ * asset should be able to say so. The previous bounds — 30 days for a TTL, a day
+ * for either stale window — rested on "a value beyond a month is almost always a
+ * typo", which is a guess about the operator rather than a fact about the
+ * system. What is a fact: the route fingerprint is part of the cache key, so no
+ * lifetime however long can serve bytes produced by a different configuration.
+ *
+ * nginx bounds none of the equivalents (`proxy_cache_valid` takes any time,
+ * `proxy_cache_use_stale` bounds staleness not at all).
+ */
+const MAX_CACHE_SECONDS = 31_536_000;
+
 const cache = z.object({
   /**
    * Whether the block takes effect. Present so a tuned configuration can be
@@ -951,17 +1006,19 @@ const cache = z.object({
     .nonempty()
     .default(['GET', 'HEAD']),
   /**
-   * How long an entry is served as fresh. Capped at 30 days: the route
-   * fingerprint in the key means a long TTL cannot serve another configuration's
-   * bytes, but it is still a window in which an upstream change is invisible, and
-   * a value beyond a month is almost always a typo.
+   * How long an entry is served as fresh. Bounded by {@link MAX_CACHE_SECONDS}.
+   *
+   * A long TTL is a window in which an upstream change is invisible, which is
+   * the operator's trade to make: the route fingerprint in the key already
+   * guarantees it cannot be a window in which *another configuration's* bytes
+   * are served.
    */
-  ttlSeconds: z.number().int().positive().max(2_592_000).default(300),
+  ttlSeconds: z.number().int().positive().max(MAX_CACHE_SECONDS).default(300),
   /**
    * How long past the TTL an entry may still be served while a refresh runs in
    * the background. Zero disables it, and the visitor waits for the upstream.
    */
-  staleWhileRevalidateSeconds: z.number().int().min(0).max(86_400).default(60),
+  staleWhileRevalidateSeconds: z.number().int().min(0).max(MAX_CACHE_SECONDS).default(60),
   /**
    * Content types eligible for caching, matched as a prefix against the response
    * `Content-Type` — so `image/` covers every image format.
@@ -994,7 +1051,7 @@ const cache = z.object({
    */
   staleIfError: z
     .object({
-      seconds: z.number().int().min(0).max(86_400).default(3600),
+      seconds: z.number().int().min(0).max(MAX_CACHE_SECONDS).default(3600),
       on: z
         .array(z.enum(['timeout', 'unreachable', '5xx']))
         .min(1)
@@ -1019,7 +1076,7 @@ const cache = z.object({
    * is absent" and "the value is 0" different facts — absent falls back, zero
    * refuses — which the negative-caching knobs otherwise collapse.
    *
-   * Values are capped at the same 30 days as `ttlSeconds`. Some statuses are
+   * Values share `ttlSeconds`' bound ({@link MAX_CACHE_SECONDS}). Some statuses are
    * refused outright, each for a verified or structural reason: 1xx are not
    * storable responses; 204 and 304 have no replayable body (304's validators
    * are stripped by this proxy, so the entry could not even be answered with);
@@ -1028,7 +1085,7 @@ const cache = z.object({
    * serves is a hit rate the header would lie about.
    */
   statusTtlSeconds: z
-    .record(z.string().regex(/^[1-5]\d{2}$/), z.number().int().min(0).max(2_592_000))
+    .record(z.string().regex(/^[1-5]\d{2}$/), z.number().int().min(0).max(MAX_CACHE_SECONDS))
     .superRefine((ttls, ctx) => {
       for (const status of Object.keys(ttls)) {
         const code = Number(status);
@@ -1085,18 +1142,76 @@ const routeBehaviour = {
   scheme: z.enum(['https', 'http']).default('https'),
   /** Strip the matched path prefix before forwarding. */
   stripPrefix: z.boolean().default(false),
-  /** Per-attempt upstream deadline. */
-  timeoutMs: z.number().int().positive().max(30_000).default(10_000),
   /**
-   * Ceiling on all attempts combined, including backoff.
+   * Deadline for one attempt to produce **response headers**.
+   *
+   * Headers only. It used to reach the last byte of the body, because the value
+   * was handed to `AbortSignal.timeout` and that signal governs the whole
+   * exchange — so a streaming response was cut off mid-flight at a deadline
+   * documented as "per-attempt". Verified: an 8-event SSE stream spanning 400ms
+   * under `timeoutMs: 150` reached the client as `200 OK` with two events and
+   * then a dead socket, and the event reported a successful 200. The body now
+   * has deadlines of its own; see `firstChunkTimeoutMs` and
+   * `streamIdleTimeoutMs`.
+   *
+   * The ceiling is 120s rather than 30s because an upstream may be slow to
+   * answer at all: a cold-starting container or a queued request can take a
+   * minute to produce headers, and there is nothing this proxy can do about it
+   * except wait or give up.
+   */
+  timeoutMs: z.number().int().positive().max(120_000).default(10_000),
+  /**
+   * Ceiling on all attempts combined, including backoff — still to headers.
    *
    * Without this, `retries: 3` with `timeoutMs: 30000` lets a single request
    * occupy the proxy for two minutes before returning 504 — measured at 403ms
    * for 4×100ms attempts, so the arithmetic holds in practice.
+   *
+   * This is a retry budget, which is what the field has always measured, and it
+   * deliberately stops at headers. Once a body is streaming there is no
+   * whole-response ceiling: nginx has bounded proxied responses by
+   * `proxy_read_timeout` — "set only between two successive read operations,
+   * not for the transmission of the whole response" — for its entire history,
+   * and a total-duration cap is what makes a long streamed answer fail for no
+   * reason. The idle deadlines below are the bound instead.
    */
-  totalTimeoutMs: z.number().int().positive().max(60_000).default(30_000),
-  /** Extra attempts after the first failure. Only idempotent methods retry. */
-  retries: z.number().int().min(0).max(3).default(0),
+  totalTimeoutMs: z.number().int().positive().max(300_000).default(30_000),
+  /**
+   * How long to wait for the **first byte of the body** after headers arrive.
+   *
+   * Separate from `streamIdleTimeoutMs` because the two measure different
+   * things: an upstream that thinks for a minute before emitting anything is
+   * working, whereas a minute of silence *between* bytes is a dead connection.
+   * Collapsing them into one number means either killing the slow starter or
+   * waiting out its budget before noticing the dead one.
+   *
+   * A non-streaming response sends headers and body together, so this never
+   * fires for one.
+   */
+  firstChunkTimeoutMs: z.number().int().positive().max(600_000).default(60_000),
+  /**
+   * How long the body may go without a byte once it has started.
+   *
+   * 60s to match nginx's `proxy_read_timeout` default, and measured the same
+   * way: between two successive reads, not across the whole response. An
+   * upstream that sends keep-alive frames resets it, which is correct — those
+   * frames are the upstream saying it is still there.
+   *
+   * jouska never injects keep-alives of its own. Feeding this deadline from
+   * inside the proxy would guarantee it never fires, which is the opposite of
+   * knowing whether the upstream is alive.
+   */
+  streamIdleTimeoutMs: z.number().int().positive().max(600_000).default(60_000),
+  /**
+   * Extra attempts after the first failure. Only idempotent methods retry.
+   *
+   * The ceiling exists because the walk is materialised as an array up front,
+   * so the number is allocated rather than merely counted. It is otherwise not
+   * the operative limit: `totalTimeoutMs` is, and it will end the walk long
+   * before a hundredth attempt. nginx leaves the equivalent
+   * (`proxy_next_upstream_tries`) unbounded by default for the same reason.
+   */
+  retries: z.number().int().min(0).max(100).default(0),
   /**
    * Delay before the first retry, doubled for each subsequent one.
    *
@@ -1165,7 +1280,7 @@ const route = z.object({
    * Ordered failover candidates. Tried in the order written, moving on only
    * for the conditions `failover.on` names. See {@link failover}.
    */
-  upstreams: z.array(upstream).min(1).max(6).optional(),
+  upstreams: z.array(upstream).min(1).max(MAX_LIST).optional(),
   /** Weighted split across upstreams; the winner is chosen per request. See {@link trafficSplit}. */
   trafficSplit: trafficSplit.optional(),
   /**
@@ -1198,7 +1313,7 @@ const route = z.object({
  * refusal, and that route would only ever be taken when the first origin was
  * down — the moment nobody is watching.
  */
-const privateUpstreams = z.array(upstreamAllowingPrivate).min(1).max(6);
+const privateUpstreams = z.array(upstreamAllowingPrivate).min(1).max(MAX_LIST);
 
 /**
  * A route that opted out of the private-upstream refusal, as a weighted split.
@@ -1207,7 +1322,7 @@ const privateUpstreams = z.array(upstreamAllowingPrivate).min(1).max(6);
 const privateTrafficSplit = z
   .array(trafficSplitEntry.extend({ upstream: upstreamAllowingPrivate }))
   .min(1)
-  .max(6);
+  .max(MAX_LIST);
 
 /**
  * A route that has opted out of the private-upstream refusal. Parsed as a
@@ -1234,6 +1349,8 @@ const defaults = z
     stripPrefix: routeBehaviour.stripPrefix.removeDefault().optional(),
     timeoutMs: routeBehaviour.timeoutMs.removeDefault().optional(),
     totalTimeoutMs: routeBehaviour.totalTimeoutMs.removeDefault().optional(),
+    firstChunkTimeoutMs: routeBehaviour.firstChunkTimeoutMs.removeDefault().optional(),
+    streamIdleTimeoutMs: routeBehaviour.streamIdleTimeoutMs.removeDefault().optional(),
     retries: routeBehaviour.retries.removeDefault().optional(),
     retryBackoffMs: routeBehaviour.retryBackoffMs.removeDefault().optional(),
     rewriteHeaders: routeBehaviour.rewriteHeaders.removeDefault().optional(),

@@ -77,7 +77,14 @@ import type { MatchCondition, RouteDefinition } from '@/lib/types';
 /* ---------- 字段元数据：文案与 schema 边界放一处，不散在 JSX 里。 ---------- */
 
 /** 数值字段：retries 没有 unit，所以这里显式写 undefined，不能用索引访问去猜形状。 */
-const NUMERIC_KEYS = ['timeoutMs', 'totalTimeoutMs', 'retries', 'retryBackoffMs'] as const;
+const NUMERIC_KEYS = [
+  'timeoutMs',
+  'totalTimeoutMs',
+  'firstChunkTimeoutMs',
+  'streamIdleTimeoutMs',
+  'retries',
+  'retryBackoffMs',
+] as const;
 type NumericKey = (typeof NUMERIC_KEYS)[number];
 
 const NUMERIC_FIELDS: Record<
@@ -86,6 +93,14 @@ const NUMERIC_FIELDS: Record<
 > = {
   timeoutMs: { label: t.fields.timeoutMs.label, unit: t.fields.timeoutMs.unit },
   totalTimeoutMs: { label: t.fields.totalTimeoutMs.label, unit: t.fields.totalTimeoutMs.unit },
+  firstChunkTimeoutMs: {
+    label: t.fields.firstChunkTimeoutMs.label,
+    unit: t.fields.firstChunkTimeoutMs.unit,
+  },
+  streamIdleTimeoutMs: {
+    label: t.fields.streamIdleTimeoutMs.label,
+    unit: t.fields.streamIdleTimeoutMs.unit,
+  },
   retries: { label: t.fields.retries.label, unit: undefined },
   retryBackoffMs: { label: t.fields.retryBackoffMs.label, unit: t.fields.retryBackoffMs.unit },
 };
