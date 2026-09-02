@@ -290,7 +290,7 @@ describe('revision history and rollback', () => {
     ).toBe(true);
   });
 
-  it('treats key-order-only differences as no change', async () => {
+  it('refuses a republish whose only difference is key order', async () => {
     await bootstrapAdmin();
     const auth = await loginAdmin();
     await putRoute(auth, 'a', {
@@ -299,18 +299,18 @@ describe('revision history and rollback', () => {
       timeoutMs: 5000,
     });
     await publish(auth);
-    // Same content, keys typed in the opposite order — the digest ignores
-    // that, so the diff must too.
+    // Same content, keys typed in the opposite order — canonicalization makes
+    // this the identical document, so the no-op guard refuses it rather than
+    // minting a second identical revision. (diffDocuments' key-order
+    // insensitivity itself is pinned in diff.test.ts, where it lives.)
     await putRoute(auth, 'a', {
       timeoutMs: 5000,
       match: { path: '/', host: 'a.example.com' },
       upstream: 'u.example.com',
     });
     const p2 = await publish(auth);
-    expect(p2.status).toBe(200);
-
-    const body = await (await get('/api/revisions/diff?from=1&to=2', auth)).json();
-    expect(body.entries).toEqual([]);
+    expect(p2.status).toBe(409);
+    expect((await p2.json()).error).toBe('already_live');
   });
 
   it('refuses to diff across a missing snapshot', async () => {

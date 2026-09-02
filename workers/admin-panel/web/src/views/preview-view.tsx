@@ -37,6 +37,14 @@ interface PreviewViewProps {
   readonly preview: PreviewResult | null;
   readonly loading: boolean;
   readonly isAdmin: boolean;
+  /**
+   * 线上正在服务的 revision；仅当闸门处于 clean 态（草稿与线上一致）时非空。
+   * App 从 gate.kind 推导后传下来 —— 指纹比对的判定在 use-draft 里只算一次，
+   * 这里不重算。用 `number | null` 而不是布尔值：非 null 本身就是「已上线」
+   * 的证明，headline 和按钮说明都从它取数，不存在「clean 为真却拿不到
+   * revision」的分支可写。
+   */
+  readonly liveRevision: number | null;
   /** 触发草稿重新检查（useDraft 的 recheck，不重拉路由表）。 */
   readonly onRefresh: () => void;
   /** 打开发布弹窗；发布本身在弹窗里完成，这里不直接调 api.publish。 */
@@ -182,16 +190,29 @@ const DocumentDetails = ({ doc }: { readonly doc: unknown }) => (
   </details>
 );
 
-const PreviewOk = ({ preview }: { readonly preview: PreviewResult }) => {
+const PreviewOk = ({
+  preview,
+  liveRevision,
+}: {
+  readonly preview: PreviewResult;
+  readonly liveRevision: number | null;
+}) => {
   const dangers = Object.entries(preview.dangers ?? {});
   const shadowWarnings = preview.shadowWarnings ?? [];
   const mirrorWarnings = preview.mirrorWarnings ?? [];
   // ok 的响应按契约不该带 issues；带着就照实列出来，而不是静默吞掉。
   const issues = preview.issues ?? [];
+  const routeCount = preview.routeCount ?? 0;
 
   return (
     <div className="flex flex-col gap-6">
-      <p className="text-sm font-medium">{t.preview.routeCount(preview.routeCount ?? 0)}</p>
+      {/* 同一份文档的两种命运：liveRevision 非空是「已经在跑」，空是「还没上
+          去」。clean 蕴含 live !== null，非空分支的取值由类型保证。 */}
+      {liveRevision !== null ? (
+        <p className="text-sm font-medium">{t.preview.routeCountLive(routeCount, liveRevision)}</p>
+      ) : (
+        <p className="text-sm font-medium">{t.preview.routeCount(routeCount)}</p>
+      )}
 
       {dangers.length > 0 && (
         <section className="flex flex-col gap-2">
@@ -253,6 +274,7 @@ export const PreviewView = ({
   preview,
   loading,
   isAdmin,
+  liveRevision,
   onRefresh,
   onPublish,
   onGoRoutes,
@@ -268,7 +290,7 @@ export const PreviewView = ({
       return <PreviewEmpty onGoRoutes={onGoRoutes} />;
     }
     if (preview.ok) {
-      return <PreviewOk preview={preview} />;
+      return <PreviewOk preview={preview} liveRevision={liveRevision} />;
     }
     return <IssueAlert issues={preview.issues ?? []} />;
   })();
@@ -287,9 +309,18 @@ export const PreviewView = ({
             <Button
               size="sm"
               onClick={onPublish}
-              disabled={!isAdmin}
-              // 观察者看得见按钮但按不动，并且知道为什么 —— 藏起来只会让人以为坏了。
-              title={isAdmin ? undefined : t.publish.forbidden}
+              // clean 态没有可发布的东西：放行会原样多写一个 revision，白烧一次
+              // KV 写额度。按钮留着（配 title 说明），和观察者的处理方式一致。
+              // title 的优先级：先解释角色门槛（对所有页一致的禁用理由），再
+              // 解释内容门槛——观察者在 clean 态看到的仍是「需要管理员」。
+              disabled={!isAdmin || liveRevision !== null}
+              title={
+                !isAdmin
+                  ? t.publish.forbidden
+                  : liveRevision !== null
+                    ? t.preview.alreadyLive
+                    : undefined
+              }
             >
               <UploadIcon />
               {t.publishBar.publish}

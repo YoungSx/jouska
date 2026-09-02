@@ -101,6 +101,13 @@ export const PublishDialog = ({ open, onOpenChange, preview, onPublished }: Publ
         setConfirmed(false);
         return;
       }
+      if (error instanceof ApiError && error.code === 'already_live') {
+        // 线上已是这版内容——多半是另一标签页抢先发布过，本 tab 的 gate 陈旧。
+        // 没有可确认、可重试的事，关掉弹窗比留一个注定 409 的按钮更诚实。
+        toast.info(t.preview.alreadyLive);
+        onOpenChange(false);
+        return;
+      }
       if (error instanceof NetworkError) {
         toast.error(t.common.networkError);
         return;

@@ -105,6 +105,14 @@ export const RollbackDialog = ({
         setConfirmed(false);
         return;
       }
+      if (error instanceof ApiError && error.code === 'already_live') {
+        // 快照与线上内容一致，发布被拒——但服务端已把草稿重置为这一版，面板
+        // 必须重新拉一遍草稿，否则操作者看到的还是被丢弃前的旧内容。没有新
+        // revision，时间轴刷新只是空转，换来的草稿同步是必需的。
+        toast.info(t.history.rollback.errors.already_live);
+        onRolledBack(source.revision);
+        return;
+      }
       if (error instanceof NetworkError) {
         toast.error(t.common.networkError);
         return;

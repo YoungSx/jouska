@@ -169,8 +169,14 @@ export const PublishBar = ({
             onClick={onPublish}
             disabled={!face.actionable || !canPublish || publishing}
             // 观察者看得见这颗按钮但按不动，并且知道为什么 —— 藏起来只会让人以为
-            // 面板坏了。
-            title={canPublish ? undefined : t.publish.forbidden}
+            // 面板坏了。clean 态的说明与预览页同一句：没有可发布的东西。
+            title={
+              !canPublish
+                ? t.publish.forbidden
+                : gate.kind === 'clean'
+                  ? t.preview.alreadyLive
+                  : undefined
+            }
           >
             {publishing ? <Spinner /> : <UploadIcon />}
             {publishing ? t.publishBar.publishing : t.publishBar.publish}

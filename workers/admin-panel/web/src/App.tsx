@@ -425,6 +425,7 @@ const App = () => {
         {view === 'preview' && (
           <PreviewView
             preview={previewForPage}
+            liveRevision={draft.gate.kind === 'clean' ? draft.gate.live : null}
             loading={draft.loading}
             isAdmin={isAdmin}
             onRefresh={() => void draft.recheck()}

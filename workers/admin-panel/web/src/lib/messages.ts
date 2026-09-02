@@ -519,6 +519,11 @@ export const t = {
     refresh: '重新检查',
     refreshing: '检查中…',
     routeCount: (count: number) => `${count} 条路由将上线`,
+    // clean 态的同一行：内容已经上线，再说「将上线」就是在骗人发布。措辞对齐
+    // publishBar.cleanDetail 的「正在服务流量」。
+    routeCountLive: (count: number, revision: number) =>
+      `这 ${count} 条路由正在服务流量（revision ${revision}）`,
+    alreadyLive: '线上已是这版内容，不用再发布',
     ok: '草稿可以发布',
     documentTitle: '将写入 KV 的文档',
     documentHint: '反代在热路径上读的就是这份 JSON。',
@@ -538,7 +543,7 @@ export const t = {
     mirrorScope:
       '打开也不等于全都留得住：改写只覆盖服务端 HTML 里的 URL 与 CSS 的 url()，JS 运行时拼出来的地址、跨到另一个注册域的资源都不在范围内。',
     dangerTitle: '危险开关',
-    dangerHint: '这些字段都有正当用途，但发布时需要你亲手确认一次。',
+    dangerHint: '这些字段都有正当用途，但每次发布都需要你亲手确认一次。',
     dangerHigh: '高',
     dangerMedium: '中',
     empty: {
