@@ -6,12 +6,12 @@
 
   // Static assets: the admin SPA. `single-page-application` makes every
   // unmatched GET fall back to index.html so client-side routing works.
-  // `run_worker_first` keeps /api/* off the asset path entirely.
+  // `run_worker_first` keeps API and MCP traffic off the asset path entirely.
   "assets": {
     "directory": "./public",
     "binding": "ASSETS",
     "not_found_handling": "single-page-application",
-    "run_worker_first": ["/api/*"],
+    "run_worker_first": ["/api/*", "/mcp"],
   },
 
   // Source of truth for config, users, sessions, audit log.

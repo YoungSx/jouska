@@ -263,6 +263,29 @@ export const api = {
   domains: async (): Promise<DomainsResponse> => {
     return (await request('GET', '/api/domains')) as unknown as DomainsResponse;
   },
+
+  /* ---------- MCP 令牌 ---------- */
+
+  listMcpTokens: async (): Promise<McpTokenEntry[]> => {
+    const data = await request('GET', '/api/mcp-tokens');
+    return Array.isArray(data.tokens) ? (data.tokens as McpTokenEntry[]) : [];
+  },
+
+  createMcpToken: async (input: {
+    name: string;
+    scopes: readonly string[];
+    expiresInDays: number;
+  }): Promise<McpTokenCreated> => {
+    const data = await request('POST', '/api/mcp-tokens', input);
+    return {
+      token: typeof data.token === 'string' ? data.token : '',
+      tokenInfo: data.tokenInfo as McpTokenEntry,
+    };
+  },
+
+  revokeMcpToken: async (id: string, reason?: string): Promise<void> => {
+    await request('DELETE', `/api/mcp-tokens/${encodeURIComponent(id)}`, reason ? { reason } : {});
+  },
 };
 
 /* ---------- 服务端返回的形状 ---------- */
@@ -429,4 +452,25 @@ export interface DomainsResponse {
    * 那时每条路由都会显得没匹配，是虚假警报。
    */
   readonly unmatchedRouteHosts?: readonly { readonly routeId: string; readonly host: string }[];
+}
+
+export type McpScope = 'config:read' | 'config:write' | 'domains:read' | 'audit:read';
+
+export interface McpTokenEntry {
+  readonly id: string;
+  readonly name: string;
+  readonly tokenPrefix: string;
+  readonly ownerUserId?: number;
+  readonly issuedByUserId?: number;
+  readonly scopes: readonly McpScope[];
+  readonly createdAt: number;
+  readonly expiresAt: number;
+  readonly revokedAt: number | null;
+  readonly revokeReason: string | null;
+  readonly lastUsedAt: number | null;
+}
+
+export interface McpTokenCreated {
+  readonly token: string;
+  readonly tokenInfo: McpTokenEntry;
 }

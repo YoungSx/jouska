@@ -6,6 +6,7 @@
  */
 import type { RouteRow } from './compile.js';
 import { CORRUPT, parseJsonSafe } from './validate.js';
+import type { McpScope } from './mcp-token.js';
 
 const nowSeconds = (): number => Math.floor(Date.now() / 1000);
 
@@ -665,4 +666,168 @@ export const restoreDraftFromSnapshot = async (
     settingStmt(db, 'defaults', defaults ?? null),
   );
   await db.batch(statements);
+};
+export interface McpTokenListEntry {
+  readonly id: string;
+  readonly name: string;
+  readonly tokenPrefix: string;
+  readonly ownerUserId: number;
+  readonly issuedByUserId: number;
+  readonly scopes: readonly McpScope[];
+  readonly createdAt: number;
+  readonly expiresAt: number;
+  readonly revokedAt: number | null;
+  readonly revokeReason: string | null;
+  readonly lastUsedAt: number | null;
+}
+
+export interface McpTokenAuth {
+  readonly id: string;
+  readonly subject: string;
+  readonly userId: number;
+  readonly scopes: readonly McpScope[];
+  readonly tokenPrefix: string;
+}
+
+const parseScopesColumn = (raw: string): McpScope[] => {
+  try {
+    const value: unknown = JSON.parse(raw);
+    if (!Array.isArray(value)) return [];
+    return value.filter(
+      (entry): entry is McpScope =>
+        entry === 'config:read' ||
+        entry === 'config:write' ||
+        entry === 'domains:read' ||
+        entry === 'audit:read',
+    );
+  } catch {
+    return [];
+  }
+};
+
+export const listMcpTokens = async (db: D1Database): Promise<McpTokenListEntry[]> => {
+  const { results } = await db
+    .prepare(
+      `SELECT id, name, token_prefix, owner_user_id, issued_by_user_id, scopes,
+              created_at, expires_at, revoked_at, revoke_reason, last_used_at
+       FROM mcp_tokens ORDER BY created_at DESC, id DESC`,
+    )
+    .all<{
+      id: string;
+      name: string;
+      token_prefix: string;
+      owner_user_id: number;
+      issued_by_user_id: number;
+      scopes: string;
+      created_at: number;
+      expires_at: number;
+      revoked_at: number | null;
+      revoke_reason: string | null;
+      last_used_at: number | null;
+    }>();
+  return results.map((row) => ({
+    id: row.id,
+    name: row.name,
+    tokenPrefix: row.token_prefix,
+    ownerUserId: row.owner_user_id,
+    issuedByUserId: row.issued_by_user_id,
+    scopes: parseScopesColumn(row.scopes),
+    createdAt: row.created_at,
+    expiresAt: row.expires_at,
+    revokedAt: row.revoked_at,
+    revokeReason: row.revoke_reason,
+    lastUsedAt: row.last_used_at,
+  }));
+};
+
+export const insertMcpToken = async (
+  db: D1Database,
+  token: {
+    readonly id: string;
+    readonly hash: string;
+    readonly prefix: string;
+    readonly name: string;
+    readonly ownerUserId: number;
+    readonly issuedByUserId: number;
+    readonly scopes: readonly McpScope[];
+    readonly createdAt: number;
+    readonly expiresAt: number;
+  },
+): Promise<void> => {
+  await db
+    .prepare(
+      `INSERT INTO mcp_tokens
+       (id, token_hash, token_prefix, name, owner_user_id, issued_by_user_id, scopes, created_at, expires_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    )
+    .bind(
+      token.id,
+      token.hash,
+      token.prefix,
+      token.name,
+      token.ownerUserId,
+      token.issuedByUserId,
+      JSON.stringify(token.scopes),
+      token.createdAt,
+      token.expiresAt,
+    )
+    .run();
+};
+
+export const revokeMcpToken = async (
+  db: D1Database,
+  id: string,
+  revokedByUserId: number,
+  at: number,
+  reason: string | null,
+): Promise<boolean> => {
+  const result = await db
+    .prepare(
+      `UPDATE mcp_tokens SET revoked_at = ?, revoked_by_user_id = ?, revoke_reason = ?
+       WHERE id = ? AND revoked_at IS NULL`,
+    )
+    .bind(at, revokedByUserId, reason, id)
+    .run();
+  return (result.meta?.changes ?? 0) > 0;
+};
+
+export const resolveMcpToken = async (
+  db: D1Database,
+  hash: string,
+  now: number,
+): Promise<McpTokenAuth | undefined> => {
+  const row = await db
+    .prepare(
+      `SELECT t.id, t.token_prefix, t.scopes, u.id AS user_id, u.subject
+       FROM mcp_tokens t JOIN users u ON u.id = t.owner_user_id
+       WHERE t.token_hash = ? AND t.revoked_at IS NULL AND t.expires_at > ? AND u.disabled = 0`,
+    )
+    .bind(hash, now)
+    .first<{
+      id: string;
+      token_prefix: string;
+      scopes: string;
+      user_id: number;
+      subject: string;
+    }>();
+  if (row === null) return undefined;
+  const scopes = parseScopesColumn(row.scopes);
+  if (scopes.length === 0) return undefined;
+  return {
+    id: row.id,
+    tokenPrefix: row.token_prefix,
+    scopes,
+    userId: row.user_id,
+    subject: row.subject,
+  };
+};
+
+export const touchMcpToken = async (db: D1Database, id: string, at: number): Promise<void> => {
+  await db
+    .prepare(
+      `UPDATE mcp_tokens SET last_used_at = ?
+       WHERE id = ? AND (last_used_at IS NULL OR last_used_at < ?)`,
+    )
+    .bind(at, id, at - 15 * 60)
+    .run();
 };

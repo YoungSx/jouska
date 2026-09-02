@@ -142,7 +142,7 @@ const domains = async (appEnv: AppEnv, cookie: string): Promise<DomainsResponse>
 
 beforeEach(async () => {
   await applyD1Migrations(testEnv.DB, TEST_MIGRATIONS);
-  for (const table of ['audit_log', 'sessions', 'routes', 'settings', 'users']) {
+  for (const table of ['audit_log', 'sessions', 'routes', 'settings', 'mcp_tokens', 'users']) {
     await testEnv.DB.prepare(`DELETE FROM ${table}`).run();
   }
   __resetDomainCache();

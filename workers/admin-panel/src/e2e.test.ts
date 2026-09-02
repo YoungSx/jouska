@@ -119,7 +119,7 @@ describe('admin panel end-to-end', () => {
     await applyD1Migrations(testEnv.DB, TEST_MIGRATIONS);
     // Fresh slate for every case: remove what earlier cases (or earlier
     // migrations applied to a live database) may have left behind.
-    for (const table of ['audit_log', 'sessions', 'routes', 'settings', 'users']) {
+    for (const table of ['audit_log', 'sessions', 'routes', 'settings', 'mcp_tokens', 'users']) {
       await testEnv.DB.prepare(`DELETE FROM ${table}`).run();
     }
     // D1 is not the only durable state: publish writes KV, and a leftover

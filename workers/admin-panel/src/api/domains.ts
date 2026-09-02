@@ -182,24 +182,18 @@ const credentialsFrom = (
 
 export const domainRoutes = new Hono<AppEnv>();
 
-/**
- * Bound hostnames, cross-referenced against the route table.
- *
- * Readable by any signed-in user: it exposes hostnames, which are public by
- * construction — they are what the proxy answers on. The token that reads them
- * is never part of the response.
- */
-domainRoutes.get('/domains', async (c) => {
-  const credentials = credentialsFrom(c.env);
+/** Bound hostnames, cross-referenced against the route table. */
+export const discoverDomains = async (env: Env, db: D1Database): Promise<DomainsResponse> => {
+  const credentials = credentialsFrom(env);
   const script =
-    typeof c.env.PROXY_SCRIPT_NAME === 'string' && c.env.PROXY_SCRIPT_NAME.trim() !== ''
-      ? c.env.PROXY_SCRIPT_NAME.trim()
+    typeof env.PROXY_SCRIPT_NAME === 'string' && env.PROXY_SCRIPT_NAME.trim() !== ''
+      ? env.PROXY_SCRIPT_NAME.trim()
       : DEFAULT_PROXY_SCRIPT;
 
   if (!credentials.ok) {
     // Not an error: a deployment without the token is a supported deployment,
     // and every other screen works. The UI explains rather than alarms.
-    return c.json<DomainsResponse>({ configured: false, reason: credentials.reason, script });
+    return { configured: false, reason: credentials.reason, script };
   }
 
   // NUL separates the parts because it cannot occur in an account id, a script
@@ -208,7 +202,7 @@ domainRoutes.get('/domains', async (c) => {
   // git treat the file as binary, and the diff for this file disappears.
   const key = `${credentials.accountId}\u0000${script}\u0000${credentials.apiToken}`;
   const now = Date.now();
-  const fetchImpl = (c.env as Env & DiscoveryOverrides).CF_API_FETCH;
+  const fetchImpl = (env as Env & DiscoveryOverrides).CF_API_FETCH;
   let result: DiscoveryResult;
   if (cache !== undefined && cache.key === key && now - cache.at < CACHE_TTL_MS) {
     result = cache.result;
@@ -221,7 +215,7 @@ domainRoutes.get('/domains', async (c) => {
     cache = { key, at: now, result };
   }
 
-  const routes = routeHosts(await listAllRoutes(c.env.DB));
+  const routes = routeHosts(await listAllRoutes(db));
   const hosts: HostBinding[] = result.hosts.map((host) => ({
     ...host,
     // A route with no `match.host` matches every host, so it claims this one
@@ -248,12 +242,18 @@ domainRoutes.get('/domains', async (c) => {
     .filter((route) => !result.hosts.some((host) => hostSatisfies(route.host, host.host)))
     .map((route) => ({ routeId: route.routeId, host: route.host }));
 
-  return c.json<DomainsResponse>({
+  return {
     configured: true,
     script,
     hosts,
     ...(result.failures.length > 0 ? { failures: result.failures } : {}),
     ...(result.skippedZones === undefined ? {} : { skippedZones: result.skippedZones }),
     ...(comparisonIsBlind ? {} : { unmatchedRouteHosts }),
-  });
-});
+  };
+};
+
+/**
+ * Readable by signed-in users and by MCP tokens with `domains:read`.
+ * The Cloudflare credential is never part of the response.
+ */
+domainRoutes.get('/domains', async (c) => c.json(await discoverDomains(c.env, c.env.DB)));
