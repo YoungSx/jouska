@@ -167,12 +167,50 @@ describe('guard config', () => {
     ).toThrow();
   });
 
+  it('rejects an access block guarding nothing', () => {
+    expect(() =>
+      defineConfig({ routes: [{ match: { path: '/a' }, upstream: 'o.test', access: {} }] }),
+    ).toThrow();
+  });
+
+  it('rejects an access key that is not a 64-character hex digest', () => {
+    expect(() =>
+      defineConfig({
+        // A raw key must never reach the config — only its SHA-256 digest does.
+        routes: [{ match: { path: '/a' }, upstream: 'o.test', access: { keys: ['hunter2'] } }],
+      }),
+    ).toThrow();
+  });
+
+  it('rejects a Cloudflare Access team name that could not be a subdomain', () => {
+    expect(() =>
+      defineConfig({
+        routes: [
+          {
+            match: { path: '/a' },
+            upstream: 'o.test',
+            access: { cloudflare: { team: '../evil', audience: 'app' } },
+          },
+        ],
+      }),
+    ).toThrow();
+  });
+
+  it('requires an audience when Cloudflare Access is configured', () => {
+    expect(() =>
+      defineConfig({
+        routes: [{ match: { path: '/a' }, upstream: 'o.test', access: { cloudflare: { team: 'acme' } } }],
+      }),
+    ).toThrow();
+  });
+
   it('leaves guards undefined when not configured', () => {
     const route = defineConfig({ routes: [{ match: { path: '/a' }, upstream: 'o.test' }] })
       .routes[0]!;
     expect(route.cors).toBeUndefined();
     expect(route.ip).toBeUndefined();
     expect(route.rateLimit).toBeUndefined();
+    expect(route.access).toBeUndefined();
   });
 });
 

@@ -22,6 +22,7 @@ What it does own is the proxying itself:
 | Streaming body rewriting                        | `src/internal/body.ts`           |
 | Upstream response caching                       | `src/internal/response-cache.ts` |
 | Geo, IP and rate-limit guards                   | `src/internal/guards.ts`         |
+| Access control (CF Access JWT, API keys)        | `src/internal/access.ts`         |
 | Config schema, normalisation and validation     | `src/config.ts`                  |
 
 ## Install
@@ -99,6 +100,7 @@ Routes are evaluated in order and the first match wins.
 | `cors`                 | off      | CORS handling; see Guards.                                            |
 | `ip`                   | off      | IP allow/deny rules; see Guards.                                      |
 | `rateLimit`            | off      | Rate limiting via the native binding; see Guards.                     |
+| `access`               | off      | Route-level identity checks (Cloudflare Access JWT, API keys); see Guards. |
 
 A `defaults` block at the top of the table supplies any of the behavioural
 fields for every route that does not state its own, so a table of twenty routes
@@ -628,7 +630,8 @@ allowance — it runs out sooner than KV does.
 
 Guards run cheapest-first, so a request that will be refused never reaches the
 upstream: country and IP checks are local, rate limiting costs one binding call,
-forwarding costs a network round trip.
+access control costs crypto (and, on a cold JWKS, a fetch), forwarding costs a
+network round trip.
 
 `cors` accepts `origins`, `allowMethods`, `allowHeaders`, `exposeHeaders`,
 `credentials`, and `maxAge`. Omitting `origins` reflects whatever origin the
@@ -703,6 +706,68 @@ count passes the limit; the client receives 413. Bytes already handed to
 size is refused earlier, before anything is sent. Counting only ever delays
 bytes through a pass-through transform, so the memory cost is one chunk either
 way — the 128MB ceiling is never approached by body size.
+
+### Access control
+
+The other guards answer "where from, how fast". `access` answers "who", with two
+mechanisms that both have to pass when both are configured:
+
+```ts
+{
+  match: { path: '/admin/*' },
+  upstream: 'internal.example.com',
+  access: {
+    cloudflare: { team: 'acme', audience: 'xyz.access', emails: ['ops@example.com'] },
+    keys: ['<64-hex SHA-256 of the key>'],
+  },
+}
+```
+
+**Prefer the platform first.** Cloudflare Access can protect an entire hostname
+in front of this Worker — identity is then verified before any of this code runs,
+costing the request nothing. Route-level `access` is the fallback for the case
+where whole-host protection does not fit: one hostname serving both a public
+mirror and a private admin path.
+
+**`cloudflare`** verifies the `Cf-Access-Jwt-Assertion` header Cloudflare Access
+attaches to requests it has already authenticated. The JWT is checked against the
+team's published JWKS (`https://{team}.cloudflareaccess.com/cdn-cgi/access/certs`,
+fetched once per isolate and cached for an hour), its signature is verified as
+RS256, and only then are its claims read: `exp` and `nbf` must hold, `aud` must
+equal `audience`, and when `emails` is set the token's email must be listed. The
+`team` name's shape is pinned by the schema, so the JWKS URL can only ever name a
+`cloudflareaccess.com` host.
+
+**`keys`** takes SHA-256 hex digests, never raw keys — a leaked config must not
+be a key ring. Present the key as `Authorization: Bearer <key>` (or in the header
+named by `access.header`, raw). Digested keys are compared in constant time; the
+key itself is high-entropy, so the digest needs no salt, matching how the admin
+panel stores its own MCP tokens.
+
+Every refusal is final — the request never reaches the upstream — and the status
+says which thing failed:
+
+| Status | Meaning                                                        |
+| ------ | -------------------------------------------------------------- |
+| `401`  | No usable credential: missing, malformed, expired, wrong key.  |
+| `403`  | A valid credential that does not grant this route (`aud`, email). |
+| `503`  | The verification material (JWKS) could not be obtained — fail closed. |
+
+Credentials are length-capped before any parsing or hashing (512 characters for
+keys, 4096 for JWTs), because the cap costs one comparison while an oversized
+credential is a CPU bill — on the same ordering principle that puts this guard
+after rate limiting. Verification runs last among the guards: a request the
+geo, IP or rate limiter would refuse never pays for crypto, so an
+unauthenticated caller cannot turn the route into a CPU amplifier.
+
+Generate a key and its digest in one line:
+
+```sh
+openssl rand -base64 32 | tee /dev/stderr | sha256sum
+```
+
+The base64 key on stderr is shown once — hand it to the caller; the hex digest
+on stdout goes into `access.keys`.
 
 ## Response caching
 

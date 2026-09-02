@@ -498,3 +498,63 @@ describe('RouteEditor 字面替换（issue #38）', () => {
     expect(await saveDraft(user)).not.toHaveProperty('bodyRewrite.replace');
   });
 });
+
+/**
+ * 访问控制这一段（issue #34）。
+ *
+ * 焊住三件事：
+ * 1. 段的存在就是开关状态，与 cors/ip 同一套语义；CF 子表单的 team/audience
+ *    要能一路落进草稿。
+ * 2. keys 输入框粘哈希就地警示 —— 「存的是哈希不是 key 本身」必须发生在按下
+ *    之前，而不是发布被服务端拦下之后。
+ * 3. 关掉整段就不留空壳：`access: {}` 过不了 schema（两种机制至少配一种），
+ *    留在草稿里只会把错误推迟到发布前才被人看见。
+ */
+describe('RouteEditor 访问控制（issue #34）', () => {
+  const DIGEST = 'a'.repeat(64);
+
+  beforeEach(() => {
+    vi.spyOn(api, 'domains').mockResolvedValue(configured([]));
+    vi.spyOn(api, 'putRoute').mockResolvedValue(undefined);
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('开启 CF 校验：team 与 audience 落进草稿', async () => {
+    const user = userEvent.setup();
+    renderEditor();
+
+    await user.click(screen.getByRole('switch', { name: '身份验证（你是谁）' }));
+    await user.click(screen.getByRole('switch', { name: '校验 Cloudflare Access 的 JWT' }));
+    await user.type(screen.getByLabelText('team 名'), 'acme');
+    await user.type(screen.getByLabelText('audience（AUD tag）'), 'app-aud');
+
+    expect(await saveDraft(user)).toMatchObject({
+      access: { cloudflare: { team: 'acme', audience: 'app-aud' } },
+    });
+  });
+
+  it('粘哈希进 keys：警示就地出现，草稿存的就是这串哈希', async () => {
+    const user = userEvent.setup();
+    renderEditor();
+
+    await user.click(screen.getByRole('switch', { name: '身份验证（你是谁）' }));
+    await user.type(screen.getByLabelText('API key 的 SHA-256 哈希'), DIGEST);
+
+    expect(screen.getByRole('alert')).toHaveTextContent('哈希，不是 key 本身');
+    expect(await saveDraft(user)).toMatchObject({ access: { keys: [DIGEST] } });
+  });
+
+  it('关掉身份验证整段消失，草稿里不留过不了 schema 的空壳', async () => {
+    const user = userEvent.setup();
+    renderEditor(true, { upstream: 'origin.example.com', access: { keys: [DIGEST] } });
+
+    const access = screen.getByRole('switch', { name: '身份验证（你是谁）' });
+    expect(access).toBeChecked();
+    await user.click(access);
+
+    expect(await saveDraft(user)).not.toHaveProperty('access');
+  });
+});

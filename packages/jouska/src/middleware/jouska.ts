@@ -9,6 +9,7 @@ import {
   type ContentType,
   type Replacement,
 } from '../internal/body.js';
+import { checkAccess } from '../internal/access.js';
 import { BodyLimitError, forward } from '../internal/forward.js';
 import { checkRateLimit, corsMiddleware, ipMiddleware } from '../internal/guards.js';
 import {
@@ -215,7 +216,8 @@ export const jouska = ({
 
     // Guards run cheapest-first, so a request that will be refused never
     // reaches the upstream. Geo and IP are local checks; rate limiting costs a
-    // binding call; forwarding costs a network round trip.
+    // binding call; access control costs crypto (and, on a cold JWKS, a fetch);
+    // forwarding costs a network round trip.
     const report: Report = (
       status,
       outcome,
@@ -332,6 +334,21 @@ export const jouska = ({
         }
         report(500, 'refused', 0);
         return c.json({ error: 'rate_limit_misconfigured', binding: route.rateLimit.binding }, 500);
+      }
+    }
+
+    if (route.access !== undefined) {
+      // Last guard, deliberately. Crypto costs CPU, and a JWKS fetch costs a
+      // round trip; running the local and binding-backed checks first means a
+      // request that geo, IP or the rate limiter would refuse never pays for
+      // either. Without that ordering, an unauthenticated caller could reach
+      // the signature verification on every request — a CPU amplifier with
+      // nothing between it and the internet but the length caps.
+      const verdict = await checkAccess(route.access, c.req.raw, fetchImpl ?? fetch);
+      if (!verdict.ok) {
+        const status = verdict.status;
+        report(status, 'refused', 0);
+        return c.json({ error: `access_${verdict.reason}` }, status);
       }
     }
 

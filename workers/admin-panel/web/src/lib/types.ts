@@ -62,6 +62,22 @@ export interface RateLimitRules {
   countPreflight?: boolean;
 }
 
+/**
+ * 路由级访问控制。对齐 `packages/jouska/src/config.ts` 的 access 块：cloudflare
+ * 与 keys 至少要有一个（空块守不住任何东西），这个交叉检查在服务端执行。
+ *
+ * keys 存的是 SHA-256 hex 哈希，key 本身从不进配置 —— 前端同样不收明文。
+ */
+export interface AccessRules {
+  cloudflare?: {
+    team?: string;
+    audience?: string;
+    emails?: string[];
+  };
+  keys?: string[];
+  header?: string;
+}
+
 /** 一个方向上的声明式头规则：写哪些、删哪些。 */
 export interface HeaderRules {
   set?: Record<string, string>;
@@ -127,6 +143,7 @@ export interface RouteDefinition {
   cors?: CorsRules;
   ip?: IpRules;
   rateLimit?: RateLimitRules;
+  access?: AccessRules;
   [key: string]: unknown;
 }
 
@@ -256,6 +273,7 @@ export const FORM_COVERED_KEYS: readonly string[] = [
   'cors',
   'ip',
   'requestPolicy',
+  'access',
 ];
 
 /**
@@ -272,6 +290,7 @@ export const DANGEROUS_PATHS = new Set([
   'bodyRewrite.fallbackCharset',
   'ip.allow',
   'ip.deny',
+  'access.keys',
   'upstreamHeaders',
   'requestHeaders.set',
   'requestHeaders.remove',
@@ -293,6 +312,8 @@ export const DANGER_REASONS: Record<string, string> = {
   'bodyRewrite.fallbackCharset': '用错的字符集解码会把响应体弄坏；猜错比不改写更糟。',
   'ip.allow': 'allow 列表写错一个字符，就会放进本想排除的地址。',
   'ip.deny': 'deny 列表写错一个字符，就会挡掉正常的调用方。',
+  'access.keys':
+    '这里要粘的是 key 的 SHA-256 哈希，不是 key 本身。粘错了真 key 的主人从此被挡在门外，而哈希对应的明文从此属于粘上来的人。',
   upstreamHeaders: '这些头会原样发给上游。凭据类或身份伪装类的头写在这里等于交给第三方。',
   'requestHeaders.set': '这些头会原样发给上游。凭据类或身份伪装类的头写在这里等于交给第三方。',
   'requestHeaders.remove': '删掉 cookie 或 authorization，上游的会话和认证会静默失效。',

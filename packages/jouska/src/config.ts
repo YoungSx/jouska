@@ -510,6 +510,67 @@ const requestPolicy = z.object({
 });
 
 /**
+ * Per-route access control: who is allowed, answered by cryptographic proof
+ * rather than by where the request came from.
+ *
+ * The platform-first recommendation lives in the README: Cloudflare Access on
+ * the Worker's hostname authenticates *before* this code runs, and a route
+ * cannot beat that. This block exists for the hostname that cannot take a
+ * zone-wide Access application — one proxy serving both public and internal
+ * routes.
+ *
+ * Two mechanisms, usable alone or together. A request must satisfy every one
+ * that is configured.
+ *
+ * Keys are stored as SHA-256 digests, so the key itself never enters the
+ * document the panel displays and KV persists — the same shape as the panel's
+ * own `mcp_tokens.token_hash`. No salt, deliberately: a key worth protecting is
+ * a high-entropy random value, so a rainbow table has nothing to chew on, and a
+ * salt would have to live beside the digest in the same readable document
+ * anyway.
+ */
+const access = z
+  .object({
+    /**
+     * Verify a Cloudflare Access JWT. `team` is the subdomain of
+     * `cloudflareaccess.com`; the JWKS URL is built from it and can never point
+     * anywhere else. `audience` is the Access application's AUD tag and is
+     * required: a token signed by the right team for the wrong application is
+     * refused, not merely unverified.
+     */
+    cloudflare: z
+      .object({
+        team: z
+          .string()
+          .regex(/^[a-z0-9][a-z0-9-]{0,62}[a-z0-9]$/, 'expected a Cloudflare Access team name'),
+        audience: z.string().min(1),
+        /** When set, an authenticated identity outside this list is refused. */
+        emails: z.array(z.string().email()).nonempty().optional(),
+      })
+      .optional(),
+    /** SHA-256 digests (hex) of accepted API keys. */
+    keys: z
+      .array(z.string().regex(/^[0-9a-f]{64}$/, 'expected a 64-character hex SHA-256 digest'))
+      .nonempty()
+      .optional(),
+    /**
+     * Where the API key arrives. Defaults to `authorization`, read past a
+     * `Bearer ` prefix; a custom header's raw value is the key. Validated as an
+     * RFC 9110 token so a bad name fails at config load rather than at the
+     * first request that needed it. Inline rather than the shared `headerName`:
+     * that schema is declared further down, and hoisting it would reorder a
+     * file whose reading order is deliberate.
+     */
+    header: z
+      .string()
+      .regex(/^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/, 'expected a valid HTTP header name (RFC 9110 token)')
+      .optional(),
+  })
+  .refine((a) => a.cloudflare !== undefined || a.keys !== undefined, {
+    message: 'access needs at least one of cloudflare or keys — an empty block guards nothing',
+  });
+
+/**
  * ISO 3166-1 alpha-2 country code, uppercased.
  *
  * Cloudflare reports `cf.country` in uppercase, plus `T1` for Tor. Normalising
@@ -882,6 +943,8 @@ const routeBehaviour = {
   ip: ipRules.optional(),
   /** Rate limiting via the native Cloudflare binding. Omit to disable. */
   rateLimit: rateLimit.optional(),
+  /** Identity checks: Cloudflare Access JWT and/or API key. Omit to admit every caller. */
+  access: access.optional(),
 } as const;
 
 const route = z.object({
@@ -981,6 +1044,7 @@ const defaults = z
     requestPolicy: routeBehaviour.requestPolicy,
     ip: routeBehaviour.ip,
     rateLimit: routeBehaviour.rateLimit,
+    access: routeBehaviour.access,
   })
   .optional();
 
@@ -1409,6 +1473,7 @@ export type Route = RouteOutput;
 export type ConfigMeta = z.output<typeof meta>;
 export type CorsConfig = z.output<typeof cors>;
 export type RateLimitConfig = z.output<typeof rateLimit>;
+export type AccessConfig = z.output<typeof access>;
 export type BodyRewriteConfig = z.output<typeof bodyRewrite>;
 export type CacheConfig = z.output<typeof cache>;
 export type RequestPolicyConfig = z.output<typeof requestPolicy>;

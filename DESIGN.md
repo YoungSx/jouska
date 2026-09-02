@@ -264,6 +264,7 @@ components:
 - Input/Textarea/Select：`border-input` + rounded-lg，深色下 `bg-input/30` 系底色（nova 原样）；focus 转环。
 - **Error:** JSON 校验失败用 12px 文案就地说明（「JSON 格式不对」），组件不上 destructive 描边，除非 aria-invalid 生效。
 - 字符数上限就地提示（如发布备注 500 字），由 `maxLength` 硬约束。
+- 字段旁的就地警示（如 `access.keys` 要的是哈希不是明文）沿用 ip 段的 DangerNote 模式：Switch 开着且字段有值时才出现，说清后果不吓人。
 
 ### Navigation
 
