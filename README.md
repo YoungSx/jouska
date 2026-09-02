@@ -526,6 +526,44 @@ observability must not be able to fail a request.
 A guard refusal is reported with `attempts: 0`, so the share of traffic turned
 away before costing a round trip is visible without inferring it.
 
+### Reference receivers
+
+The reference Worker (`workers/reverse-proxy`) makes that decision once so you
+don't have to. Both receivers live in one file, `observability.ts`, are optional
+and deletable, and are a no-op when nothing is configured:
+
+- **Analytics Engine** — bind `ANALYTICS` and every proxied request writes one
+  data point: `routeId` as the index, blobs `[upstream, method, outcome]`,
+  doubles `[status, durationMs, attempts]`. Per-route latency percentiles,
+  4xx/5xx and timeout rates are then plain SQL over the dataset:
+
+  ```sql
+  SELECT index AS route_id,
+    quantile(0.5)(double2) AS p50, quantile(0.95)(double2) AS p95,
+    quantile(0.99)(double2) AS p99,
+    countIf(double1 >= 400) / count() AS error_rate,
+    countIf(blob3 = 'timeout') / count() AS timeout_rate
+  FROM jouska
+  WHERE timestamp > NOW() - INTERVAL '1' HOUR
+  GROUP BY route_id
+  ```
+
+- **Workers Logs** — set `ACCESS_LOGS: "true"` (the reference config does) and
+  every proxied request emits one structured JSON line via `console.info`,
+  which Workers Logs collects because the deployment has `observability`
+  enabled.
+
+Two properties the receivers guarantee, because the library's contract forces
+them. `onProxy` throws are swallowed, so each receiver catches its own errors:
+the failing receiver reports once and disables itself, degrading to silence
+rather than failing requests or logging per hit. And cardinality is bounded:
+Analytics Engine groups only by `routeId`, never `path` — a mirror site serving
+arbitrary URLs would otherwise grow dimensions without limit — while the log
+line carries a truncated `path` (Workers Logs caps and samples lines, a metrics
+dimension cannot be un-capped). Neither receiver holds the response:
+`writeDataPoint` and `console.*` are synchronous and buffered by the runtime;
+a receiver that does real async I/O is the one that needs `ctx.waitUntil`.
+
 ## Errors
 
 | Status | Meaning                                                         |
