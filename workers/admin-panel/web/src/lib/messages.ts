@@ -350,6 +350,31 @@ export const t = {
       label: 'HTTP 方法',
       help: '不选表示所有方法都匹配。',
     },
+    matchConditions: {
+      label: '条件',
+      help:
+        '按请求头、查询参数或 cookie 再往细里分流量：所有条件都满足才算命中，想「或」就写两条路由，排在前面的先中。' +
+        '值区分大小写——`X-Env: Prod` 和 `prod` 是两个值；请求头的名字不区分大小写，查询参数和 cookie 的名字区分。' +
+        '这是路由不是验证：任何人都能自己发 `X-Internal: 1`，别拿它当访问控制。',
+      add: '加条件',
+      family: '条件类型',
+      familyHeader: '请求头',
+      familyQuery: '查询参数',
+      familyCookie: 'cookie',
+      name: '名称',
+      nameHeader: '头名，如 X-Env',
+      nameQuery: '参数名，如 debug',
+      nameCookie: 'cookie 名，如 beta',
+      op: '匹配方式',
+      opEquals: '值等于',
+      opPrefix: '值开头是',
+      opPresent: '存在',
+      opAbsent: '不存在',
+      value: '值',
+      valueHidden: '这条只看名字，不用填值',
+      removeRow: '删除这条条件',
+      conditionError: '有的条件还没写完：名称不能空，选「值开头是」时值也不能空。',
+    },
     upstream: {
       label: 'upstream',
       placeholder: 'origin.example.com',
@@ -558,6 +583,7 @@ export const t = {
     shadowHint: '顺序在前的路由已经把这些流量收走了，被遮蔽的那条永远不会执行。',
     shadowLine: (shadowed: string, by: string) => `${shadowed} 收不到流量，被 ${by} 抢先匹配`,
     shadowProbe: (probe: string) => `证据：${probe}`,
+    shadowProbeHeaders: (headers: string) => `证据请求携带的头：${headers}`,
     mirrorTitle: '整站代理，但没开正文改写',
     mirrorHint:
       '转发没坏，是改写没开：上游 HTML 里的绝对链接会把访客直接带回上游。要留住站内导航，去那条路由的「响应改写」里打开「改写响应体」。',
@@ -565,6 +591,12 @@ export const t = {
       `${routeId} 把整站代理过来，页面里指向 ${upstream} 的绝对链接会把访客带走`,
     mirrorScope:
       '打开也不等于全都留得住：改写只覆盖服务端 HTML 里的 URL 与 CSS 的 url()，JS 运行时拼出来的地址、跨到另一个注册域的资源都不在范围内。',
+    cacheVaryTitle: '缓存会按请求值分开存',
+    cacheVaryHint: '这些路由开了缓存，条件又用到了请求头或 cookie，每种取值都会各存一条缓存。',
+    cacheVaryLine: (routeId: string, names: string) =>
+      `${routeId} 的缓存键会随 ${names} 的取值变化`,
+    cacheVaryScope:
+      '正确性不受影响——键里折进请求值，就是为了不让一个分支的缓存发给另一个分支；代价是命中率。查询参数不在此列，它本来就在 URL 里。',
     dangerTitle: '危险开关',
     dangerHint: '这些字段都有正当用途，但每次发布都需要你亲手确认一次。',
     dangerHigh: '高',

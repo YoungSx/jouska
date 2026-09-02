@@ -1,4 +1,5 @@
 import type { Config, Route } from './config.js';
+import { readCookie } from './internal/cookies.js';
 
 /**
  * Splits an upstream string into its authority and base path.
@@ -69,6 +70,72 @@ const pathMatches = (prefix: string, path: string): boolean => {
   }
   const rest = path.slice(prefix.length);
   return rest === '' || rest.startsWith('/') || prefix.endsWith('/');
+};
+
+/**
+ * Whether a value condition holds, for any family that reads a value out of the
+ * request. `present` does not consult the value at all: an empty value is a
+ * value, so `present: true` matches `X-Foo:` and only an absent name satisfies
+ * `present: false`.
+ */
+const valueConditionHolds = (
+  condition: { equals?: string; prefix?: string; present?: boolean },
+  value: string | undefined,
+): boolean => {
+  if (condition.present !== undefined) {
+    return condition.present ? value !== undefined : value === undefined;
+  }
+  if (value === undefined) {
+    return false;
+  }
+  if (condition.equals !== undefined) {
+    return value === condition.equals;
+  }
+  return value.startsWith(condition.prefix!);
+};
+
+/**
+ * Whether a route's `match` conditions on headers, query and cookies all hold.
+ *
+ * Within and across the three families everything is AND. OR is expressed by
+ * writing two routes — the table is ordered and first match wins, so a route
+ * per branch is the honest spelling of "either".
+ *
+ * Header values come from `Headers.get`, which per the fetch spec is the
+ * combined value: repeated headers arrive as one comma-joined string. The same
+ * applies to `searchParams.get` and `readCookie` — each family reads the first
+ * value under the name. Matching on a repeated name is therefore a match
+ * against its first occurrence, which the README states rather than leaves to
+ * be discovered.
+ */
+const conditionsHold = (route: Route, url: URL, headers: Headers): boolean => {
+  const { headers: headerConditions, query, cookies } = route.match;
+  if (headerConditions !== undefined) {
+    for (const condition of headerConditions) {
+      const value = headers.get(condition.name);
+      if (!valueConditionHolds(condition, value === null ? undefined : value)) {
+        return false;
+      }
+    }
+  }
+  if (query !== undefined) {
+    for (const condition of query) {
+      const value = url.searchParams.get(condition.name);
+      if (!valueConditionHolds(condition, value === null ? undefined : value)) {
+        return false;
+      }
+    }
+  }
+  if (cookies !== undefined) {
+    const cookieHeader = headers.get('cookie');
+    for (const condition of cookies) {
+      const value = cookieHeader === null ? undefined : readCookie(cookieHeader, condition.name);
+      if (!valueConditionHolds(condition, value)) {
+        return false;
+      }
+    }
+  }
+  return true;
 };
 
 /**
@@ -208,8 +275,18 @@ const stripMatchedPrefix = (path: string, prefix: string): string => {
  * Host is read from `url.hostname` (not the `Host` header) and compared
  * case-insensitively, without its port. Reading the URL rather than the
  * header prevents a forged `Host` from selecting a different route.
+ *
+ * The request headers are required rather than optional. A route may match on
+ * them, so a caller that cannot supply real headers must say so with an empty
+ * `Headers` rather than have conditions silently treated as unmet — which
+ * would turn a header-qualified route into one that matches nothing.
  */
-export const matchUrl = (config: Config, url: URL, method: string): Match | undefined => {
+export const matchUrl = (
+  config: Config,
+  url: URL,
+  method: string,
+  headers: Headers,
+): Match | undefined => {
   const host = url.hostname.toLowerCase();
 
   for (let i = 0; i < config.routes.length; i++) {
@@ -228,6 +305,9 @@ export const matchUrl = (config: Config, url: URL, method: string): Match | unde
     if (methods !== undefined && !methods.some((m) => m.toUpperCase() === method.toUpperCase())) {
       continue;
     }
+    if (!conditionsHold(route, url, headers)) {
+      continue;
+    }
     return { route, index: i, matchedPrefix: pathPrefix ?? '' };
   }
   return undefined;
@@ -238,7 +318,7 @@ export const matchUrl = (config: Config, url: URL, method: string): Match | unde
  * `URL`. Production code parses once and calls {@link matchUrl} directly.
  */
 export const matchRoute = (config: Config, request: Request): Match | undefined =>
-  matchUrl(config, new URL(request.url), request.method);
+  matchUrl(config, new URL(request.url), request.method, request.headers);
 
 /**
  * The candidates a request may be sent to, preferred one first.

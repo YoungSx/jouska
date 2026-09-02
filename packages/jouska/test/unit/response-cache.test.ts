@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { defineConfig, type CacheConfig, type Route } from '../../src/config';
+import { cacheVaryPart } from '../../src/internal/response-cache';
 import {
   CACHE_STATE_HEADER,
   cacheKey,
@@ -366,5 +367,50 @@ describe('refreshOnce', () => {
       refreshOnce(key, () => Promise.reject(new Error('upstream down'))),
     ).resolves.toBeUndefined();
     expect(refreshOnce(key, async () => undefined)).toBeDefined();
+  });
+});
+
+describe('cacheVaryPart', () => {
+  const headers = (init: Record<string, string> = {}) => new Headers(init);
+  const routeFrom = (matchExtra: Record<string, unknown>): Route =>
+    defineConfig({
+      routes: [
+        { match: { path: '/a', ...matchExtra }, upstream: 'o.test' },
+      ],
+    }).routes[0]!;
+
+  it('is empty when the route matches on nothing finer than the URL', () => {
+    expect(cacheVaryPart(routeFrom({}).match, headers({ 'x-env': 'prod' }))).toBe('');
+  });
+
+  it('folds the request value of every named header, verbatim', () => {
+    const match = routeFrom({ headers: [{ name: 'x-env', equals: 'prod' }] }).match;
+    expect(cacheVaryPart(match, headers({ 'x-env': 'prod' }))).toBe('x-env=prod');
+    // A missing header folds as the empty value — the same value an empty
+    // header carries, which is correct for equals:'' and harmless otherwise.
+    expect(cacheVaryPart(match, headers())).toBe('x-env=');
+  });
+
+  it('reads cookies by name out of the parsed Cookie header', () => {
+    const match = routeFrom({ cookies: [{ name: 'beta', present: true }] }).match;
+    expect(cacheVaryPart(match, headers({ Cookie: 'sid=1; beta=on' }))).toBe('beta=on');
+    expect(cacheVaryPart(match, headers({ Cookie: 'sid=1' }))).toBe('beta=');
+  });
+
+  it('folds header and cookie conditions into one discriminating string', () => {
+    const match = routeFrom({
+      headers: [{ name: 'x-env', equals: 'prod' }],
+      cookies: [{ name: 'beta', present: true }],
+    }).match;
+    expect(
+      cacheVaryPart(match, headers({ 'x-env': 'prod', Cookie: 'beta=on' })),
+    ).toBe('x-env=prod;beta=on');
+  });
+
+  it('produces different keys for different branch values', () => {
+    const match = routeFrom({ headers: [{ name: 'x-env', equals: 'prod' }] }).match;
+    expect(cacheVaryPart(match, headers({ 'x-env': 'prod' }))).not.toBe(
+      cacheVaryPart(match, headers({ 'x-env': 'staging' })),
+    );
   });
 });

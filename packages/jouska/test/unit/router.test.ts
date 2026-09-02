@@ -223,3 +223,142 @@ describe('resolveUpstreamUrl', () => {
     expect(resolve(route, 'https://p.dev/api/a%2fb')).toBe('https://origin.test/api/a%2fb');
   });
 });
+
+describe('match conditions (headers / query / cookies)', () => {
+  const configWith = (routes: unknown[]) =>
+    defineConfig({ routes: routes as never[] });
+
+  /**
+   * Acceptance: two routes that share host and path, told apart by a header
+   * value alone, each serve their own traffic no matter which one is written
+   * first — the condition participates in the walk, it is not decoration that
+   * only works in one table order.
+   */
+  it('routes by header alone, order-independently (acceptance #1)', () => {
+    const prod = {
+      match: { path: '/api', headers: [{ name: 'X-Env', equals: 'prod' }] },
+      upstream: 'prod.test',
+    };
+    const staging = {
+      match: { path: '/api', headers: [{ name: 'X-Env', equals: 'staging' }] },
+      upstream: 'staging.test',
+    };
+    for (const routes of [[prod, staging], [staging, prod]]) {
+      const config = configWith(routes);
+      expect(
+        matchRoute(config, req('https://p.dev/api', { headers: { 'X-Env': 'prod' } }))?.route
+          .upstream,
+      ).toBe('prod.test');
+      expect(
+        matchRoute(config, req('https://p.dev/api', { headers: { 'X-Env': 'staging' } }))?.route
+          .upstream,
+      ).toBe('staging.test');
+    }
+  });
+
+  it('lets an earlier unconditional route take the header traffic — that is shadowing, and the detector warns about it', () => {
+    const base = { match: { path: '/api' }, upstream: 'o.test' };
+    const canary = {
+      match: { path: '/api', headers: [{ name: 'X-Canary', present: true }] },
+      upstream: 'canary.test',
+    };
+    const config = configWith([base, canary]);
+    // First-match-wins is still the law: the plain route reads everything.
+    expect(matchRoute(config, req('https://p.dev/api'))?.route.upstream).toBe('o.test');
+    expect(matchRoute(config, req('https://p.dev/api', { headers: { 'X-Canary': '1' } }))?.route.upstream).toBe('o.test');
+    // Reordering makes the canary reachable again.
+    const reordered = configWith([canary, base]);
+    expect(
+      matchRoute(reordered, req('https://p.dev/api', { headers: { 'X-Canary': '1' } }))?.route
+        .upstream,
+    ).toBe('canary.test');
+    expect(matchRoute(reordered, req('https://p.dev/api'))?.route.upstream).toBe('o.test');
+  });
+
+  it('matches equals and prefix on header values case-sensitively', () => {
+    const config = configWith([
+      {
+        match: { path: '/a', headers: [{ name: 'x-env', equals: 'Prod' }] },
+        upstream: 'o.test',
+      },
+    ]);
+    expect(matchRoute(config, req('https://p.dev/a', { headers: { 'X-ENV': 'Prod' } }))).toBeDefined();
+    expect(matchRoute(config, req('https://p.dev/a', { headers: { 'x-env': 'prod' } }))).toBeUndefined();
+    expect(matchRoute(config, req('https://p.dev/a', { headers: { 'x-env': 'Production' } }))).toBeUndefined();
+  });
+
+  it('treats present as existence: an empty value exists (acceptance #2)', () => {
+    // `X-Foo:` carries an empty value, which is a header, not the absence of
+    // one — so `present: true` matches it and `present: false` does not.
+    const config = configWith([
+      { match: { path: '/a', headers: [{ name: 'x-foo', present: true }] }, upstream: 'yes.test' },
+      { match: { path: '/b', headers: [{ name: 'x-foo', present: false }] }, upstream: 'no.test' },
+    ]);
+    expect(
+      matchRoute(config, req('https://p.dev/a', { headers: { 'X-Foo': '' } })),
+    ).toBeDefined();
+    expect(
+      matchRoute(config, req('https://p.dev/b', { headers: { 'X-Foo': '' } })),
+    ).toBeUndefined();
+  });
+
+  it('matches query parameters on the parsed search params', () => {
+    const config = configWith([
+      {
+        match: { path: '/a', query: [{ name: 'debug', equals: '1' }] },
+        upstream: 'o.test',
+      },
+    ]);
+    expect(matchRoute(config, req('https://p.dev/a?debug=1'))).toBeDefined();
+    expect(matchRoute(config, req('https://p.dev/a?debug=2'))).toBeUndefined();
+    expect(matchRoute(config, req('https://p.dev/a'))).toBeUndefined();
+    // Presence without a value: `?debug` is a name with an empty value.
+    const bare = configWith([
+      {
+        match: { path: '/a', query: [{ name: 'debug', present: true }] },
+        upstream: 'o.test',
+      },
+    ]);
+    expect(matchRoute(bare, req('https://p.dev/a?debug'))).toBeDefined();
+  });
+
+  it('reads cookies from the Cookie header, not from Headers.get', () => {
+    // A cookie name is not a header name; the only way to see one is to parse
+    // the `Cookie` header the same way selection does.
+    const config = configWith([
+      {
+        match: { path: '/a', cookies: [{ name: 'beta', equals: 'on' }] },
+        upstream: 'o.test',
+      },
+    ]);
+    expect(matchRoute(config, req('https://p.dev/a', { headers: { Cookie: 'sid=x; beta=on' } }))).toBeDefined();
+    expect(matchRoute(config, req('https://p.dev/a', { headers: { Cookie: 'beta=off' } }))).toBeUndefined();
+    expect(matchRoute(config, req('https://p.dev/a'))).toBeUndefined();
+    // An empty cookie value parses as present.
+    expect(
+      matchRoute(config, req('https://p.dev/a', { headers: { Cookie: 'beta=' } })),
+    ).toBeUndefined();
+  });
+
+  it('requires every condition across families to hold (AND)', () => {
+    const config = configWith([
+      {
+        match: {
+          path: '/a',
+          headers: [{ name: 'x-env', equals: 'prod' }],
+          query: [{ name: 'v', prefix: '2' }],
+          cookies: [{ name: 'beta', present: false }],
+        },
+        upstream: 'o.test',
+      },
+    ]);
+    const ok = req('https://p.dev/a?v=2', { headers: { 'x-env': 'prod' } });
+    expect(matchRoute(config, ok)).toBeDefined();
+    // Each violation alone sinks the route.
+    expect(matchRoute(config, req('https://p.dev/a?v=3', { headers: { 'x-env': 'prod' } }))).toBeUndefined();
+    expect(matchRoute(config, req('https://p.dev/a?v=2'))).toBeUndefined();
+    expect(
+      matchRoute(config, req('https://p.dev/a?v=2', { headers: { 'x-env': 'prod', Cookie: 'beta=1' } })),
+    ).toBeUndefined();
+  });
+});

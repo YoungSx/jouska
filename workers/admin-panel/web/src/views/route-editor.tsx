@@ -72,7 +72,7 @@ import {
   ROUTE_ID_PATTERN,
   SCHEME_DEFAULT,
 } from '@/lib/types';
-import type { RouteDefinition } from '@/lib/types';
+import type { MatchCondition, RouteDefinition } from '@/lib/types';
 
 /* ---------- 字段元数据：文案与 schema 边界放一处，不散在 JSX 里。 ---------- */
 
@@ -151,7 +151,9 @@ const SCHEME_UNSET = 'unset';
 type SectionKey = 'bodyRewrite' | 'cors' | 'ip';
 
 /** 本地校验的错误集：键是字段，值是直接展示的文案。 */
-type FieldErrors = Partial<Record<'id' | 'upstream' | 'scheme' | NumericKey, string>>;
+type FieldErrors = Partial<
+  Record<'id' | 'upstream' | 'scheme' | 'matchConditions' | NumericKey, string>
+>;
 
 /* ---------- 展示件 ---------- */
 
@@ -681,6 +683,196 @@ const ReplaceEditor = ({
   );
 };
 
+/* ---------- 匹配条件行编辑 ---------- */
+
+/**
+ * 一行条件的表单形态。三个族共用一行模型：`present` 拆成「存在/不存在」两个
+ * 下拉项——四项比「算子三选一 + 布尔翻转」少一次 mental gymnastics；`value`
+ * 在 present 两个算子下是隐藏态，切回来还能找回刚打的字。
+ */
+interface ConditionRow {
+  readonly family: 'headers' | 'query' | 'cookies';
+  readonly name: string;
+  readonly op: 'equals' | 'prefix' | 'present' | 'absent';
+  readonly value: string;
+}
+
+/**
+ * definition 里的条件没有行身份，下标就是行的 key——行只能整行增删，不能排序，
+ * 所以不会出现键控下标的老毛病。条件从 definition 直接读，没有本地副本：表单与
+ * JSON 视图共享同一份草稿（文件头注释的约定），JSON 里手改条件立即出现在表单。
+ */
+const rowsFromMatch = (match: RouteDefinition['match']): readonly ConditionRow[] => {
+  const rows: ConditionRow[] = [];
+  const read = (family: ConditionRow['family'], conditions?: readonly MatchCondition[]) => {
+    for (const condition of conditions ?? []) {
+      const op =
+        condition.present !== undefined
+          ? condition.present
+            ? ('present' as const)
+            : ('absent' as const)
+          : condition.prefix !== undefined
+            ? ('prefix' as const)
+            : ('equals' as const);
+      rows.push({
+        family,
+        name: condition.name,
+        op,
+        value: op === 'prefix' ? (condition.prefix ?? '') : (condition.equals ?? ''),
+      });
+    }
+  };
+  read('headers', match?.headers);
+  read('query', match?.query);
+  read('cookies', match?.cookies);
+  return rows;
+};
+
+/** 名字 trim：token 名不允许空格，末尾空格永远是没打完的字。大小写原样上交。 */
+const conditionFromRow = (row: ConditionRow): MatchCondition => {
+  const name = row.name.trim();
+  if (row.op === 'present') {
+    return { name, present: true };
+  }
+  if (row.op === 'absent') {
+    return { name, present: false };
+  }
+  if (row.op === 'prefix') {
+    return { name, prefix: row.value };
+  }
+  // equals 允许空串：`X-Foo:` 与 `?debug=` 是真实流量。
+  return { name, equals: row.value };
+};
+
+/**
+ * 条件编辑器：行直接落在 definition 上，不设「草稿态」。加一行立刻写入
+ * `{name:'', equals:''}`，由 collectErrors 拦住保存——与 upstream 的处理一致
+ * （不完整就存，存了就明说哪没写完），而不是造第二份状态。
+ */
+const ConditionsEditor = ({
+  match,
+  onChange,
+}: {
+  readonly match: RouteDefinition['match'];
+  readonly onChange: (rows: readonly ConditionRow[]) => void;
+}) => {
+  const rows = rowsFromMatch(match);
+  const write = onChange;
+
+  const familyPlaceholder: Record<ConditionRow['family'], string> = {
+    headers: t.fields.matchConditions.nameHeader,
+    query: t.fields.matchConditions.nameQuery,
+    cookies: t.fields.matchConditions.nameCookie,
+  };
+
+  return (
+    <div className="flex flex-col gap-2">
+      {rows.map((row, index) => (
+        <div key={index} className="flex flex-wrap items-center gap-2">
+          <Select
+            value={row.family}
+            onValueChange={(value) =>
+              write(
+                rows.map((entry, i) =>
+                  i === index ? { ...entry, family: value as ConditionRow['family'] } : entry,
+                ),
+              )
+            }
+          >
+            <SelectTrigger
+              className="w-28 shrink-0"
+              aria-label={`${t.fields.matchConditions.family} ${String(index + 1)}`}
+            >
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="headers">{t.fields.matchConditions.familyHeader}</SelectItem>
+              <SelectItem value="query">{t.fields.matchConditions.familyQuery}</SelectItem>
+              <SelectItem value="cookies">{t.fields.matchConditions.familyCookie}</SelectItem>
+            </SelectContent>
+          </Select>
+          <Input
+            className="w-44 shrink-0 font-mono text-xs"
+            placeholder={familyPlaceholder[row.family]}
+            aria-label={`${t.fields.matchConditions.name} ${String(index + 1)}`}
+            aria-invalid={row.name.trim() === ''}
+            value={row.name}
+            onChange={(event) =>
+              write(
+                rows.map((entry, i) =>
+                  i === index ? { ...entry, name: event.target.value } : entry,
+                ),
+              )
+            }
+          />
+          <Select
+            value={row.op}
+            onValueChange={(value) =>
+              write(
+                rows.map((entry, i) =>
+                  i === index ? { ...entry, op: value as ConditionRow['op'] } : entry,
+                ),
+              )
+            }
+          >
+            <SelectTrigger
+              className="w-32 shrink-0"
+              aria-label={`${t.fields.matchConditions.op} ${String(index + 1)}`}
+            >
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="equals">{t.fields.matchConditions.opEquals}</SelectItem>
+              <SelectItem value="prefix">{t.fields.matchConditions.opPrefix}</SelectItem>
+              <SelectItem value="present">{t.fields.matchConditions.opPresent}</SelectItem>
+              <SelectItem value="absent">{t.fields.matchConditions.opAbsent}</SelectItem>
+            </SelectContent>
+          </Select>
+          <Input
+            className="min-w-0 flex-1 font-mono text-xs"
+            placeholder={
+              row.op === 'present' || row.op === 'absent'
+                ? t.fields.matchConditions.valueHidden
+                : t.fields.matchConditions.value
+            }
+            aria-label={`${t.fields.matchConditions.value} ${String(index + 1)}`}
+            aria-disabled={row.op === 'present' || row.op === 'absent'}
+            disabled={row.op === 'present' || row.op === 'absent'}
+            value={row.value}
+            onChange={(event) =>
+              write(
+                rows.map((entry, i) =>
+                  i === index ? { ...entry, value: event.target.value } : entry,
+                ),
+              )
+            }
+          />
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon-sm"
+            aria-label={`${t.fields.matchConditions.removeRow} ${String(index + 1)}`}
+            onClick={() => write(rows.filter((_, i) => i !== index))}
+          >
+            <Trash2Icon />
+          </Button>
+        </div>
+      ))}
+      <div>
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          onClick={() => write([...rows, { family: 'headers', name: '', op: 'equals', value: '' }])}
+        >
+          <PlusIcon />
+          {t.fields.matchConditions.add}
+        </Button>
+      </div>
+    </div>
+  );
+};
+
 /* ---------- 校验与错误分派 ---------- */
 
 /** 把明显的错拦在一次网络往返之前；权威判定在服务端 /api/preview。 */
@@ -697,6 +889,21 @@ const collectErrors = (
   const upstream = typeof definition.upstream === 'string' ? definition.upstream.trim() : '';
   if (upstream === '' || upstream.includes('//')) {
     errors.upstream = t.fields.upstream.help;
+  }
+  // 条件行直接落 definition，所以会有「刚加还没填」的行：名称为空、或选了
+  // 「值开头是」却没写值。这些条目服务端 schema 一律拒绝，先在这里点名。
+  const conditions = [
+    ...(definition.match?.headers ?? []),
+    ...(definition.match?.query ?? []),
+    ...(definition.match?.cookies ?? []),
+  ];
+  if (
+    conditions.some(
+      (condition) =>
+        condition.name.trim() === '' || (condition.prefix !== undefined && condition.prefix === ''),
+    )
+  ) {
+    errors.matchConditions = t.fields.matchConditions.conditionError;
   }
   if (
     definition.scheme !== undefined &&
@@ -881,6 +1088,37 @@ export const RouteEditor = ({
         delete match.methods;
       } else {
         match.methods = methods;
+      }
+      const next = { ...prev };
+      if (Object.keys(match).length === 0) {
+        delete next.match;
+      } else {
+        next.match = match as RouteDefinition['match'];
+      }
+      return next;
+    });
+
+  /**
+   * 条件行写回：按行里的族重建三个数组，各自的空数组删键、match 空了连壳删。
+   * host/path/methods 等其余 match 键原样保留。
+   */
+  const setConditionRows = (rows: readonly ConditionRow[]) =>
+    setDefinition((prev) => {
+      const match: Record<string, unknown> = { ...prev.match };
+      const families: Record<ConditionRow['family'], MatchCondition[]> = {
+        headers: [],
+        query: [],
+        cookies: [],
+      };
+      for (const row of rows) {
+        families[row.family].push(conditionFromRow(row));
+      }
+      for (const key of ['headers', 'query', 'cookies'] as const) {
+        if (families[key].length === 0) {
+          delete match[key];
+        } else {
+          match[key] = families[key];
+        }
       }
       const next = { ...prev };
       if (Object.keys(match).length === 0) {
@@ -1180,6 +1418,17 @@ export const RouteEditor = ({
                         </label>
                       ))}
                     </div>
+                  </Field>
+
+                  <Field data-invalid={errors.matchConditions !== undefined ? true : undefined}>
+                    <FieldLabel>{t.fields.matchConditions.label}</FieldLabel>
+                    <FieldDescription>
+                      <Hint text={t.fields.matchConditions.help} />
+                    </FieldDescription>
+                    <ConditionsEditor match={definition.match} onChange={setConditionRows} />
+                    {errors.matchConditions !== undefined && (
+                      <FieldError>{errors.matchConditions}</FieldError>
+                    )}
                   </Field>
                 </FieldSet>
 

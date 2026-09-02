@@ -10,10 +10,28 @@
  * 在 code review 时看得见。
  */
 
+/**
+ * 一条 `match` 条件：名 + 三选一的算子。三个族（headers/query/cookies）共用这个
+ * 形状，与 `packages/jouska/src/config.ts` 的 schema 一致 —— 算子互斥由服务端
+ * superRefine 判定，这里只承载字段。
+ */
+export interface MatchCondition {
+  name: string;
+  equals?: string;
+  prefix?: string;
+  present?: boolean;
+}
+
 export interface RouteMatch {
   host?: string;
   path?: string;
   methods?: string[];
+  /** 头条件，全部 AND。头名在服务端会折成小写。 */
+  headers?: MatchCondition[];
+  /** 查询参数条件，全部 AND。参数名大小写敏感。 */
+  query?: MatchCondition[];
+  /** cookie 条件，全部 AND。cookie 名大小写敏感。 */
+  cookies?: MatchCondition[];
 }
 
 export interface BodyRewrite {
@@ -124,6 +142,20 @@ export interface ShadowWarning {
   readonly shadowedId: string;
   readonly byId: string;
   readonly probe: string;
+  /** 探测请求携带的头（含 route 条件要求的 `cookie`）；无条件时缺省，URL 即证据。 */
+  readonly probeHeaders?: readonly { name: string; value: string }[];
+}
+
+/**
+ * 缓存折变提示：这条路由开了缓存、又用头或 cookie 做条件，缓存键会随请求值变。
+ *
+ * 来自服务端 cache-advisory.ts。它是提示不是错误 —— 键折变保证了正确性（一个
+ * 分支的缓存响应不会发给另一个分支），这里说的是命中率。query 不在其中：参数
+ * 本来就在 URL 里，天然分键。
+ */
+export interface CacheVaryWarning {
+  readonly routeId: string;
+  readonly names: readonly string[];
 }
 
 /**

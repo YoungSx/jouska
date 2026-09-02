@@ -210,6 +210,7 @@ configRoutes.post('/publish', requireAdmin, async (c) => {
             dangers: result.dangers,
             shadowWarnings: result.shadowWarnings,
             mirrorWarnings: result.mirrorWarnings,
+            cacheVaryWarnings: result.cacheVaryWarnings,
             error: 'confirmation_required',
           },
           409,
@@ -220,6 +221,7 @@ configRoutes.post('/publish', requireAdmin, async (c) => {
     revision: result.revision,
     shadowWarnings: result.shadowWarnings,
     mirrorWarnings: result.mirrorWarnings,
+    cacheVaryWarnings: result.cacheVaryWarnings,
     dangers: result.dangers,
   });
 });

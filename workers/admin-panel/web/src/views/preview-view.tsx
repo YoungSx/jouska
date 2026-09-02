@@ -200,6 +200,7 @@ const PreviewOk = ({
   const dangers = Object.entries(preview.dangers ?? {});
   const shadowWarnings = preview.shadowWarnings ?? [];
   const mirrorWarnings = preview.mirrorWarnings ?? [];
+  const cacheVaryWarnings = preview.cacheVaryWarnings ?? [];
   // ok 的响应按契约不该带 issues；带着就照实列出来，而不是静默吞掉。
   const issues = preview.issues ?? [];
   const routeCount = preview.routeCount ?? 0;
@@ -233,6 +234,17 @@ const PreviewOk = ({
                 <p className="text-muted-foreground font-mono text-xs">
                   {t.preview.shadowProbe(warning.probe)}
                 </p>
+                {/* 路由条件带上了头或 cookie，证据就不只是 URL —— 把探测请求带的头
+                    一并展示，操作者才拿这条证据复现得出来。 */}
+                {(warning.probeHeaders?.length ?? 0) > 0 && (
+                  <p className="text-muted-foreground font-mono text-xs">
+                    {t.preview.shadowProbeHeaders(
+                      warning
+                        .probeHeaders!.map((header) => `${header.name}: ${header.value}`)
+                        .join('; '),
+                    )}
+                  </p>
+                )}
               </li>
             ))}
           </ul>
@@ -255,6 +267,26 @@ const PreviewOk = ({
           </ul>
           {/* 文案如实：开了也有覆盖不到的地方，别让提示变成一句承诺。 */}
           <p className="text-muted-foreground text-xs">{t.preview.mirrorScope}</p>
+        </section>
+      )}
+
+      {/*
+        缓存折变提示，放在 mirror 之后、issues 之前，同为 advisory：键折变保证的是
+        正确性（一个分支的缓存不发给另一个分支），这里提醒的是命中率。
+      */}
+      {cacheVaryWarnings.length > 0 && (
+        <section className="flex flex-col gap-2">
+          <SectionHeader title={t.preview.cacheVaryTitle} hint={t.preview.cacheVaryHint} />
+          <ul className="flex flex-col gap-2">
+            {cacheVaryWarnings.map((warning) => (
+              <li key={warning.routeId}>
+                <p className="text-sm">
+                  {t.preview.cacheVaryLine(warning.routeId, warning.names.join('、'))}
+                </p>
+              </li>
+            ))}
+          </ul>
+          <p className="text-muted-foreground text-xs">{t.preview.cacheVaryScope}</p>
         </section>
       )}
 
