@@ -18,6 +18,12 @@ const event = (overrides: Partial<ProxyEvent> = {}): ProxyEvent => ({
   durationMs: 42,
   attempts: 1,
   outcome: 'ok',
+  // Both are required on the event: every proxied response has an answer for
+  // them, and making them optional would push an undefined check onto every
+  // receiver. `rewriteSkipped` stays absent — no reason is named when nothing
+  // was skipped.
+  bodyRewritten: false,
+  redirectRewritten: false,
   ...overrides,
 });
 

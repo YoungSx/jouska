@@ -1,9 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import {
+  contentTypeAllowed,
   htmlRewriter,
+  parseContentType,
   resolveCharset,
   scan,
-  shouldRewrite,
   textReplaceStream,
   textRewriteStream,
 } from '../../src/internal/body';
@@ -102,15 +103,18 @@ describe('textReplaceStream', () => {
   });
 });
 
-describe('shouldRewrite', () => {
+describe('contentTypeAllowed', () => {
+  const allowed = (header: string | null, list: readonly string[]): boolean =>
+    contentTypeAllowed(parseContentType(header), list);
+
   it('matches ignoring charset parameters', () => {
-    expect(shouldRewrite('text/html; charset=utf-8', ['text/html'])).toBe(true);
+    expect(allowed('text/html; charset=utf-8', ['text/html'])).toBe(true);
   });
   it('rejects unlisted types', () => {
-    expect(shouldRewrite('image/png', ['text/html'])).toBe(false);
+    expect(allowed('image/png', ['text/html'])).toBe(false);
   });
   it('rejects a missing content type', () => {
-    expect(shouldRewrite(null, ['text/html'])).toBe(false);
+    expect(allowed(null, ['text/html'])).toBe(false);
   });
 });
 

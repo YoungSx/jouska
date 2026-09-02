@@ -205,6 +205,10 @@ Responses that carry no rewritable body are passed through: 204, 304, and 206.
 A 206 is a byte range, so changing its length would contradict the
 `Content-Range` the client is using to assemble the whole resource.
 
+Whether any of this ran on a given response is not something to infer from the
+page: the `onProxy` event reports `bodyRewritten`, `rewriteSkipped` and
+`redirectRewritten`. See Observability below.
+
 ### WebSockets
 
 An upgrade is forwarded with its handshake headers intact and the 101 response is
@@ -516,6 +520,40 @@ app.use(
 | `durationMs` | Wall-clock milliseconds from match to response.                    |
 | `attempts`   | Upstream attempts, including the first — so a retry is visible.    |
 | `outcome`    | `ok`, `refused`, `timeout`, `unreachable`, or `client_closed`.     |
+
+Three more report what happened to the response body, which is what a mirrored
+site is judged by:
+
+| Field               | Meaning                                                                  |
+| ------------------- | ------------------------------------------------------------------------ |
+| `bodyRewritten`     | True when the body was handed to the rewriter.                           |
+| `rewriteSkipped`    | Why it was not. Absent when it was, and when nothing was proxied.        |
+| `redirectRewritten` | True when the `Location` sent to the client differs from the upstream's. |
+
+`rewriteSkipped` names one of five causes. Every one of them used to be silent,
+and that silence is the problem: a mirror whose links still point at the origin
+renders identically to one whose links were rewritten, until a visitor clicks one
+and leaves.
+
+| Value                 | Cause                                                                            |
+| --------------------- | -------------------------------------------------------------------------------- |
+| `not_configured`      | The route has no `bodyRewrite` at all.                                           |
+| `bodyless_status`     | 204, 206 or 304 — the status forbids a body.                                     |
+| `no_body`             | The status permits a body and none arrived, as for the answer to a HEAD.         |
+| `content_type`        | The type is outside `bodyRewrite.contentTypes`.                                  |
+| `charset_undecodable` | A declared charset this runtime cannot decode, with no usable `fallbackCharset`. |
+
+`charset_undecodable` is the one worth alerting on: the config reads correctly,
+the page renders, and the links simply do not change.
+
+All three are known, and reported, before the body is streamed. `bodyRewritten`
+therefore states that the transform was installed rather than that it finished:
+waiting for it to drain would hold the event — and any `waitUntil` queued from it —
+until the client had already read the response.
+
+The event carries no URLs beyond `path`. Reporting the address before and after
+rewriting would put whatever a query string held, tokens included, into every log
+line; a boolean and an enum answer the question without that.
 
 A callback rather than a binding, deliberately: writing to Analytics Engine, a
 log line, or nothing at all is a deployment decision. A library that picked one
