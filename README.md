@@ -723,6 +723,10 @@ one edge-to-origin round trip between visitors instead of one each:
     enabled: true,
     methods: ['GET', 'HEAD'],
     contentTypes: ['text/css', 'text/javascript', 'application/javascript', 'image/', 'font/'],
+    lockMisses: true,
+    staleIfError: { seconds: 3600, on: ['timeout', 'unreachable'] },
+    // No default: only 200 responses are cached until status codes are given
+    // windows here.
   },
 }
 ```
@@ -768,9 +772,15 @@ empty one.
   the person who sent it, and this cache is keyed by URL alone.
 - A request carrying `Range`: the answer is either a 206, which the Cache API
   refuses outright, or a 200 the client will slice itself.
-- Anything but a 200 response. Negative caching is not on offer, and a 404 _is_
-  storable as far as the platform is concerned, so this is a refusal here rather
-  than an impossibility.
+- A status given no window. `ttlSeconds` is the 200 window; every other status is
+  refused unless `statusTtlSeconds` hands its code a window: `{ 404: 60 }` caches
+  404s for a minute so a directory scan repeats at the edge instead of the origin,
+  and `{ 200: 0 }` refuses 200s while 404s are cached. An explicit `0` refuses;
+  an absent code falls back to `ttlSeconds` for 200 and to nothing for everything
+  else. Negative entries are not a second-class cache — but the refusals below
+  still veto them, and `contentTypes` does not: that list guards against caching a
+  document by accident, and an operator who asked for a 301 window has already
+  decided what belongs there.
 - A response carrying `Set-Cookie`.
 - A response whose `Cache-Control` says `no-store`, `private` or `no-cache`.
   `no-cache` counts because its real meaning is "revalidate before reuse", and a
@@ -779,7 +789,9 @@ empty one.
   one exception, and it is provable rather than hopeful: jouska deletes
   `accept-encoding` from every upstream request, so the upstream sees the same
   absent value every time and cannot vary on it.
-- A content type outside `contentTypes`, matched as a prefix.
+- A 200 response whose content type is outside `contentTypes`, matched as a
+  prefix. The list guards 200s only — statuses cached by their own window are
+  admitted by that window, with the vetoes above still standing.
 
 Those decisions read the headers the **upstream** sent, not the response as it will
 be delivered — so a `responseHeaders.remove` naming `cache-control` or `vary`
@@ -816,20 +828,53 @@ restored; the lifetime jouska declares on the stored copy covers the stale windo
 too, because an entry the platform considers expired is invisible to `match` rather
 than returned as stale.
 
+### When the upstream is down
+
+`staleIfError` widens the stale window for one situation only: the upstream cannot
+answer. Until `ttlSeconds + max(staleWhileRevalidateSeconds, staleIfError.seconds)`
+after the entry was stored, a failure whose mode is listed in `staleIfError.on` —
+`timeout` and `unreachable` by default, `5xx` opt-in — delivers the stale entry
+with `x-jouska-cache: stale_error` and an accurate `Age`, and the failure itself
+surfaces only past that widened window. The modes `on` counts are chosen narrowly
+on purpose: an upstream 404 is an _answer_, albeit a negative one, and covering it
+with a stale 200 would be lying with the cache's help. A connection that never
+completes is not an answer, and covering it with the last good copy is what the
+cache is for. `5xx` needs opting in because a maintenance page served stale is a
+choice, not a default; a client hang-up counts never, because nobody is left to
+serve.
+
+### When a cold cache meets a burst
+
+The other gap is the first minute of a deployment: a cold cache turns every URL
+into a miss, and a hundred simultaneous requests for the same stylesheet are a
+hundred upstream trips — the load spike the cache exists to prevent. `lockMisses`
+(on by default) closes it per isolate: the first miss leads, fetching and storing
+alone, while the rest wait for the entry to land and then re-read the cache and
+serve it. A waiter's wait is bounded by the route's `totalTimeoutMs`, and a waiter
+whose wait ran out — or whose leader's fill produced nothing cacheable — falls
+through and fetches on its own, exactly as it would have without the lock. The
+lock is per isolate, not a distributed one: two isolates can both lead, so the
+upstream sees one request per isolate rather than one per visitor.
+
 ### Seeing whether it works
 
 Every response from a caching route carries `x-jouska-cache`, and every `onProxy`
 event carries the same value on `event.cache`:
 
-| Value    | Meaning                                                                   |
-| -------- | ------------------------------------------------------------------------- |
-| `hit`    | Served from a fresh entry. No upstream trip; `attempts` is 0.             |
-| `stale`  | Served from an expired entry, with a refresh running behind the response. |
-| `miss`   | Eligible, no entry there, so the upstream was asked.                      |
-| `bypass` | Never a candidate — the method, or credentials in the request.            |
+| Value         | Meaning                                                                         |
+| ------------- | ------------------------------------------------------------------------------- |
+| `hit`         | Served from a fresh entry. No upstream trip; `attempts` is 0.                   |
+| `stale`       | Served from an expired entry, with a refresh running behind the response.       |
+| `miss`        | Eligible, no entry there, so the upstream was asked.                            |
+| `bypass`      | Never a candidate — the method, or credentials in the request.                  |
+| `stale_error` | Served from an expired entry because the upstream failed within `staleIfError`. |
 
 `bypass` and `miss` are distinguished because tuning a hit rate needs them apart:
 one says the cache was not allowed to help, the other that it was and could not.
+`stale_error` is distinguished from `stale` because it says the entry is past its
+useful life and being kept alive by failure — a cache absorbing an outage reads
+very differently on a dashboard from a cache riding its grace period, and the
+`attempts` on such an event shows the failed upstream trip it absorbed.
 
 A hit also reports `rewriteSkipped: 'served_from_cache'` when the route configures
 `bodyRewrite`, so the rewrite rate does not read as broken once caching is on. See
@@ -879,7 +924,7 @@ app.use(
 | `durationMs` | Wall-clock milliseconds from match to response.                                                                                                                               |
 | `attempts`   | Upstream attempts, including the first — so a retry is visible.                                                                                                               |
 | `outcome`    | `ok`, `refused`, `timeout`, `unreachable`, or `client_closed`.                                                                                                                |
-| `cache`      | `hit`, `stale`, `miss` or `bypass`; absent without a `cache` block.                                                                                                           |
+| `cache`      | `hit`, `stale`, `miss`, `bypass` or `stale_error`; absent without a `cache` block.                                                                                            |
 | `selection`  | How a split route picked its upstream — present only on `trafficSplit` routes, with the winning entry's `index` and whether a `sticky` cookie or the `weighted` hash decided. |
 
 Three more report what happened to the response body, which is what a mirrored

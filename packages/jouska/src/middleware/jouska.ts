@@ -22,6 +22,8 @@ import {
   CACHE_STATE_HEADER,
   cacheKey,
   readCachedResponse,
+  beginFlight,
+  joinFlight,
   refreshOnce,
   requestCacheable,
   responseCacheable,
@@ -29,6 +31,7 @@ import {
   storeCachedResponse,
   cacheVaryPart,
   type CacheState,
+  type CachedResponse,
   type ResponseCacheStore,
 } from '../internal/response-cache.js';
 import { stickyCookie, selectUpstream, type Selection } from '../internal/selection.js';
@@ -118,6 +121,11 @@ export interface ProxyEvent {
    * `bypass` means the request was never a candidate — a method the cache does
    * not cover, or credentials in the request — as opposed to `miss`, where it was
    * a candidate and no entry was there. Tuning a hit rate needs those apart.
+   *
+   * `stale_error` is a degradation worth alerting on: an entry already past the
+   * stale-while-revalidate window, served only because the upstream failed and
+   * the route opted into `staleIfError`. Filter on it to know when the cache,
+   * not the origin, is what kept the site up.
    *
    * Absent on a route without caching, and on a refusal that never got that far.
    */
@@ -524,6 +532,81 @@ const proxyRequest = async (
           cacheImpl,
         );
 
+  /**
+   * Delivers an entry found in the store — whichever read found it: the healthy
+   * one before the upstream, a waiter's re-read after a joined flight, or the
+   * stale-if-error fallback after a failure. One copy of the header rules, the
+   * report shape and the sticky-cookie logic, and the cache state comes from
+   * the entry as read, never from what the caller expected to find.
+   *
+   * `tried` is set only by the stale-if-error caller, whose event must say what
+   * the delivery cost — the attempts the failure spent and the authority that
+   * failed — rather than the zero attempts a healthy hit reports.
+   */
+  const deliverFromCache = (
+    cache: CachePlan,
+    cached: CachedResponse,
+    tried?: { attempts: number; upstream: string },
+  ): Response => {
+    // The rules already ran on the bytes that were stored — a change to them
+    // changes the fingerprint and so the key — but the diagnostic headers
+    // `readCachedResponse` just wrote did not exist then, and an operator who
+    // asked for one of those to be removed meant it on a hit too.
+    applyResponseHeaderRules(cached.response.headers, route.responseHeaders);
+    report(
+      cached.response.status,
+      'ok',
+      tried?.attempts ?? 0,
+      tried?.upstream,
+      {
+        bodyRewritten: false,
+        // A route with no rewrite configured keeps saying so, so "which routes
+        // forgot to turn rewriting on" stays answerable through a cache. Only a
+        // route that does rewrite reports the cache as the reason this request
+        // did not.
+        rewriteSkipped: route.bodyRewrite === undefined ? 'not_configured' : 'served_from_cache',
+        // What is stored is already the rewritten bytes — the fingerprint in
+        // the key guarantees it — and a stored 301 carries the rewritten
+        // Location. Nothing re-rewrites on a delivery, so false is a fact.
+        redirectRewritten: false,
+      },
+      cached.state,
+    );
+    if (cached.state === 'stale') {
+      inBackground(
+        c,
+        refreshOnce(cache.key, async () => {
+          const refreshed = await produceResponse({
+            match,
+            c,
+            url,
+            fetchImpl,
+            detached: true,
+            cacheState: undefined,
+            selection,
+          });
+          if (
+            refreshed.fromUpstream &&
+            responseCacheable(refreshed.response, refreshed.upstreamHeaders, cache.config)
+          ) {
+            await storeCachedResponse({
+              store: cache.store,
+              key: cache.key,
+              response: refreshed.response,
+              cache: cache.config,
+              now: Date.now(),
+              alsoServed: false,
+            });
+          }
+        }),
+      );
+    }
+    // A hit still hands a newly-assigned caller its cookie: the cache answered
+    // this request, but the next one goes upstream, and pinning it now keeps
+    // the bucket from drifting mid-session.
+    return withStickyCookie(cached.response, route, selection, assigned);
+  };
+
   if (plan !== undefined) {
     const cached = await readCachedResponse({
       store: plan.store,
@@ -532,76 +615,92 @@ const proxyRequest = async (
       now: Date.now(),
     });
     if (cached !== undefined) {
-      // The rules already ran on the bytes that were stored — a change to them
-      // changes the fingerprint and so the key — but the diagnostic headers
-      // `readCachedResponse` just wrote did not exist then, and an operator who
-      // asked for one of those to be removed meant it on a hit too.
-      applyResponseHeaderRules(cached.response.headers, route.responseHeaders);
-      report(
-        cached.response.status,
-        'ok',
-        0,
-        undefined,
-        {
-          bodyRewritten: false,
-          // A route with no rewrite configured keeps saying so, so "which routes
-          // forgot to turn rewriting on" stays answerable through a cache. Only a
-          // route that does rewrite reports the cache as the reason this request
-          // did not.
-          rewriteSkipped: route.bodyRewrite === undefined ? 'not_configured' : 'served_from_cache',
-          // Only 200s are stored, so a cached response never carried a Location
-          // to rewrite; false is accurate rather than a stand-in.
-          redirectRewritten: false,
-        },
-        cached.state,
-      );
-      if (cached.state === 'stale') {
-        inBackground(
-          c,
-          refreshOnce(plan.key, async () => {
-            const refreshed = await produceResponse({
-              match,
-              c,
-              url,
-              fetchImpl,
-              detached: true,
-              cacheState: undefined,
-              selection,
-            });
-            if (
-              refreshed.fromUpstream &&
-              responseCacheable(refreshed.response, refreshed.upstreamHeaders, plan.config)
-            ) {
-              await storeCachedResponse({
-                store: plan.store,
-                key: plan.key,
-                response: refreshed.response,
-                cache: plan.config,
-                now: Date.now(),
-                alsoServed: false,
-              });
-            }
-          }),
-        );
-      }
-      // A hit still hands a newly-assigned caller its cookie: the cache answered
-      // this request, but the next one goes upstream, and pinning it now keeps
-      // the bucket from drifting mid-session.
-      return withStickyCookie(cached.response, route, selection, assigned);
+      return deliverFromCache(plan, cached);
     }
   }
 
   const cacheState: CacheState | undefined =
     caching === undefined ? undefined : plan === undefined ? 'bypass' : 'miss';
-  const produced = await produceResponse({
-    match,
-    c,
-    url,
-    fetchImpl,
-    detached: false,
-    cacheState,
-    selection,
-  });
+
+  // The cold-miss lock, when the route asked for one. This caller may lead the
+  // flight — it fetches, fills and settles — or join one already running: it
+  // waits, bounded by the route's own `totalTimeoutMs`, and a fill that landed
+  // is re-read and delivered exactly as a hit would be. A waiter whose wait ran
+  // out, or whose leader's fill produced nothing cacheable, falls through and
+  // fetches on its own, exactly as it would have without the lock.
+  let settleFlight: (() => void) | undefined;
+  if (cacheState === 'miss' && plan !== undefined && caching?.lockMisses === true) {
+    settleFlight = beginFlight(plan.key);
+    if (settleFlight === undefined) {
+      await joinFlight(plan.key, route.totalTimeoutMs);
+      // Re-read whether or not the flight reports a fill: a join that began
+      // after the leader settled sees no flight at all, yet the entry is in the
+      // store by then — and the waiter does not trust a hand-off anyway, it
+      // re-derives the state through the shared delivery path.
+      const found = await readCachedResponse({
+        store: plan.store,
+        key: plan.key,
+        cache: plan.config,
+        now: Date.now(),
+      });
+      if (found !== undefined) {
+        return deliverFromCache(plan, found);
+      }
+      // Nothing to serve from the cache: proceed as the leader would have.
+    }
+  }
+
+  let produced: Produced;
+  try {
+    produced = await produceResponse({
+      match,
+      c,
+      url,
+      fetchImpl,
+      detached: false,
+      cacheState,
+      selection,
+    });
+  } catch (error) {
+    // The fill died before it could decide anything about the cache: release
+    // the waiters so they fetch on their own rather than hang until their bound.
+    settleFlight?.();
+    throw error;
+  }
+
+  // An expired entry beats a failure, when the route opted into stale-if-error
+  // and this failure is one it counts. The upstream never answering — a timeout
+  // or a refusal — counts by default; a 5xx counts only when listed, because a
+  // maintenance page served stale is a choice; a client hang-up counts never,
+  // because nobody is left to serve.
+  if (plan !== undefined) {
+    const onError = plan.config.staleIfError;
+    const countsAsError =
+      onError !== undefined &&
+      (produced.fromUpstream
+        ? produced.status >= 500 && onError.on.includes('5xx')
+        : (produced.outcome === 'timeout' || produced.outcome === 'unreachable') &&
+          onError.on.includes(produced.outcome));
+    if (countsAsError) {
+      const stale = await readCachedResponse({
+        store: plan.store,
+        key: plan.key,
+        cache: plan.config,
+        now: Date.now(),
+        allowStaleError: true,
+      });
+      if (stale !== undefined) {
+        // The entry is in the store — this read just found it — so any waiters
+        // still on the flight may join it, and they re-read the same way.
+        settleFlight?.();
+        return deliverFromCache(plan, stale, {
+          attempts: produced.attempts,
+          upstream: produced.authority,
+        });
+      }
+    }
+  }
+
   // Reported before the body is read, deliberately. The rewrite is a stream
   // transform, so a report that waited for its result would hold the event — and
   // any `waitUntil` the host queued from it — until the client had finished
@@ -615,24 +714,41 @@ const proxyRequest = async (
     cacheState,
   );
 
-  if (
+  const cacheableFill =
     plan !== undefined &&
     produced.fromUpstream &&
-    responseCacheable(produced.response, produced.upstreamHeaders, plan.config)
-  ) {
+    responseCacheable(produced.response, produced.upstreamHeaders, plan.config);
+  if (cacheableFill && plan !== undefined) {
     // Called before the response is returned, so the clone inside is taken while
     // the body is still unread — `put` on a consumed body throws.
-    inBackground(
-      c,
-      storeCachedResponse({
-        store: plan.store,
-        key: plan.key,
-        response: produced.response,
-        cache: plan.config,
-        now: Date.now(),
-        alsoServed: true,
-      }),
-    );
+    const written = storeCachedResponse({
+      store: plan.store,
+      key: plan.key,
+      response: produced.response,
+      cache: plan.config,
+      now: Date.now(),
+      alsoServed: true,
+    });
+    inBackground(c, written);
+    if (settleFlight !== undefined) {
+      const settle = settleFlight;
+      settleFlight = undefined;
+      // Settle-after-write: the waiters are released only once the entry is
+      // actually in the store. Released any earlier, a woken waiter would
+      // re-read a cache the entry is not in yet and fetch from the upstream
+      // after all — which is the herd the lock exists to stop. A write that
+      // fails resolves the same way a non-cacheable fill does: the waiters
+      // fetch on their own.
+      void written.then(
+        () => settle(),
+        () => settle(),
+      );
+    }
+  } else {
+    // Nothing cacheable came back — a failure, a refused status, an uncacheable
+    // body — so the waiters are released at once and fetch on their own.
+    settleFlight?.();
+    settleFlight = undefined;
   }
   // The cookie rides only on a response the upstream itself produced: a 101's
   // headers are spent on the handshake, and jouska's own 5xx never reached the

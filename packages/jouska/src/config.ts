@@ -812,6 +812,86 @@ const cache = z.object({
     .array(z.string().min(1))
     .nonempty()
     .default(['text/css', 'text/javascript', 'application/javascript', 'image/', 'font/']),
+  /**
+   * Serve a stored entry that has already expired when the upstream cannot
+   * answer. Absent means off: the expired entry is dropped and the failure is
+   * returned as today.
+   *
+   * `on` states which upstream failures count as an error. The default is the
+   * narrow reading — the upstream *never answered* (`timeout`, `unreachable`).
+   * An upstream that answered with a 5xx said something, and `5xx` is an opt-in
+   * exactly because a maintenance page served stale is a choice, not a default.
+   * A client that hung up (`client_closed`) never triggers it: nobody is left
+   * to serve.
+   *
+   * The window shares the stored lifetime with the stale-while-revalidate one —
+   * both are measured from the TTL, and the stored copy carries whichever is
+   * longer, so an entry is not evicted by the platform before this window ends.
+   */
+  staleIfError: z
+    .object({
+      seconds: z.number().int().min(0).max(86_400).default(3600),
+      on: z
+        .array(z.enum(['timeout', 'unreachable', '5xx']))
+        .min(1)
+        .default(['timeout', 'unreachable']),
+    })
+    .optional(),
+  /**
+   * Collapse a burst of cold misses onto one upstream request.
+   *
+   * The first caller after a miss fetches and fills the cache; the rest wait for
+   * the fill and are served from the entry. The wait is bounded by the route's
+   * `totalTimeoutMs` — a waiter that gives up fetches on its own, degrading to
+   * exactly today's behaviour. The lock is per isolate, not a distributed lock;
+   * across isolates a burst collapses per isolate, which is still a large factor.
+   */
+  lockMisses: z.boolean().default(true),
+  /**
+   * Lifetimes for statuses other than 200, keyed by status code.
+   *
+   * A status is cached only when it has a window here; 200 keeps `ttlSeconds`
+   * and an entry for `200` overrides it (`0` opts 200 out). That makes "the key
+   * is absent" and "the value is 0" different facts — absent falls back, zero
+   * refuses — which the negative-caching knobs otherwise collapse.
+   *
+   * Values are capped at the same 30 days as `ttlSeconds`. Some statuses are
+   * refused outright, each for a verified or structural reason: 1xx are not
+   * storable responses; 204 and 304 have no replayable body (304's validators
+   * are stripped by this proxy, so the entry could not even be answered with);
+   * 206 is rejected by the Cache API outright; and 5xx are accepted by `put`
+   * and then silently absent from `match` in workerd — an entry that never
+   * serves is a hit rate the header would lie about.
+   */
+  statusTtlSeconds: z
+    .record(z.string().regex(/^[1-5]\d{2}$/), z.number().int().min(0).max(2_592_000))
+    .superRefine((ttls, ctx) => {
+      for (const status of Object.keys(ttls)) {
+        const code = Number(status);
+        if (code < 200) {
+          ctx.addIssue({
+            code: 'custom',
+            message: `statusTtlSeconds: ${status} is not a storable response`,
+          });
+        } else if (code === 204 || code === 304) {
+          ctx.addIssue({
+            code: 'custom',
+            message: `statusTtlSeconds: ${status} has no replayable body (and a 304's validators are stripped)`,
+          });
+        } else if (code === 206) {
+          ctx.addIssue({
+            code: 'custom',
+            message: 'statusTtlSeconds: 206 is rejected by the Cache API outright',
+          });
+        } else if (code >= 500) {
+          ctx.addIssue({
+            code: 'custom',
+            message: `statusTtlSeconds: ${status} is accepted by put and silently absent from match in workerd, so the entry could never be served`,
+          });
+        }
+      }
+    })
+    .optional(),
 });
 
 /** Fields shared by a route and the table-wide `defaults` block. */

@@ -74,6 +74,12 @@ export interface CacheRules {
   ttlSeconds?: number;
   staleWhileRevalidateSeconds?: number;
   contentTypes?: string[];
+  /** 冷缓存单飞：同 key 的并发 miss 只放一个去上游（isolate 级，非分布式）。 */
+  lockMisses?: boolean;
+  /** 上游失败时交付过期条目的窗口与失败模式；`5xx` 需显式 opt-in。 */
+  staleIfError?: { seconds: number; on: ('timeout' | 'unreachable' | '5xx')[] };
+  /** 按状态码的缓存窗口，秒；`0` 表示该码不存，未写的码回落到 `ttlSeconds`（仅 200）。 */
+  statusTtlSeconds?: Record<string, number>;
 }
 
 /**
