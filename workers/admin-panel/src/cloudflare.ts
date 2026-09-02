@@ -336,7 +336,8 @@ const dedupe = (hosts: readonly BoundHost[]): BoundHost[] => {
   const seen = new Set<string>();
   const unique: BoundHost[] = [];
   for (const entry of hosts) {
-    const key = `${entry.kind} ${entry.host} ${entry.pattern ?? ''}`;
+    // Escaped, not a literal NUL byte — see the note in api/domains.ts.
+    const key = `${entry.kind}\u0000${entry.host}\u0000${entry.pattern ?? ''}`;
     if (seen.has(key)) {
       continue;
     }
