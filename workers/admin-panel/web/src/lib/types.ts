@@ -186,14 +186,15 @@ export const AUTH_POLICY = {
   lockoutMinutes: 15,
 } as const;
 
-/** 表单视图覆盖到的顶层字段。其余字段落到「表单未覆盖」区，保存时原样保留。 */
+/**
+ * 表单视图覆盖到的顶层字段。其余字段落到「表单未覆盖」区，保存时原样保留。
+ *
+ * 这里只许写表单真的渲染了的键 —— 多上游三件套（upstreams/trafficSplit/failover）
+ * 与 stickyBy 还没有表单 UI，写进来会让它们两头隐形：未覆盖区不列、表单也没有。
+ */
 export const FORM_COVERED_KEYS: readonly string[] = [
   'match',
   'upstream',
-  'upstreams',
-  'trafficSplit',
-  'failover',
-  'stickyBy',
   'scheme',
   'allowPrivateUpstream',
   'stripPrefix',

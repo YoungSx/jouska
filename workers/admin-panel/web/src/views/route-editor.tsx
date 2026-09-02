@@ -364,7 +364,8 @@ interface NumberPropertyProps {
   readonly hint: string;
   readonly value: string;
   readonly min: number;
-  readonly max: number;
+  /** schema 没有上限时不传，属性整个省掉。 */
+  readonly max?: number;
   readonly error?: string;
   readonly onChange: (value: string) => void;
 }
@@ -392,6 +393,7 @@ const NumberProperty = ({
       className="font-mono"
       min={min}
       max={max}
+      step={1}
       value={value}
       aria-invalid={hasText(error)}
       onChange={(event) => onChange(event.target.value)}
@@ -484,23 +486,120 @@ const SwitchProperty = ({
   </Field>
 );
 
-/* ---------- 请求头行编辑 ---------- */
+/* ---------- 两列行编辑 ---------- */
 
-interface HeaderRow {
-  readonly name: string;
-  readonly value: string;
+interface RowPair {
+  readonly first: string;
+  readonly second: string;
 }
 
-const rowsToHeaders = (rows: readonly HeaderRow[]): Record<string, string> => {
-  const record: Record<string, string> = {};
-  for (const row of rows) {
-    const name = row.name.trim();
-    // 同名行以后写的为准，与 JSON.parse 对对象字面量的语义一致。
-    if (name !== '') {
-      record[name] = row.value;
-    }
+interface RowPairListProps {
+  readonly rows: readonly RowPair[];
+  readonly firstLabel: string;
+  readonly secondLabel: string;
+  /** 增删按钮的可访问名：页面上同时有多个行编辑器时，光说「加一行」分不清是谁。 */
+  readonly addRowLabel: string;
+  readonly removeRowLabel: string;
+  /** 第一列的就地标记（如保留头名）；返回 true 时该输入框标红，不拦保存。 */
+  readonly firstInvalid?: (value: string) => boolean;
+  readonly onRowsChange: (rows: readonly RowPair[]) => void;
+}
+
+/** 两列行编辑的共用骨架：行输入、增删按钮。rows ↔ 值的换算归各编辑器。 */
+const RowPairList = ({
+  rows,
+  firstLabel,
+  secondLabel,
+  addRowLabel,
+  removeRowLabel,
+  firstInvalid,
+  onRowsChange,
+}: RowPairListProps) => (
+  <div className="flex flex-col gap-2">
+    {rows.map((row, index) => (
+      <div key={index} className="flex items-center gap-2">
+        <Input
+          className="w-44 shrink-0 font-mono text-xs"
+          placeholder={firstLabel}
+          aria-label={`${firstLabel} ${String(index + 1)}`}
+          aria-invalid={firstInvalid?.(row.first) ?? false}
+          value={row.first}
+          onChange={(event) =>
+            onRowsChange(
+              rows.map((entry, i) =>
+                i === index ? { ...entry, first: event.target.value } : entry,
+              ),
+            )
+          }
+        />
+        <Input
+          className="min-w-0 flex-1 font-mono text-xs"
+          placeholder={secondLabel}
+          aria-label={`${secondLabel} ${String(index + 1)}`}
+          value={row.second}
+          onChange={(event) =>
+            onRowsChange(
+              rows.map((entry, i) =>
+                i === index ? { ...entry, second: event.target.value } : entry,
+              ),
+            )
+          }
+        />
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon-sm"
+          aria-label={removeRowLabel}
+          onClick={() => onRowsChange(rows.filter((_, i) => i !== index))}
+        >
+          <Trash2Icon />
+        </Button>
+      </div>
+    ))}
+    <div>
+      <Button
+        type="button"
+        variant="outline"
+        size="sm"
+        onClick={() => onRowsChange([...rows, { first: '', second: '' }])}
+      >
+        <PlusIcon />
+        {addRowLabel}
+      </Button>
+    </div>
+  </div>
+);
+
+/**
+ * 行编辑的共享状态：行数组 + 回声指纹。外部值变了才重放；自报的回声不算变化。
+ *
+ * 指纹必须和 signature 同口径（`?? null`）。写 `JSON.stringify(emit)` 时，
+ * 「上报了 undefined」的编辑下一次渲染的 signature 是 `"null"`，而指纹留着别的
+ * 字符串 —— 自己的回声被当成「外部改了值」，刚加的行在同一次渲染里就被复位抹掉。
+ * 表现为点「加一行」毫无反应，以及把唯一一行删空时整行消失。
+ */
+const useRowPairEditor = <T,>(
+  value: T | undefined,
+  toRows: (value: T | undefined) => readonly RowPair[],
+  toEmit: (rows: readonly RowPair[]) => T | undefined,
+  onChange: (value: T | undefined) => void,
+) => {
+  const [rows, setRows] = React.useState(() => toRows(value));
+  const signature = JSON.stringify(value ?? null);
+  const emitted = React.useRef(signature);
+  if (emitted.current !== signature) {
+    emitted.current = signature;
+    setRows(toRows(value));
   }
-  return record;
+
+  const write = (next: readonly RowPair[]) => {
+    setRows(next);
+    const emit = toEmit(next);
+    emitted.current = JSON.stringify(emit ?? null);
+    onChange(emit);
+  };
+
+  return { rows, write };
 };
 
 /**
@@ -514,86 +613,71 @@ const HeadersEditor = ({
   readonly value: Record<string, string> | undefined;
   readonly onChange: (value: Record<string, string> | undefined) => void;
 }) => {
-  const [rows, setRows] = React.useState<readonly HeaderRow[]>(() =>
-    Object.entries(value ?? {}).map(([name, entry]) => ({ name, value: entry })),
+  const { rows, write } = useRowPairEditor<Record<string, string>>(
+    value,
+    (v) => Object.entries(v ?? {}).map(([name, entry]) => ({ first: name, second: entry })),
+    (next) => {
+      const record: Record<string, string> = {};
+      for (const row of next) {
+        const name = row.first.trim();
+        // 同名行以后写的为准，与 JSON.parse 对对象字面量的语义一致。
+        if (name !== '') {
+          record[name] = row.second;
+        }
+      }
+      // 一行有效数据都没有 = 未设置：删键而不是留 {}。
+      return Object.keys(record).length === 0 ? undefined : record;
+    },
+    onChange,
   );
-  const signature = JSON.stringify(value ?? null);
-  const emitted = React.useRef(signature);
-  if (emitted.current !== signature) {
-    emitted.current = signature;
-    setRows(Object.entries(value ?? {}).map(([name, entry]) => ({ name, value: entry })));
-  }
-
-  const write = (next: readonly HeaderRow[]) => {
-    setRows(next);
-    const record = rowsToHeaders(next);
-    // 一行有效数据都没有 = 未设置：删键而不是留 {}。
-    const emit = Object.keys(record).length === 0 ? undefined : record;
-    // 回声指纹必须和 signature 同口径（`?? null`）。写 `JSON.stringify(record)` 时，
-    // 「一行有效数据都没有」上报的是 undefined、下一次渲染的 signature 是 `"null"`，
-    // 而指纹留着 `"{}"` —— 自己的回声被当成「外部改了值」，刚加的空行在同一次渲染
-    // 里就被复位抹掉。表现为点「加一行」毫无反应，以及把最后一个头名删空时整行消失。
-    emitted.current = JSON.stringify(emit ?? null);
-    onChange(emit);
-  };
 
   return (
-    <div className="flex flex-col gap-2">
-      {rows.map((row, index) => {
-        const reserved = RESERVED_REQUEST_HEADERS.has(row.name.trim().toLowerCase());
-        return (
-          <div key={index} className="flex items-center gap-2">
-            <Input
-              className="w-44 shrink-0 font-mono text-xs"
-              placeholder={t.fields.upstreamHeaders.name}
-              aria-label={`${t.fields.upstreamHeaders.name} ${String(index + 1)}`}
-              aria-invalid={reserved}
-              value={row.name}
-              onChange={(event) =>
-                write(
-                  rows.map((entry, i) =>
-                    i === index ? { ...entry, name: event.target.value } : entry,
-                  ),
-                )
-              }
-            />
-            <Input
-              className="min-w-0 flex-1 font-mono text-xs"
-              placeholder={t.fields.upstreamHeaders.value}
-              aria-label={`${t.fields.upstreamHeaders.value} ${String(index + 1)}`}
-              value={row.value}
-              onChange={(event) =>
-                write(
-                  rows.map((entry, i) =>
-                    i === index ? { ...entry, value: event.target.value } : entry,
-                  ),
-                )
-              }
-            />
-            <Button
-              type="button"
-              variant="ghost"
-              size="icon-sm"
-              aria-label={t.fields.upstreamHeaders.removeRow}
-              onClick={() => write(rows.filter((_, i) => i !== index))}
-            >
-              <Trash2Icon />
-            </Button>
-          </div>
-        );
-      })}
-      <div>
-        <Button
-          type="button"
-          variant="outline"
-          size="sm"
-          onClick={() => write([...rows, { name: '', value: '' }])}
-        >
-          <PlusIcon />
-          {t.fields.upstreamHeaders.addRow}
-        </Button>
-      </div>
-    </div>
+    <RowPairList
+      rows={rows}
+      firstLabel={t.fields.upstreamHeaders.name}
+      secondLabel={t.fields.upstreamHeaders.value}
+      addRowLabel={t.common.addRow}
+      removeRowLabel={t.common.removeRow}
+      firstInvalid={(first) => RESERVED_REQUEST_HEADERS.has(first.trim().toLowerCase())}
+      onRowsChange={write}
+    />
+  );
+};
+
+/**
+ * 字面替换按行编辑。from 为空的行不发出去：schema 是 `min(1)`，发了必被拒。
+ * 行留在原地不消失 —— 「先写查找再补替换」是正常输入顺序；提示文案如实说了
+ * 「查找为空的行不保存」，不是静默丢弃。
+ */
+const ReplaceEditor = ({
+  value,
+  onChange,
+}: {
+  readonly value: readonly { from: string; to: string }[] | undefined;
+  readonly onChange: (value: readonly { from: string; to: string }[] | undefined) => void;
+}) => {
+  const { rows, write } = useRowPairEditor<readonly { from: string; to: string }[]>(
+    value,
+    (v) => (v ?? []).map((entry) => ({ first: entry.from, second: entry.to })),
+    (next) => {
+      // from 不 trim：它是字面查找文本，首尾空格可能是本意。
+      const entries = next
+        .filter((row) => row.first !== '')
+        .map((row) => ({ from: row.first, to: row.second }));
+      return entries.length === 0 ? undefined : entries;
+    },
+    onChange,
+  );
+
+  return (
+    <RowPairList
+      rows={rows}
+      firstLabel={t.fields.bodyRewrite.replaceFrom}
+      secondLabel={t.fields.bodyRewrite.replaceTo}
+      addRowLabel={t.fields.bodyRewrite.addRow}
+      removeRowLabel={t.fields.bodyRewrite.removeRow}
+      onRowsChange={write}
+    />
   );
 };
 
@@ -1229,6 +1313,16 @@ export const RouteEditor = ({
                     {(definition.bodyRewrite.contentTypes?.length ?? 0) > 0 && (
                       <DangerNote path="bodyRewrite.contentTypes" />
                     )}
+                    <Field>
+                      <FieldLabel>{t.fields.bodyRewrite.replace}</FieldLabel>
+                      <FieldDescription>
+                        <Hint text={t.fields.bodyRewrite.replaceHelp} />
+                      </FieldDescription>
+                      <ReplaceEditor
+                        value={definition.bodyRewrite.replace}
+                        onChange={(value) => setSectionKey('bodyRewrite', 'replace', value)}
+                      />
+                    </Field>
                     <TextProperty
                       id="route-editor-body-rewrite-fallback-charset"
                       label={t.fields.bodyRewrite.fallbackCharset}
@@ -1301,6 +1395,61 @@ export const RouteEditor = ({
                     {(definition.cors.origins?.length ?? 0) === 0 && (
                       <DangerNote path="cors.origins (absent)" />
                     )}
+                    <ListProperty
+                      id="route-editor-cors-allow-methods"
+                      label={t.fields.cors.allowMethods}
+                      hint={t.fields.cors.allowMethodsHelp}
+                      placeholder="GET, POST"
+                      value={definition.cors.allowMethods}
+                      onChange={(value) => setSectionKey('cors', 'allowMethods', value)}
+                    />
+                    <ListProperty
+                      id="route-editor-cors-allow-headers"
+                      label={t.fields.cors.allowHeaders}
+                      hint={t.fields.cors.allowHeadersHelp}
+                      value={definition.cors.allowHeaders}
+                      onChange={(value) => setSectionKey('cors', 'allowHeaders', value)}
+                    />
+                    <ListProperty
+                      id="route-editor-cors-expose-headers"
+                      label={t.fields.cors.exposeHeaders}
+                      hint={t.fields.cors.exposeHeadersHelp}
+                      value={definition.cors.exposeHeaders}
+                      onChange={(value) => setSectionKey('cors', 'exposeHeaders', value)}
+                    />
+                    <SwitchProperty
+                      id="route-editor-cors-credentials"
+                      label={t.fields.cors.credentials}
+                      hint={t.fields.cors.credentialsHelp}
+                      defaultNote={t.common.defaultValue('false')}
+                      checked={definition.cors.credentials === true}
+                      onCheckedChange={(checked) =>
+                        // 默认 false：等于默认值不落键，段壳保留。
+                        setSectionKey('cors', 'credentials', checked ? true : undefined)
+                      }
+                    />
+                    <NumberProperty
+                      id="route-editor-cors-max-age"
+                      label={t.fields.cors.maxAge}
+                      unit="秒"
+                      hint={t.fields.cors.maxAgeHelp}
+                      value={
+                        definition.cors.maxAge === undefined ? '' : String(definition.cors.maxAge)
+                      }
+                      min={0}
+                      onChange={(raw) => {
+                        // schema 只要求非负整数；没有上限常量就不假装有，交给服务端判。
+                        const next = raw === '' ? undefined : Number(raw);
+                        setSectionKey(
+                          'cors',
+                          'maxAge',
+                          next !== undefined &&
+                            (Number.isNaN(next) || !Number.isInteger(next) || next < 0)
+                            ? undefined
+                            : next,
+                        );
+                      }}
+                    />
                   </>
                 )}
 
@@ -1379,9 +1528,9 @@ export const RouteEditor = ({
                         <dd className="text-muted-foreground font-mono text-xs break-all">
                           {previewValue(definition[key])}
                         </dd>
-                        {key === 'rateLimit' && (
+                        {t.fields.unknownFields.keyHelp[key] !== undefined && (
                           <dd className="text-muted-foreground text-xs">
-                            {t.fields.rateLimit.help}
+                            {t.fields.unknownFields.keyHelp[key]}
                           </dd>
                         )}
                         {dangerousSubPaths(key, definition[key]).map((path) => (
