@@ -6,6 +6,50 @@ const IDEMPOTENT = new Set(['GET', 'HEAD', 'OPTIONS', 'TRACE']);
 
 export const isRetryable = (method: string): boolean => IDEMPOTENT.has(method.toUpperCase());
 
+/** Raised when a request body grew past the route's `maxBodyBytes` mid-upload. */
+export class BodyLimitError extends Error {
+  override readonly name = 'BodyLimitError';
+  constructor(readonly limitBytes: number) {
+    super(`request body exceeded maxBodyBytes=${limitBytes}`);
+  }
+}
+
+/**
+ * Wraps a request body in a counting stream, so a body that passes the ceiling
+ * is cut off mid-flight.
+ *
+ * This is the only enforcement that works without `Content-Length` — a chunked
+ * upload declares no size — and it never buffers: chunks pass through untouched
+ * and are merely counted, so the memory cost is one chunk either way. What it
+ * cannot do is unsend: bytes already handed to `fetch` before the ceiling was
+ * crossed may reach the upstream, which is why a request that declares its size
+ * is refused earlier, before anything is forwarded at all.
+ */
+const countedBody = (
+  body: ReadableStream<Uint8Array>,
+  limitBytes: number,
+  onOverflow: () => void,
+): ReadableStream<Uint8Array> => {
+  let total = 0;
+  return body.pipeThrough(
+    new TransformStream<Uint8Array, Uint8Array>({
+      transform(chunk, controller) {
+        total += chunk.byteLength;
+        if (total > limitBytes) {
+          onOverflow();
+          // Erroring the readable side aborts the upstream upload; whatever the
+          // runtime reports from that is replaced below by the shared flag,
+          // because a body-stream failure does not reliably surface as the
+          // error thrown here.
+          controller.error(new BodyLimitError(limitBytes));
+          return;
+        }
+        controller.enqueue(chunk);
+      },
+    }),
+  );
+};
+
 /**
  * Builds the outbound headers.
  *
@@ -208,6 +252,28 @@ export const forward = async ({
   let lastError: unknown;
   let held: { response: Response; target: URL } | undefined;
 
+  // The body-size ceiling, watched on the stream itself. A body rules out replay
+  // whatever the method says, so the counting wrapper is built at most once and
+  // only the single attempt that carries a body can ever read it. An upgrade has
+  // no body to count.
+  const limit = route.requestPolicy?.maxBodyBytes;
+  const carriesBody =
+    request.method !== 'GET' && request.method !== 'HEAD' && request.body !== null;
+  let overflow: number | undefined;
+  // Tripping the limit has to reach the outbound request as an abort, not merely
+  // a flag: the upload is still in flight while `fetch` is awaiting the response,
+  // and a flag alone leaves the bytes past the ceiling flowing to the upstream.
+  // Aborting cuts the socket at the source. The flag is still kept — it is how
+  // the error is identified as this condition and not a plain client hang-up.
+  const overflowAbort = new AbortController();
+  const outboundBody =
+    limit !== undefined && carriesBody && !upgrade && request.body !== null
+      ? countedBody(request.body, limit, () => {
+          overflow = limit;
+          overflowAbort.abort();
+        })
+      : request.body;
+
   for (let attempt = 0; attempt < plan.length; attempt += 1) {
     const target = plan[attempt]!;
     if (attempt > 0 && target.host === plan[attempt - 1]!.host) {
@@ -242,6 +308,7 @@ export const forward = async ({
       // oxlint-disable-next-line no-await-in-loop
       const response = await attemptFetch({
         request,
+        body: outboundBody,
         target,
         headers,
         route,
@@ -249,7 +316,17 @@ export const forward = async ({
         upgrade,
         fetcher,
         detached,
+        overflowSignal: overflowAbort.signal,
       });
+      if (overflow !== undefined) {
+        // Headers arrived before the ceiling was crossed — an upstream that
+        // answered without reading the whole body. The body still grew past the
+        // limit, so the verdict is ours to give rather than the upstream's:
+        // drop what it sent and refuse.
+        response.body?.cancel();
+        lastError = new BodyLimitError(overflow);
+        break;
+      }
       if (
         switching &&
         policy?.includes('5xx') === true &&
@@ -271,8 +348,20 @@ export const forward = async ({
       return { response, target };
     } catch (error) {
       lastError = error;
+      // An aborted upload surfaces as AbortError, which is otherwise the client
+      // hanging up. The flag tells the two apart: a body past its ceiling is the
+      // client's doing, and neither retrying nor failing over can make it smaller.
+      if (overflow !== undefined) {
+        lastError = new BodyLimitError(overflow);
+        break;
+      }
       // The client hanging up is not a fault to retry: nobody is waiting.
       if (error instanceof Error && error.name === 'AbortError') {
+        break;
+      }
+      // A body past its ceiling is the client's doing, not the upstream's:
+      // neither retrying nor failing over can make it smaller.
+      if (error instanceof BodyLimitError) {
         break;
       }
       if (!switching) {
@@ -295,6 +384,13 @@ export const forward = async ({
 
 interface AttemptOptions {
   request: Request;
+  /**
+   * The body handed to the outbound request — the client's own, or a counting
+   * wrapper around it when the route sets `maxBodyBytes`. Separate from
+   * `request` because the wrapper may only be built once and may not be re-read
+   * by a second attempt.
+   */
+  body: ReadableStream<Uint8Array> | null;
   target: URL;
   headers: Headers;
   route: Route;
@@ -302,6 +398,12 @@ interface AttemptOptions {
   upgrade: boolean;
   fetcher: typeof fetch;
   detached: boolean;
+  /**
+   * Aborts when the counted body trips its ceiling mid-upload. Unlike the
+   * client's signal, it survives `detached`: cutting an oversized body is the
+   * route's policy, not the visitor's presence.
+   */
+  overflowSignal?: AbortSignal;
 }
 
 /**
@@ -316,6 +418,7 @@ interface AttemptOptions {
  */
 const attemptFetch = async ({
   request,
+  body,
   target,
   headers,
   route,
@@ -323,10 +426,14 @@ const attemptFetch = async ({
   upgrade,
   fetcher,
   detached,
+  overflowSignal,
 }: AttemptOptions): Promise<Response> => {
   const signals: AbortSignal[] = [AbortSignal.timeout(budget)];
   if (!detached && request.signal !== null && request.signal !== undefined) {
     signals.push(request.signal);
+  }
+  if (overflowSignal !== undefined) {
+    signals.push(overflowSignal);
   }
 
   const init: RequestInit = {
@@ -340,8 +447,8 @@ const attemptFetch = async ({
     ...(route.manualRedirect && !upgrade ? { redirect: 'manual' as const } : {}),
   };
 
-  if (request.method !== 'GET' && request.method !== 'HEAD' && request.body !== null) {
-    init.body = request.body;
+  if (request.method !== 'GET' && request.method !== 'HEAD' && body !== null) {
+    init.body = body;
     // Required for a stream body: the request is sent before the response is read.
     (init as { duplex?: string }).duplex = 'half';
   }
