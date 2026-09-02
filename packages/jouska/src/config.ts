@@ -948,6 +948,207 @@ const cacheKey = z.object({
 });
 
 /**
+ * A full URL for jouska to fetch directly — the delegated-auth endpoint.
+ *
+ * Unlike `upstream` this carries its own scheme, because the endpoint is not a
+ * routing target: it is a fixed service address, and `forwardAuth` has no
+ * `scheme` field to hold one. The host passes the same refusal as `upstream` —
+ * an auth endpoint that is a loopback or metadata address is a request-forgery
+ * surface exactly like a proxy that will fetch any host an operator types, and
+ * it is runtime-editable through KV just the same.
+ */
+const authUrl = z
+  .string()
+  .min(1)
+  .refine((v) => v.startsWith('http://') || v.startsWith('https://'), {
+    message: 'expected an absolute http:// or https:// URL',
+  })
+  .transform((v) => {
+    // Canonicalise through the parser: a hand-written comparison against the
+    // string would let trailing slashes, ports and casing drift between a
+    // stored config and the URL the runtime actually fetches.
+    const parsed = new URL(v);
+    parsed.hash = '';
+    return parsed.toString();
+  })
+  .superRefine((v, ctx) => {
+    const host = new URL(v).hostname;
+    if (isForbiddenHost(host)) {
+      ctx.addIssue({
+        code: 'custom',
+        message: `forwardAuth url "${host}" resolves to a loopback, private or ` +
+          'metadata address; set allowPrivateUpstream on the route to permit it',
+      });
+    }
+  });
+
+/**
+ * The private-address-exempt twin of {@link authUrl}, for routes that opted in
+ * via `allowPrivateUpstream`. Same reasoning as {@link upstreamAllowingPrivate}:
+ * Zod cannot consult a sibling field from inside a refinement, so the permissive
+ * variant lives in its own branch rather than behind a flag.
+ */
+const authUrlAllowingPrivate = z
+  .string()
+  .min(1)
+  .refine((v) => v.startsWith('http://') || v.startsWith('https://'), {
+    message: 'expected an absolute http:// or https:// URL',
+  })
+  .transform((v) => {
+    const parsed = new URL(v);
+    parsed.hash = '';
+    return parsed.toString();
+  });
+
+/**
+ * Header names a route may copy into or out of the delegated-auth exchange.
+ *
+ * `copyResponseHeaders` writes into the *upstream request*, so it is refused on
+ * the same list as `requestHeaders.set` — reusing {@link RESERVED_REQUEST_HEADERS}
+ * here is the point: a separate, shorter list would be a way around the
+ * `host`/`x-forwarded-*` refusals by another door. `copyRequestHeaders` is
+ * checked against the same set (the runtime would overwrite anything in it
+ * anyway), while leaving `authorization`/`cookie` — the reason the field exists
+ * — untouched.
+ */
+const authHeaderNames = (field: string) =>
+  z.array(headerName).superRefine((names, ctx) => {
+    const { canonical, problems } = inspectHeaderNames(names, field, RESERVED_REQUEST_HEADERS);
+    for (const message of problems) {
+      ctx.addIssue({ code: 'custom', message });
+    }
+    void canonical;
+  });
+
+/**
+ * Delegated authentication in the nginx `auth_request` shape: ask one endpoint
+ * whether the caller is who they claim to be, before anything reaches the
+ * upstream.
+ *
+ * The request body is never sent to the endpoint — it is a one-shot stream the
+ * proxy still needs for the upstream, and an auth service reads headers, not
+ * bodies. On a non-2xx the auth response itself is relayed verbatim, so a login
+ * redirect or `WWW-Authenticate` challenge arrives as the service wrote it.
+ *
+ * Failure to *reach* the endpoint is refused rather than admitted by default:
+ * the endpoint being down is not evidence that the caller is legitimate.
+ * `failOpen` exists for the deployments that would rather stay up, and is
+ * flagged dangerous in the panel for the same reason `allowPrivateUpstream` is.
+ */
+const forwardAuthSchema = z.object({
+  /**
+   * Absolute URL of the auth endpoint. Fetched directly, never via the route
+   * table. Required: an auth block without an address would silently admit
+   * everything while looking like it protects something.
+   */
+  url: authUrl,
+  /**
+   * Client headers relayed to the auth endpoint. Defaults to the credential
+   * pair, since that is what every auth service reads; an empty list is the
+   * spelling for an endpoint that needs nothing.
+   */
+  copyRequestHeaders: authHeaderNames('forwardAuth.copyRequestHeaders')
+    .nonempty()
+    .default(['authorization', 'cookie']),
+  /**
+   * Auth-response headers written into the upstream request — how the caller's
+   * identity reaches the upstream (`x-user-id` is the usual case).
+   */
+  copyResponseHeaders: authHeaderNames('forwardAuth.copyResponseHeaders')
+    .nonempty()
+    .default([]),
+  /** Deadline for the auth exchange, shorter than any upstream attempt default. */
+  timeoutMs: z.number().int().positive().max(5_000).default(2_000),
+  /**
+   * Serve the upstream even when the auth endpoint cannot be reached. Absent
+   * means fail closed — the default exists so that an auth outage is an outage,
+   * not an open door. A `z.literal(true)` rather than a boolean so that
+   * `failOpen: false` is not accepted as a way of *writing down* the default;
+   * the absence of the field is the statement.
+   */
+  failOpen: z.literal(true).optional(),
+});
+
+/**
+ * The auth policy blocks, with a permissive-url variant of `forwardAuth` for
+ * private routes. Written as functions of the URL schema so the two branches
+ * cannot drift — a check added to one and forgotten in the other would make
+ * `allowPrivateUpstream` a way around the SSRF refusal.
+ */
+/**
+ * Cloudflare Access JWT verification. The token arrives on
+ * `Cf-Access-Jwt-Assertion` from every request that passed an Access
+ * application; jouska verifies it locally (signature against the team's JWKS,
+ * expiry, audience, issuer) so the upstream can trust `X-Access-User`-style
+ * identity without doing crypto itself.
+ *
+ * Only the Cloudflare Access shape is supported — JWKS discovery and generic
+ * OIDC are out of scope by design, the same way `rateLimit` binds to the
+ * platform's native binding instead of implementing a limiter.
+ */
+const accessJwtSchema = z.object({
+  /** Access team domain, e.g. `myteam.cloudflareaccess.com`. No scheme, no wildcard. */
+  team: z
+    .string()
+    .min(1)
+    .regex(
+      /^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/i,
+      'expected the Access team domain, e.g. "myteam.cloudflareaccess.com"',
+    )
+    .transform((v) => v.toLowerCase()),
+  /** `aud` the token must carry — the Access application's AUD tag. */
+  audience: z.string().min(1),
+});
+
+/**
+ * API-key checking, local and cheap: hash the presented key and compare against
+ * the configured digests.
+ *
+ * Keys are stored as SHA-256 hex digests, never plaintext — the route table
+ * lives in KV and is displayed by the panel, so a plaintext key there is a key
+ * anyone with config read access already holds. The presented key is hashed
+ * with the same algorithm, so the operator computes the digest once (`sha256sum
+ * | cut -d' ' -f1` or the panel's own hashing field) and the proxy never sees
+ * the original.
+ */
+const apiKeySchema = z.object({
+  /** Header the key arrives on. Defaults to the conventional name. */
+  header: headerName
+    .transform((v) => v.toLowerCase())
+    .refine((v) => !RESERVED_REQUEST_HEADERS.has(v), {
+      message: 'header is reserved; the proxy derives it or the runtime owns it',
+    })
+    .default('x-api-key'),
+  /**
+   * Acceptable keys, as SHA-256 hex digests. The regex is the whole secret
+   * hygiene: a value that is not exactly 64 lowercase-or-uppercase hex digits
+   * is either a typo or someone pasting a plaintext key, and accepting either
+   * would silently make the check useless.
+   */
+  keys: z
+    .array(z.string().regex(/^[0-9a-fA-F]{64}$/, 'expected a SHA-256 hex digest (64 hex digits)'))
+    .min(1)
+    .max(100)
+    .transform((keys) => keys.map((k) => k.toLowerCase())),
+});
+
+/**
+ * The auth policy blocks, with a permissive-url variant of `forwardAuth` for
+ * private routes. Written as functions of the URL schema so the two branches
+ * cannot drift — a check added to one and forgotten in the other would make
+ * `allowPrivateUpstream` a way around the SSRF refusal.
+ */
+const authBlocks = (url: typeof authUrl) =>
+  ({
+    forwardAuth: forwardAuthSchema.extend({ url }).optional(),
+    accessJwt: accessJwtSchema.optional(),
+    apiKey: apiKeySchema.optional(),
+  }) as const;
+
+const authBehaviour = authBlocks(authUrl);
+const authBehaviourPrivate = authBlocks(authUrlAllowingPrivate);
+
+/**
  * Upstream response caching, served from the Cloudflare Cache API.
  *
  * Off unless a route says otherwise, and the defaults cover static assets only —
@@ -1264,6 +1465,9 @@ const routeBehaviour = {
   rateLimit: rateLimit.optional(),
   /** Identity checks: Cloudflare Access JWT and/or API key. Omit to admit every caller. */
   access: access.optional(),
+  // Spread rather than restated, so the schemas cannot drift between the route
+  // and a future restatement. Whole-block replace on merge, like `cors`/`ip`.
+  ...authBehaviour,
 } as const;
 
 const route = z.object({
@@ -1334,6 +1538,10 @@ const privateRoute = route.extend({
   upstreams: privateUpstreams.optional(),
   trafficSplit: privateTrafficSplit.optional(),
   allowPrivateUpstream: z.literal(true),
+  // The auth endpoint inherits the same exemption as the upstream: a route that
+  // declared `allowPrivateUpstream` means in-network auth services are the
+  // point, and the strict branch would refuse the URL the same config blessed.
+  forwardAuth: authBehaviourPrivate.forwardAuth,
 });
 
 /**
@@ -1372,6 +1580,13 @@ const defaults = z
     ip: routeBehaviour.ip,
     rateLimit: routeBehaviour.rateLimit,
     access: routeBehaviour.access,
+    // Optional block, applied whole-replace: a table-wide auth policy that a
+    // route does not override is what a route not listing any means. Per-key
+    // merging here would splice a table-wide `url` under a route-local
+    // `failOpen`, and the half-merged block would be nobody's intent.
+    accessJwt: routeBehaviour.accessJwt,
+    apiKey: routeBehaviour.apiKey,
+    forwardAuth: routeBehaviour.forwardAuth,
   })
   .optional();
 
@@ -1720,6 +1935,25 @@ export const configSchema = z
       }
 
       /**
+       * A cached response is keyed by URL, not by caller. On a route that
+       * authenticates, one caller's answer to "are you allowed" would be handed
+       * to the next — the cache is not just wrong here, it is an auth bypass.
+       * There is no safe combination to configure, so there is no override: the
+       * pairing is refused, and the runtime drops the cache block as a backstop
+       * in case an older document still carries it.
+       */
+      const authFields = [entry.forwardAuth, entry.accessJwt, entry.apiKey];
+      if (entry.cache !== undefined && authFields.some((f) => f !== undefined)) {
+        ctx.addIssue({
+          code: 'custom',
+          path: ['routes', index, 'cache'],
+          message:
+            'cache is refused on routes that authenticate: a cached entry is keyed by URL ' +
+            'and would serve one caller\'s authorised response to the next',
+        });
+      }
+
+      /**
        * The three ways of naming upstreams are alternative strategies, not
        * layers: `trafficSplit` picks a winner before anything is sent, while
        * `upstreams` orders attempts. A route carrying two would make "which
@@ -1817,6 +2051,9 @@ export type AccessConfig = z.output<typeof access>;
 export type BodyRewriteConfig = z.output<typeof bodyRewrite>;
 export type CacheConfig = z.output<typeof cache>;
 export type RequestPolicyConfig = z.output<typeof requestPolicy>;
+export type ForwardAuthConfig = z.output<typeof forwardAuthSchema>;
+export type AccessJwtConfig = z.output<typeof accessJwtSchema>;
+export type ApiKeyConfig = z.output<typeof apiKeySchema>;
 export type HeaderRulesConfig = HeaderRules;
 export type RouteInput = z.input<typeof anyRoute>;
 /** Input shape, minus the internal bookkeeping field preprocessing supplies. */

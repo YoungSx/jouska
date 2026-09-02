@@ -116,6 +116,35 @@ const RULES: readonly Rule[] = [
     reason:
       'every distinct value of these headers becomes its own cache entry — folding a high-cardinality header like user-agent or referer gives each visitor a private cache and the hit rate drops to zero',
   },
+  {
+    // Only the plaintext scheme is the risk, exactly like `scheme` — an https
+    // auth endpoint deserves no warning on publish.
+    path: 'forwardAuth.url',
+    level: 'medium',
+    guard: (node) => typeof node === 'string' && node.startsWith('http://'),
+    reason:
+      'http sends the copied credentials (authorization, cookie) unencrypted to the auth endpoint',
+  },
+  {
+    path: 'forwardAuth.failOpen',
+    level: 'high',
+    reason:
+      'an unreachable auth endpoint then admits everything — availability outranks admission, so an outage becomes open doors',
+  },
+  {
+    // The whole block, not a subfield: a mistyped team or audience admits nobody,
+    // and the failure looks like an outage rather than a config error.
+    path: 'accessJwt',
+    level: 'medium',
+    reason:
+      'a wrong team or audience refuses correctly signed requests with 401 — the lockout reads as an outage, not a typo',
+  },
+  {
+    path: 'apiKey.keys',
+    level: 'high',
+    reason:
+      'anyone who can edit this table can mint themselves a working key — a digest is not an authorisation',
+  },
 ];
 
 /**

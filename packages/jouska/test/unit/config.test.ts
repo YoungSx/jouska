@@ -577,6 +577,145 @@ describe('match conditions (headers / query / cookies)', () => {
       }),
     ).toThrow();
   });
+});
+
+describe('access control config', () => {
+  it('refuses forwardAuth without a url', () => {
+    expect(() =>
+      defineConfig({
+        routes: [
+          {
+            match: { path: '/a' },
+            upstream: 'a.test',
+            // @ts-expect-error exercising runtime validation with an invalid value
+            forwardAuth: {},
+          },
+        ],
+      }),
+    ).toThrow();
+  });
+
+  it.each([
+    ['http://localhost:8080/auth'],
+    ['https://127.0.0.1/auth'],
+    ['http://169.254.169.254/metadata'],
+    ['http://10.0.0.5/auth'],
+    ['https://192.168.1.1/auth'],
+  ])('refuses the auth url %s', (url) => {
+    expect(() =>
+      defineConfig({
+        routes: [{ match: { path: '/a' }, upstream: 'a.test', forwardAuth: { url } }],
+      }),
+    ).toThrow();
+  });
+
+  it('refuses a forwardAuth url that is not a parseable http url', () => {
+    expect(() =>
+      defineConfig({
+        routes: [
+          {
+            match: { path: '/a' },
+            upstream: 'a.test',
+            forwardAuth: { url: 'not-a-url' },
+          },
+        ],
+      }),
+    ).toThrow();
+  });
+
+  it('refuses a forwardAuth url with a non-http scheme', () => {
+    expect(() =>
+      defineConfig({
+        routes: [
+          {
+            match: { path: '/a' },
+            upstream: 'a.test',
+            forwardAuth: { url: 'ftp://auth.test/check' },
+          },
+        ],
+      }),
+    ).toThrow();
+  });
+
+  it('permits a private auth url on a route that opted into private upstreams', () => {
+    const config = defineConfig({
+      routes: [
+        {
+          match: { path: '/a' },
+          upstream: '10.0.0.5',
+          allowPrivateUpstream: true,
+          forwardAuth: { url: 'http://10.0.0.5:8080/auth' },
+        },
+      ],
+    });
+    expect(config.routes[0]!.forwardAuth!.url).toBe('http://10.0.0.5:8080/auth');
+  });
+
+  it('refuses a reserved name in copyRequestHeaders', () => {
+    expect(() =>
+      defineConfig({
+        routes: [
+          {
+            match: { path: '/a' },
+            upstream: 'a.test',
+            forwardAuth: {
+              url: 'https://auth.test/check',
+              copyRequestHeaders: ['host'],
+            },
+          },
+        ],
+      }),
+    ).toThrow();
+  });
+
+  it('refuses a reserved name in copyResponseHeaders', () => {
+    expect(() =>
+      defineConfig({
+        routes: [
+          {
+            match: { path: '/a' },
+            upstream: 'a.test',
+            forwardAuth: {
+              url: 'https://auth.test/check',
+              copyResponseHeaders: ['x-forwarded-for'],
+            },
+          },
+        ],
+      }),
+    ).toThrow();
+  });
+
+  it('defaults the forward auth exchange fields and leaves failOpen closed', () => {
+    const config = defineConfig({
+      routes: [
+        {
+          match: { path: '/a' },
+          upstream: 'a.test',
+          forwardAuth: { url: 'https://auth.test/check' },
+        },
+      ],
+    });
+    expect(config.routes[0]!.forwardAuth).toEqual({
+      url: 'https://auth.test/check',
+      copyRequestHeaders: ['authorization', 'cookie'],
+      copyResponseHeaders: [],
+      timeoutMs: 2000,
+    });
+    expect(config.routes[0]!.forwardAuth!.failOpen).toBeUndefined();
+  });
+
+  it('keeps an explicit failOpen', () => {
+    const config = defineConfig({
+      routes: [
+        {
+          match: { path: '/a' },
+          upstream: 'a.test',
+          forwardAuth: { url: 'https://auth.test/check', failOpen: true },
+        },
+      ],
+    });
+    expect(config.routes[0]!.forwardAuth!.failOpen).toBe(true);
+  });
 
   it('rejects invalid header, query and cookie names', () => {
     // Header and cookie names are RFC tokens; a query name may not carry the
@@ -636,5 +775,122 @@ describe('match conditions (headers / query / cookies)', () => {
       ],
     });
     expect(config.routes[0]!.match.headers![0]!.equals).toBe('Prod');
+  });
+});
+
+describe('access control config (cache cross-check)', () => {
+  const keyDigest = 'a'.repeat(64);
+
+  it('refuses an apiKey key that is not 64 hex characters', () => {
+    expect(() =>
+      defineConfig({
+        routes: [
+          {
+            match: { path: '/a' },
+            upstream: 'a.test',
+            apiKey: { keys: ['tooshort'] },
+          },
+        ],
+      }),
+    ).toThrow();
+  });
+
+  it('refuses a reserved apiKey header', () => {
+    expect(() =>
+      defineConfig({
+        routes: [
+          {
+            match: { path: '/a' },
+            upstream: 'a.test',
+            apiKey: { keys: [keyDigest], header: 'host' },
+          },
+        ],
+      }),
+    ).toThrow();
+  });
+
+  it('lowercases the apiKey header and key digests', () => {
+    const config = defineConfig({
+      routes: [
+        {
+          match: { path: '/a' },
+          upstream: 'a.test',
+          apiKey: { keys: [keyDigest.toUpperCase()], header: 'X-Api-Key' },
+        },
+      ],
+    });
+    expect(config.routes[0]!.apiKey).toEqual({ keys: [keyDigest], header: 'x-api-key' });
+  });
+
+  it('rejects an expired audience miss on accessJwt config', () => {
+    // The audience is a required string; an empty one is a config error, not a
+    // route that admits everyone.
+    expect(() =>
+      defineConfig({
+        routes: [
+          {
+            match: { path: '/a' },
+            upstream: 'a.test',
+            accessJwt: { team: 'myteam.cloudflareaccess.com', audience: '' },
+          },
+        ],
+      }),
+    ).toThrow();
+  });
+
+  it('refuses cache alongside any access control', () => {
+    expect(() =>
+      defineConfig({
+        routes: [
+          {
+            match: { path: '/a' },
+            upstream: 'a.test',
+            cache: { enabled: true },
+            apiKey: { keys: [keyDigest] },
+          },
+        ],
+      }),
+    ).toThrow(/cache is refused/);
+  });
+
+  it('folds a table-wide forwardAuth into routes that state none', () => {
+    const config = defineConfig({
+      defaults: { forwardAuth: { url: 'https://auth.test/check' } },
+      routes: [{ match: { path: '/a' }, upstream: 'a.test' }],
+    });
+    expect(config.routes[0]!.forwardAuth!.url).toBe('https://auth.test/check');
+  });
+
+  it('replaces the table-wide forwardAuth whole when a route states its own', () => {
+    // Auth blocks are not in the per-key merge set, so a route's own block
+    // starts from scratch — a table-level failOpen or timeout must not leak
+    // into a route that declared its own exchange.
+    const config = defineConfig({
+      defaults: {
+        forwardAuth: { url: 'https://auth.test/check', timeoutMs: 5000, failOpen: true },
+      },
+      routes: [
+        {
+          match: { path: '/a' },
+          upstream: 'a.test',
+          forwardAuth: { url: 'https://route.test/auth' },
+        },
+      ],
+    });
+    expect(config.routes[0]!.forwardAuth).toEqual({
+      url: 'https://route.test/auth',
+      copyRequestHeaders: ['authorization', 'cookie'],
+      copyResponseHeaders: [],
+      timeoutMs: 2000,
+    });
+  });
+
+  it('refuses a cached route once the table-wide forwardAuth folds onto it', () => {
+    expect(() =>
+      defineConfig({
+        defaults: { forwardAuth: { url: 'https://auth.test/check' } },
+        routes: [{ match: { path: '/a' }, upstream: 'a.test', cache: { enabled: true } }],
+      }),
+    ).toThrow(/cache is refused/);
   });
 });

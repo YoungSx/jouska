@@ -110,6 +110,36 @@ export interface RequestPolicyRules {
 }
 
 /**
+ * 委托鉴权：把「你是谁」交给一个 URL（nginx `auth_request` 语义）。
+ *
+ * 2xx 放行，其他状态原样回传给调用方。`failOpen` 只接受 `true` —— 缺省即
+ * fail-closed，schema 不给「关掉一个不存在的东西」留位置。
+ */
+export interface ForwardAuthRules {
+  url?: string;
+  copyRequestHeaders?: string[];
+  copyResponseHeaders?: string[];
+  timeoutMs?: number;
+  failOpen?: true;
+}
+
+/** Cloudflare Access JWT：本地验签 + aud + 过期，不落在库里做登录。 */
+export interface AccessJwtRules {
+  team?: string;
+  audience?: string;
+}
+
+/**
+ * API key：配置里只存 SHA-256 摘要（64 位小写十六进制）。
+ *
+ * 表单收明文、浏览器现场算摘要 —— 明文从不写进 definition。
+ */
+export interface ApiKeyRules {
+  header?: string;
+  keys?: string[];
+}
+
+/**
  * 一条路由的定义。
  *
  * 全部字段可选 —— 编辑器要能承载一份不完整的草稿，用户填到一半时不该被类型拒
@@ -152,6 +182,10 @@ export interface RouteDefinition {
   ip?: IpRules;
   rateLimit?: RateLimitRules;
   access?: AccessRules;
+  /** 三选一可叠加，AND 语义：配了的都要过。与 `cache` 互斥（schema 交叉检查）。 */
+  forwardAuth?: ForwardAuthRules;
+  accessJwt?: AccessJwtRules;
+  apiKey?: ApiKeyRules;
   [key: string]: unknown;
 }
 
@@ -211,6 +245,8 @@ export const NUMERIC_BOUNDS = {
   streamIdleTimeoutMs: { min: 1, max: 600_000, default: 60_000 },
   retries: { min: 0, max: 100, default: 0 },
   retryBackoffMs: { min: 0, max: 5_000, default: 100 },
+  /** 委托鉴权子请求的时限；schema 上限 5000，默认 2000。 */
+  authTimeoutMs: { min: 1, max: 5_000, default: 2_000 },
 } as const;
 
 /** boolean 字段的 schema 默认值，用来在表单上显示"默认 X"。 */
@@ -249,6 +285,11 @@ export const LIMITS = {
   minPasswordLength: 12,
   maxPasswordLength: 1024,
   maxSubjectLength: 128,
+  /** 单条路由的 key 摘要上限（schema 同值）与摘要的十六进制长度。 */
+  maxApiKeys: 100,
+  sha256HexLength: 64,
+  /** Access token 送进解析器之前的字符上限，先卡长度再解析（#34 的教训）。 */
+  maxJwtChars: 4096,
 } as const;
 
 /** 认证策略，用于登录页的说明文案。与 api/auth.ts 的常量一致。 */
@@ -286,6 +327,9 @@ export const FORM_COVERED_KEYS: readonly string[] = [
   'ip',
   'requestPolicy',
   'access',
+  'forwardAuth',
+  'accessJwt',
+  'apiKey',
 ];
 
 /**
@@ -309,6 +353,10 @@ export const DANGEROUS_PATHS = new Set([
   'responseHeaders.set',
   'cache.contentTypes',
   'requestPolicy.allowedMethods',
+  'forwardAuth.url',
+  'forwardAuth.failOpen',
+  'accessJwt',
+  'apiKey.keys',
 ]);
 
 /** 危险字段的中文说明。服务端 reason 是英文，面板要用自己的语言说清后果。 */
@@ -335,6 +383,13 @@ export const DANGER_REASONS: Record<string, string> = {
     '默认只缓存静态资源。把文档类型加进来，一个没带 cookie、也没标 private 的个性化页面就会被发给下一个访客。',
   'requestPolicy.allowedMethods':
     '列表写漏一个方法，用它的调用方全部收到 405 —— 拒绝是显式的，不会悄悄放行去别处。',
+  'forwardAuth.url':
+    '写 `http://` 意味着 cookie 和 authorization 以明文发往鉴权端点。',
+  'forwardAuth.failOpen':
+    '打开后鉴权端点挂了所有请求直接放行 —— 可用性高于准入，故障会变成全场免票。',
+  accessJwt:
+    'team 或 audience 写错时，签名正确的请求也会收到 401 —— 把所有人挡在门外的是配置，不是攻击。',
+  'apiKey.keys': '能编辑这份路由表的人就能给自己加一把能用的钥匙。摘要不等于授权。',
 };
 
 /**

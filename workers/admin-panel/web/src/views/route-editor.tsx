@@ -163,7 +163,14 @@ const BOOLEAN_FIELDS: Record<
 const SCHEME_UNSET = 'unset';
 
 /** 开关型子段：这一段存不存在，本身就是开关状态。 */
-type SectionKey = 'bodyRewrite' | 'cors' | 'ip' | 'access';
+type SectionKey =
+  | 'bodyRewrite'
+  | 'cors'
+  | 'ip'
+  | 'access'
+  | 'forwardAuth'
+  | 'accessJwt'
+  | 'apiKey';
 
 /** 本地校验的错误集：键是字段，值是直接展示的文案。 */
 type FieldErrors = Partial<
@@ -888,6 +895,186 @@ const ConditionsEditor = ({
   );
 };
 
+/* ---------- apiKey 的 keys 行编辑 ---------- */
+
+/** 摘要的形状：64 位十六进制（大小写都算，收下时统一小写 —— schema 只存小写）。 */
+const DIGEST_PATTERN = /^[0-9a-fA-F]{64}$/;
+
+const sha256Hex = async (text: string): Promise<string> => {
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
+  return Array.from(new Uint8Array(digest), (byte) => byte
+    .toString(16)
+    .padStart(2, '0')).join('');
+};
+
+interface KeyRow {
+  readonly text: string;
+  /** true = `text` 是已确认的摘要，展示成前 8 位 + `…`。 */
+  readonly masked: boolean;
+  /** 聚焦被清空时的原摘要：空着离开输入框不等于删掉这把 key。 */
+  readonly original?: string;
+}
+
+interface ApiKeyKeysEditorProps {
+  readonly keysLabel: string;
+  readonly addRowLabel: string;
+  readonly removeRowLabel: string;
+  readonly value: readonly string[] | undefined;
+  readonly onChange: (keys: readonly string[] | undefined) => void;
+}
+
+/**
+ * API key 列表：粘贴明文，失焦时浏览器本地算成 SHA-256 摘要。
+ *
+ * 不变式：**明文从不写进 definition** —— 未确认的输入不 emit，只有失焦转换后的
+ * 摘要才上报；已是 64 位十六进制的输入视为摘要原样收下。所以任何时刻从表单导出的
+ * definition 都不含明文，落 D1/KV 的自然也没有。
+ *
+ * 已确认的行展示前 8 位 + `…`。聚焦会清空输入框等重输：旧摘要在 `original` 里，
+ * 空着离开输入框就恢复原行 —— 删 key 走删行按钮，不靠清空文本这个易误触的手势。
+ */
+const ApiKeyKeysEditor = ({
+  keysLabel,
+  addRowLabel,
+  removeRowLabel,
+  value,
+  onChange,
+}: ApiKeyKeysEditorProps) => {
+  const [rows, setRows] = React.useState<KeyRow[]>(() =>
+    (value ?? []).map((key) => ({ text: key, masked: true })),
+  );
+  const signature = JSON.stringify(value ?? null);
+  const emitted = React.useRef(signature);
+  // 外部值变了（JSON 视图改的、或初始值到了）才重放；自报的回声不算变化。
+  if (emitted.current !== signature) {
+    emitted.current = signature;
+    setRows((value ?? []).map((key) => ({ text: key, masked: true })));
+  }
+
+  // 失焦转换是异步的，读最新行快照而不是闭包里的旧值：连续失焦两行时，
+  // 后一次确认要包含前一次还没写回的输入。
+  const rowsRef = React.useRef(rows);
+  rowsRef.current = rows;
+  const confirmSeq = React.useRef(0);
+
+  /** 本地行变更的统一出口：作废在途确认（旧快照不得再写回），再落新行。 */
+  const writeRows = (next: readonly KeyRow[]) => {
+    confirmSeq.current += 1;
+    const snapshot = [...next];
+    setRows(snapshot);
+    rowsRef.current = snapshot;
+  };
+
+  /**
+   * 唯一的 emit 出口。只发已确认的行 —— 未确认的输入可能是明文，明文在任何
+   * 路径上都不进 definition；它们等下一次失焦转换落地。
+   */
+  const emitRows = (nextRows: readonly KeyRow[]) => {
+    const emit = nextRows
+      .filter((row) => row.masked && row.text !== '')
+      .map((row) => row.text);
+    const next = emit.length === 0 ? undefined : emit;
+    emitted.current = JSON.stringify(next ?? null);
+    onChange(next);
+  };
+
+  const handleBlur = () => {
+    const seq = (confirmSeq.current += 1);
+    // 聚焦时被清空、又什么都没输的行，先恢复原摘要。
+    const restored = rowsRef.current.map((row) =>
+      row.text === '' && row.original !== undefined
+        ? { text: row.original, masked: true }
+        : row,
+    );
+    void Promise.all(
+      restored.map(async (row) => {
+        if (row.text === '') {
+          return row;
+        }
+        const digest = DIGEST_PATTERN.test(row.text)
+          ? row.text.toLowerCase()
+          : await sha256Hex(row.text);
+        return { text: digest, masked: true };
+      }),
+    ).then((nextRows) => {
+      // 只有最新一次确认可以写回；更早的转换结果基于旧快照，写回会盖掉新输入。
+      if (seq !== confirmSeq.current) {
+        return;
+      }
+      writeRows(nextRows);
+      emitRows(nextRows);
+    });
+  };
+
+  return (
+    <Field>
+      <FieldLabel>{keysLabel}</FieldLabel>
+      <div className="flex flex-col gap-2">
+        {rows.map((row, index) => (
+          <div key={index} className="flex items-center gap-2">
+            <Input
+              className="font-mono text-xs"
+              aria-label={`${keysLabel} ${String(index + 1)}`}
+              autoComplete="off"
+              value={row.masked ? `${row.text.slice(0, 8)}…` : row.text}
+              onFocus={() => {
+                if (!row.masked) {
+                  return;
+                }
+                // 展示的是遮蔽后的前 8 位，直接编辑会拿它当明文去算 —— 清掉重输。
+                writeRows(
+                  rowsRef.current.map((entry, i) =>
+                    i === index
+                      ? { text: '', masked: false, original: entry.text }
+                      : entry,
+                  ),
+                );
+              }}
+              onChange={(event) => {
+                writeRows(
+                  rowsRef.current.map((entry, i) =>
+                    i === index
+                      ? { text: event.target.value, masked: false }
+                      : entry,
+                  ),
+                );
+              }}
+              onBlur={handleBlur}
+            />
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon-sm"
+              aria-label={removeRowLabel}
+              onClick={() => {
+                const next = rowsRef.current.filter((_, i) => i !== index);
+                writeRows(next);
+                // 删行立即上报，不必等失焦。只发已确认行：未确认的行可能是明文。
+                emitRows(next);
+              }}
+            >
+              <Trash2Icon />
+            </Button>
+          </div>
+        ))}
+        <div>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={() => {
+              writeRows([...rowsRef.current, { text: '', masked: false }]);
+            }}
+          >
+            <PlusIcon />
+            {addRowLabel}
+          </Button>
+        </div>
+      </div>
+    </Field>
+  );
+};
+
 /* ---------- 校验与错误分派 ---------- */
 
 /** 把明显的错拦在一次网络往返之前；权威判定在服务端 /api/preview。 */
@@ -1319,6 +1506,12 @@ export const RouteEditor = ({
 
   const unknownKeys = Object.keys(definition).filter((key) => !FORM_COVERED_KEYS.includes(key));
   const reservedHeaders = reservedHeaderNames(definition);
+  // 鉴权三段的保留名检查：抄回头最终写进上游请求，与 requestHeaders 同一套拒绝表。
+  const forwardAuthReservedRequest = reservedNamesIn(definition.forwardAuth?.copyRequestHeaders);
+  const forwardAuthReservedResponse = reservedNamesIn(definition.forwardAuth?.copyResponseHeaders);
+  const apiKeyHeaderReserved =
+    definition.apiKey?.header !== undefined &&
+    RESERVED_REQUEST_HEADERS.has(definition.apiKey.header.trim().toLowerCase());
 
   return (
     <Dialog
@@ -1906,6 +2099,192 @@ export const RouteEditor = ({
                       />
                     </>
                   )}
+                  <Field orientation="horizontal">
+                    <Switch
+                      id="route-editor-forward-auth"
+                      checked={definition.forwardAuth !== undefined}
+                      onCheckedChange={(checked) =>
+                        checked ? setSectionOn('forwardAuth') : setSectionOff('forwardAuth')
+                      }
+                    />
+                    <FieldContent>
+                      <FieldLabel htmlFor="route-editor-forward-auth">
+                        {t.fields.forwardAuth.label}
+                      </FieldLabel>
+                    </FieldContent>
+                  </Field>
+
+                  {definition.forwardAuth !== undefined && (
+                    <>
+                      <TextProperty
+                        id="route-editor-forward-auth-url"
+                        label={t.fields.forwardAuth.url}
+                        hint={t.fields.forwardAuth.urlHelp}
+                        value={definition.forwardAuth.url ?? ''}
+                        mono
+                        onChange={(value) =>
+                          setSectionKey('forwardAuth', 'url', value === '' ? undefined : value)
+                        }
+                      />
+                      {/* 只有明文方案才值得警示，与 danger.ts 的 guard 同口径。 */}
+                      {(definition.forwardAuth.url?.startsWith('http://') ?? false) && (
+                        <DangerNote path="forwardAuth.url" />
+                      )}
+                      <ListProperty
+                        id="route-editor-forward-auth-request-headers"
+                        label={t.fields.forwardAuth.copyRequestHeaders}
+                        hint={t.fields.forwardAuth.copyRequestHeadersHelp}
+                        value={definition.forwardAuth.copyRequestHeaders}
+                        onChange={(value) =>
+                          setSectionKey('forwardAuth', 'copyRequestHeaders', value)
+                        }
+                      />
+                      {forwardAuthReservedRequest.length > 0 && (
+                        <FieldError>
+                          {t.fields.forwardAuth.reserved(forwardAuthReservedRequest.join(', '))}
+                        </FieldError>
+                      )}
+                      <ListProperty
+                        id="route-editor-forward-auth-response-headers"
+                        label={t.fields.forwardAuth.copyResponseHeaders}
+                        hint={t.fields.forwardAuth.copyResponseHeadersHelp}
+                        value={definition.forwardAuth.copyResponseHeaders}
+                        onChange={(value) =>
+                          setSectionKey('forwardAuth', 'copyResponseHeaders', value)
+                        }
+                      />
+                      {forwardAuthReservedResponse.length > 0 && (
+                        <FieldError>
+                          {t.fields.forwardAuth.reserved(forwardAuthReservedResponse.join(', '))}
+                        </FieldError>
+                      )}
+                      <NumberProperty
+                        id="route-editor-forward-auth-timeout"
+                        label={t.fields.forwardAuth.timeoutMs}
+                        unit="毫秒"
+                        hint={t.fields.forwardAuth.timeoutMsHelp}
+                        value={
+                          definition.forwardAuth.timeoutMs === undefined
+                            ? ''
+                            : String(definition.forwardAuth.timeoutMs)
+                        }
+                        min={NUMERIC_BOUNDS.authTimeoutMs.min}
+                        max={NUMERIC_BOUNDS.authTimeoutMs.max}
+                        onChange={(raw) => {
+                          const next = raw === '' ? undefined : Number(raw);
+                          setSectionKey(
+                            'forwardAuth',
+                            'timeoutMs',
+                            next !== undefined &&
+                              (Number.isNaN(next) ||
+                                !Number.isInteger(next) ||
+                                next < NUMERIC_BOUNDS.authTimeoutMs.min ||
+                                next > NUMERIC_BOUNDS.authTimeoutMs.max)
+                              ? undefined
+                              : next,
+                          );
+                        }}
+                      />
+                      <SwitchProperty
+                        id="route-editor-forward-auth-fail-open"
+                        label={t.fields.forwardAuth.failOpen}
+                        hint={t.fields.forwardAuth.failOpenHelp}
+                        defaultNote={t.fields.forwardAuth.failOpenDefault}
+                        checked={definition.forwardAuth.failOpen === true}
+                        onCheckedChange={(checked) =>
+                          setSectionKey('forwardAuth', 'failOpen', checked ? true : undefined)
+                        }
+                      />
+                      {definition.forwardAuth.failOpen === true && (
+                        <DangerNote path="forwardAuth.failOpen" />
+                      )}
+                    </>
+                  )}
+
+                  <Field orientation="horizontal">
+                    <Switch
+                      id="route-editor-access-jwt"
+                      checked={definition.accessJwt !== undefined}
+                      onCheckedChange={(checked) =>
+                        checked ? setSectionOn('accessJwt') : setSectionOff('accessJwt')
+                      }
+                    />
+                    <FieldContent>
+                      <FieldLabel htmlFor="route-editor-access-jwt">
+                        {t.fields.accessJwt.label}
+                      </FieldLabel>
+                    </FieldContent>
+                  </Field>
+
+                  {definition.accessJwt !== undefined && (
+                    <>
+                      <TextProperty
+                        id="route-editor-access-jwt-team"
+                        label={t.fields.accessJwt.team}
+                        hint={t.fields.accessJwt.teamHelp}
+                        value={definition.accessJwt.team ?? ''}
+                        mono
+                        onChange={(value) =>
+                          setSectionKey('accessJwt', 'team', value === '' ? undefined : value)
+                        }
+                      />
+                      <TextProperty
+                        id="route-editor-access-jwt-audience"
+                        label={t.fields.accessJwt.audience}
+                        hint={t.fields.accessJwt.audienceHelp}
+                        value={definition.accessJwt.audience ?? ''}
+                        mono
+                        onChange={(value) =>
+                          setSectionKey('accessJwt', 'audience', value === '' ? undefined : value)
+                        }
+                      />
+                      <DangerNote path="accessJwt" />
+                    </>
+                  )}
+
+                  <Field orientation="horizontal">
+                    <Switch
+                      id="route-editor-api-key"
+                      checked={definition.apiKey !== undefined}
+                      onCheckedChange={(checked) =>
+                        checked ? setSectionOn('apiKey') : setSectionOff('apiKey')
+                      }
+                    />
+                    <FieldContent>
+                      <FieldLabel htmlFor="route-editor-api-key">{t.fields.apiKey.label}</FieldLabel>
+                    </FieldContent>
+                  </Field>
+
+                  {definition.apiKey !== undefined && (
+                    <>
+                      <TextProperty
+                        id="route-editor-api-key-header"
+                        label={t.fields.apiKey.header}
+                        hint={t.fields.apiKey.headerHelp}
+                        value={definition.apiKey.header ?? ''}
+                        mono
+                        onChange={(value) =>
+                          // 与 schema 同口径：小写归一，等于默认值不落键。
+                          setSectionKey(
+                            'apiKey',
+                            'header',
+                            value.trim() === '' ? undefined : value.trim().toLowerCase(),
+                          )
+                        }
+                      />
+                      {apiKeyHeaderReserved && <FieldError>{t.fields.apiKey.reserved}</FieldError>}
+                      <ApiKeyKeysEditor
+                        keysLabel={t.fields.apiKey.keys}
+                        addRowLabel={t.fields.apiKey.addRow}
+                        removeRowLabel={t.fields.apiKey.removeRow}
+                        value={definition.apiKey.keys}
+                        onChange={(keys) => setSectionKey('apiKey', 'keys', keys)}
+                      />
+                      {(definition.apiKey.keys?.length ?? 0) > 0 && (
+                        <DangerNote path="apiKey.keys" />
+                      )}
+                    </>
+                  )}
                 </FieldSet>
 
                 <FieldSet data-invalid={reservedHeaders.length > 0 ? true : undefined}>
@@ -2055,6 +2434,10 @@ const reservedHeaderNames = (definition: RouteDefinition): string[] =>
   Object.keys(definition.upstreamHeaders ?? {}).filter((name) =>
     RESERVED_REQUEST_HEADERS.has(name.trim().toLowerCase()),
   );
+
+/** 名单里命中的保留头名 —— forwardAuth 的两份抄送名单用它检查。 */
+const reservedNamesIn = (names: readonly string[] | undefined): string[] =>
+  (names ?? []).filter((name) => RESERVED_REQUEST_HEADERS.has(name.trim().toLowerCase()));
 
 /**
  * 未覆盖字段里命中的危险子路径。

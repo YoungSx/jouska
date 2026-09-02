@@ -11,6 +11,7 @@ import {
   type Replacement,
 } from '../internal/body.js';
 import { checkAccess } from '../internal/access.js';
+import { routeAuthenticates, runAuthGuards } from '../internal/auth.js';
 import { BodyLimitError, forward } from '../internal/forward.js';
 import { checkRateLimit, corsMiddleware, ipMiddleware } from '../internal/guards.js';
 import { ledgerFor, outlierObserver } from '../internal/outlier.js';
@@ -175,6 +176,13 @@ export interface ProxyEvent {
    * invisible in `status`, which will read 200 for it.
    */
   stream?: Promise<StreamReport>;
+  /**
+   * Wall-clock milliseconds the access-control stage spent, when the route has
+   * auth fields configured. Absent on routes without them, and on preflights,
+   * which skip the stage. Includes a refusal's own latency: a slow auth
+   * endpoint shows up here whether it admitted or refused.
+   */
+  authDurationMs?: number;
 }
 
 export interface JouskaOptions {
@@ -274,6 +282,7 @@ export const jouska = ({
       cache,
       ejected,
       stream,
+      authMs,
     ): void => {
       if (onProxy === undefined) {
         return;
@@ -303,6 +312,7 @@ export const jouska = ({
           ...(selection !== undefined ? { selection } : {}),
           ...(ejected !== undefined && ejected.length > 0 ? { ejected } : {}),
           ...(stream !== undefined ? { stream } : {}),
+          ...(authMs !== undefined ? { authDurationMs: authMs } : {}),
         });
       } catch {
         // Observability must not be able to fail a request.
@@ -389,12 +399,13 @@ export const jouska = ({
     }
 
     if (route.access !== undefined) {
-      // Last guard, deliberately. Crypto costs CPU, and a JWKS fetch costs a
-      // round trip; running the local and binding-backed checks first means a
-      // request that geo, IP or the rate limiter would refuse never pays for
-      // either. Without that ordering, an unauthenticated caller could reach
-      // the signature verification on every request — a CPU amplifier with
-      // nothing between it and the internet but the length caps.
+      // Local signature checks first, deliberately. Crypto costs CPU, and a
+      // JWKS fetch costs a round trip; running the local and binding-backed
+      // checks before the delegated one means a request that geo, IP or the
+      // rate limiter would refuse never pays for either. Without that ordering,
+      // an unauthenticated caller could reach the signature verification on
+      // every request — a CPU amplifier with nothing between it and the
+      // internet but the length caps.
       const verdict = await checkAccess(route.access, c.req.raw, fetchImpl ?? fetch);
       if (!verdict.ok) {
         const status = verdict.status;
@@ -403,14 +414,53 @@ export const jouska = ({
       }
     }
 
+    // Delegated auth answers "who are you" last among the guards — it is the
+    // only one that costs a network round trip, so everything cheaper filters
+    // first. The gate is the same check the guards themselves run, so a route
+    // without a `forwardAuth` block skips the stage entirely — including the
+    // await, which would otherwise hand the event loop a turn on every request
+    // to say "nothing to do". Preflights carry no credentials — the browser
+    // sends none on an OPTIONS — so running the guard would refuse every
+    // cross-origin call before its real request could ever pass; the preflight
+    // is answered below by `cors` or forwarded verbatim, as before. (`access`
+    // above has no such exemption: #69's local checks apply to preflights too.)
+    let authMs: number | undefined;
+    let authHeaders: Headers | undefined;
+    if (!isPreflight && routeAuthenticates(route)) {
+      const auth = await runAuthGuards(route, c.req.raw, url, fetchImpl);
+      if (auth !== undefined) {
+        if (auth.refusal !== undefined) {
+          // Attempts 0: nothing reached the upstream, the same accounting every
+          // guard refusal above uses. A delegated verdict is attributed to the
+          // auth endpoint that gave it; a local check keeps the default.
+          report(
+            auth.refusal.status,
+            'refused',
+            0,
+            auth.refusalUpstream,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            auth.authMs,
+          );
+          return auth.refusal;
+        }
+        // Authed and admitted — keep the designated headers for the forward,
+        // and the spent latency for the event.
+        authMs = auth.authMs;
+        authHeaders = auth.authHeaders;
+      }
+    }
+
     // CORS wraps the forward so preflights are answered without a round trip
     // and the response carries the negotiated headers.
     if (route.cors !== undefined) {
       return corsMiddleware(route.cors)(c, async () => {
-        c.res = await proxyRequest(match, c, url, fetchImpl, cacheImpl, report, selection);
+        c.res = await proxyRequest(match, c, url, fetchImpl, cacheImpl, report, selection, authMs, authHeaders);
       });
     }
-    return proxyRequest(match, c, url, fetchImpl, cacheImpl, report, selection);
+    return proxyRequest(match, c, url, fetchImpl, cacheImpl, report, selection, authMs, authHeaders);
   };
 };
 
@@ -480,6 +530,7 @@ type Report = (
   cache?: CacheState,
   ejected?: string[],
   stream?: Promise<StreamReport>,
+  authMs?: number,
 ) => void;
 
 /**
@@ -562,6 +613,8 @@ const proxyRequest = async (
   cacheImpl: ResponseCacheStore | undefined,
   report: Report,
   selection?: Selection,
+  authMs?: number,
+  authHeaders?: Headers,
 ): Promise<Response> => {
   const { route } = match;
   // The bucket this caller was assigned to, as an authority. The cache key
@@ -570,7 +623,14 @@ const proxyRequest = async (
   const assigned = splitUpstream(
     upstreamCandidates(route, selection?.index ?? 0)[0] ?? '',
   ).authority;
-  const caching = route.cache?.enabled === true ? route.cache : undefined;
+  // Configuration refuses `cache` on a route that authenticates — a cached
+  // response is keyed by URL and would hand one caller's authorised answer to
+  // the next — and this is the runtime backstop for a document that somehow
+  // still carries the pairing. Dropping the block reads as "not configured":
+  // nothing is read, nothing is stored.
+  const authenticates = routeAuthenticates(route);
+  const caching =
+    route.cache?.enabled === true && !authenticates ? route.cache : undefined;
   const plan =
     caching === undefined
       ? undefined
@@ -722,6 +782,7 @@ const proxyRequest = async (
       detached: false,
       cacheState,
       selection,
+      authHeaders,
     });
   } catch (error) {
     // The fill died before it could decide anything about the cache: release
@@ -777,6 +838,7 @@ const proxyRequest = async (
     cacheState,
     produced.ejected,
     produced.stream,
+    authMs,
   );
 
   const cacheableFill =
@@ -834,6 +896,12 @@ interface ProduceOptions {
   cacheState: CacheState | undefined;
   /** The traffic-split pick, rotating the candidate order so it comes first. */
   selection: Selection | undefined;
+  /**
+   * Identity headers from a passed forward-auth check. Always undefined on the
+   * background-refresh path: a route that authenticates cannot have a cache,
+   * so nothing ever refreshes there.
+   */
+  authHeaders?: Headers;
 }
 
 /** One trip to the upstream and the rewriting of what comes back. */
@@ -886,6 +954,7 @@ const produceResponse = async ({
   detached,
   cacheState,
   selection,
+  authHeaders,
 }: ProduceOptions): Promise<Produced> => {
   const { route } = match;
   // The per-request view over the route's failure memory. Filtered targets
@@ -916,6 +985,7 @@ const produceResponse = async ({
       targets,
       request: c.req.raw,
       requestUrl: url,
+      authHeaders,
       fetchImpl: counting,
       detached,
       outlier,
