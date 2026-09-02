@@ -965,6 +965,26 @@ confirmation. And what an agent did stays attributable: writes are recorded
 against `mcp:<token-id>:<user>`, so revoking a token does not erase the trail of
 what it touched.
 
+The endpoint speaks protocol revision `2026-07-28` and only that one. That
+revision has no `initialize` handshake: every request carries its version in
+both the `MCP-Protocol-Version` header and the `_meta` envelope, and mirrors its
+method and tool name into `Mcp-Method` / `Mcp-Name`, which the server checks
+against the body — a header and a body that disagree are two different requests
+to whatever sits in between, so they are refused rather than reconciled. A
+client that opens with `initialize` is answered with the version list instead,
+which is the only diagnostic a handshake-era client can show its user. `GET` and
+`DELETE` answer `405` (the revision removed the GET stream and sessions), a body
+that is not `application/json` answers `415`, and one over 256 kB answers `413`
+while it is still arriving.
+
+Adding it to a client is one command, because the token is passed as a header
+rather than negotiated — there is no OAuth discovery document here:
+
+```sh
+claude mcp add --transport http jouska https://panel.example.com/mcp \
+  --header "Authorization: Bearer jska_mcp_…"
+```
+
 ### Deploy
 
 The committed `wrangler.jsonc` files are account-agnostic templates — D1 and
