@@ -244,3 +244,100 @@ describe('RouteEditor 正文改写（issue #29）', () => {
     expect(await saveDraft(user)).toMatchObject({ bodyRewrite: {} });
   });
 });
+
+/**
+ * 注入请求头这一段。
+ *
+ * 焊住的是一个真实症状：点「加一行」毫无反应。
+ *
+ * 病因不在按钮上。空行不产生任何有效头，于是编辑器上报 `undefined`（空对象不落
+ * 盘）；但它记下的回声指纹曾是 `JSON.stringify({})`，而下一次渲染按 `value ?? null`
+ * 算出的 signature 是 `"null"` —— 两者不等，编辑器把自己的回声当成「外部改了值」，
+ * 在同一次渲染里就把刚加的空行复位抹掉。
+ *
+ * 凡是「有效头归零」的编辑都会撞上同一处：加第一行、把唯一那行的头名删空。所以这
+ * 里焊的不只是按钮有反应，还有「正在输入的行不许自己消失」。
+ */
+describe('RouteEditor 注入请求头', () => {
+  beforeEach(() => {
+    vi.spyOn(api, 'domains').mockResolvedValue(configured([]));
+    vi.spyOn(api, 'putRoute').mockResolvedValue(undefined);
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('点「加一行」就出现一行空输入 —— 第一行也不例外', async () => {
+    const user = userEvent.setup();
+    renderEditor();
+
+    expect(screen.queryByLabelText('头名 1')).not.toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: '加一行' }));
+
+    expect(screen.getByLabelText('头名 1')).toHaveValue('');
+    expect(screen.getByLabelText('值 1')).toHaveValue('');
+  });
+
+  it('连点两次就是两行，第二行不吃掉第一行', async () => {
+    const user = userEvent.setup();
+    renderEditor();
+
+    const addRow = screen.getByRole('button', { name: '加一行' });
+    await user.click(addRow);
+    await user.type(screen.getByLabelText('头名 1'), 'x-first');
+    await user.click(addRow);
+
+    expect(screen.getByLabelText('头名 1')).toHaveValue('x-first');
+    expect(screen.getByLabelText('头名 2')).toHaveValue('');
+  });
+
+  it('加行后打的字落进草稿', async () => {
+    const user = userEvent.setup();
+    renderEditor();
+    await user.click(screen.getByRole('button', { name: '加一行' }));
+    await user.type(screen.getByLabelText('头名 1'), 'x-api-key');
+    await user.type(screen.getByLabelText('值 1'), 'secret');
+
+    expect(await saveDraft(user)).toMatchObject({ upstreamHeaders: { 'x-api-key': 'secret' } });
+  });
+
+  it('只写了头名的行照样落盘，值是空串 —— 先写名再补值是正常输入顺序', async () => {
+    const user = userEvent.setup();
+    renderEditor();
+    await user.click(screen.getByRole('button', { name: '加一行' }));
+    await user.type(screen.getByLabelText('头名 1'), 'x-trace');
+
+    expect(await saveDraft(user)).toMatchObject({ upstreamHeaders: { 'x-trace': '' } });
+  });
+
+  it('把唯一一行的头名删空：行留在原地，键从草稿里消失', async () => {
+    const user = userEvent.setup();
+    renderEditor(true, {
+      upstream: 'origin.example.com',
+      upstreamHeaders: { 'x-api-key': 'secret' },
+    });
+
+    await user.clear(screen.getByLabelText('头名 1'));
+
+    // 行还在，值也还在 —— 改头名要先删空，这一步不能把人正在编辑的行抽走。
+    expect(screen.getByLabelText('头名 1')).toHaveValue('');
+    expect(screen.getByLabelText('值 1')).toHaveValue('secret');
+    // 但草稿里不留空对象：一个有效头都没有 = 没设置这个键。
+    expect(await saveDraft(user)).not.toHaveProperty('upstreamHeaders');
+  });
+
+  it('删到最后一行也能再加回来 —— 复位逻辑不会卡住空态', async () => {
+    const user = userEvent.setup();
+    renderEditor(true, {
+      upstream: 'origin.example.com',
+      upstreamHeaders: { 'x-api-key': 'secret' },
+    });
+
+    await user.click(screen.getByRole('button', { name: '删掉这一行' }));
+    expect(screen.queryByLabelText('头名 1')).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: '加一行' }));
+    expect(screen.getByLabelText('头名 1')).toHaveValue('');
+  });
+});
