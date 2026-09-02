@@ -470,7 +470,7 @@ const buildCachePlan = (
   if (store === undefined || !requestCacheable(request, method, config)) {
     return undefined;
   }
-  const key = cacheKey(url, method, fingerprint);
+  const key = cacheKey(url, method, fingerprint, config, request.headers);
   return key === undefined ? undefined : { config, store, key };
 };
 

@@ -62,6 +62,12 @@ const upstream: typeof fetch = async (input) => {
       return new Response('body{}', {
         headers: { 'content-type': 'text/css', vary: 'cookie' },
       });
+    // The body follows the request's language, which is what `Vary` warns about;
+    // a cached zh entry served to an en visitor is the failure this guards.
+    case '/lang.css':
+      return new Response(`body{--lang:${request.headers.get('accept-language') ?? 'none'}}`, {
+        headers: { 'content-type': 'text/css', vary: 'accept-language' },
+      });
     case '/missing':
       return new Response('nope', { status: 404, headers: { 'content-type': 'text/css' } });
     case '/cookie-missing': {
@@ -78,13 +84,15 @@ const upstream: typeof fetch = async (input) => {
  * An in-memory store, so most cases run without depending on the platform cache.
  * One case below deliberately uses `caches.default` instead.
  */
-const memoryStore = (): ResponseCacheStore => {
+const memoryStore = (): ResponseCacheStore & { urls: Set<string> } => {
   const meta = new Map<
     string,
     { status: number; statusText: string; headers: [string, string][] }
   >();
   const bodies = new Map<string, ArrayBuffer>();
+  const urls = new Set<string>();
   return {
+    urls,
     match: async (key) => {
       const body = bodies.get(key.url);
       const head = meta.get(key.url);
@@ -93,6 +101,7 @@ const memoryStore = (): ResponseCacheStore => {
         : new Response(body, { ...head, headers: head.headers });
     },
     put: async (key, response) => {
+      urls.add(key.url);
       meta.set(key.url, {
         status: response.status,
         statusText: response.statusText,
@@ -299,6 +308,68 @@ describe('rules cannot widen what is cacheable', () => {
       expect(trips).toBe(2);
     });
   }
+});
+
+describe('the configurable key', () => {
+  it('serves twenty tracking-parameter spellings from one upstream trip', async () => {
+    const app = appWith(
+      cachedRoute({ cache: { ttlSeconds: 300, key: { query: { ignore: ['utm_source'] } } } }),
+      memoryStore(),
+    );
+    const first = await fetchWith(app, '/a.css?utm_source=newsletter');
+    expect(first.headers.get(CACHE_STATE_HEADER)).toBe('miss');
+    revision = 1;
+    for (let index = 2; index <= 20; index += 1) {
+      const response = await fetchWith(app, `/a.css?utm_source=variant-${index}`);
+      expect(response.headers.get(CACHE_STATE_HEADER)).toBe('hit');
+      expect(await response.text()).toBe('body{--r:0}');
+    }
+    expect(trips).toBe(1);
+  });
+
+  it('keeps a varying response per covered header value', async () => {
+    // The upstream sends `Vary: accept-language`; folding that header into the
+    // key is what makes storing the response correct instead of a cross-visitor leak.
+    const store = memoryStore();
+    const app = appWith(
+      cachedRoute({ cache: { ttlSeconds: 300, key: { headers: ['accept-language'] } } }),
+      store,
+    );
+    const zh = await fetchWith(app, '/lang.css', { headers: { 'accept-language': 'zh' } });
+    expect(zh.headers.get(CACHE_STATE_HEADER)).toBe('miss');
+    expect(await zh.text()).toBe('body{--lang:zh}');
+
+    const en = await fetchWith(app, '/lang.css', { headers: { 'accept-language': 'en' } });
+    expect(en.headers.get(CACHE_STATE_HEADER)).toBe('miss');
+    expect(await en.text()).toBe('body{--lang:en}');
+
+    // Two entries, one per language: distinct keys, distinct bodies, both served
+    // from the store on a repeat.
+    expect(store.urls.size).toBe(2);
+    const zhAgain = await fetchWith(app, '/lang.css', { headers: { 'accept-language': 'zh' } });
+    expect(zhAgain.headers.get(CACHE_STATE_HEADER)).toBe('hit');
+    expect(await zhAgain.text()).toBe('body{--lang:zh}');
+    expect(trips).toBe(2);
+  });
+
+  it('refuses the same varying response while headers stay unconfigured', async () => {
+    const app = appWith(cachedRoute(), memoryStore());
+    for (const language of ['zh', 'en']) {
+      const response = await fetchWith(app, '/lang.css', {
+        headers: { 'accept-language': language },
+      });
+      expect(response.headers.get(CACHE_STATE_HEADER)).toBe('miss');
+    }
+    expect(trips).toBe(2);
+  });
+
+  it('reports a Vary refusal as a miss, not a bypass', async () => {
+    // The plan existed — the request could take part — so this is a miss. `bypass`
+    // is reserved for requests that could never take part at all.
+    const app = appWith(cachedRoute(), memoryStore());
+    await fetchWith(app, '/lang.css', { headers: { 'accept-language': 'zh' } });
+    expect(events[0]!.cache).toBe('miss');
+  });
 });
 
 describe('caching a rewritten document', () => {

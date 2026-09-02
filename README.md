@@ -792,7 +792,34 @@ one edge-to-origin round trip between visitors instead of one each:
     staleIfError: { seconds: 3600, on: ['timeout', 'unreachable'] },
     // No default: only 200 responses are cached until status codes are given
     // windows here.
+    key: {
+      // "all" keeps every query parameter; "none" drops the whole search
+      // string; an object names the parameters to ignore or include. Names
+      // are case-sensitive — the query is opaque bytes to HTTP.
+      query: 'all',
+      // Request headers folded into the key. Folding a header also covers a
+      // matching upstream `Vary` — see "What is never cached".
+      headers: [],
+    },
   },
+}
+```
+
+Query-string noise and per-visitor headers are the two ways a healthy hit rate
+dies. `key` exists for both:
+
+```ts
+cache: {
+  // Twenty campaigns, one cache entry.
+  key: { query: { ignore: ['utm_source', 'utm_medium', 'fbclid'] } },
+}
+```
+
+```ts
+cache: {
+  // The upstream sends `Vary: accept-language`; folding that header into the
+  // key gives each language its own entry instead of refusing the response.
+  key: { headers: ['accept-language'] },
 }
 ```
 
@@ -824,11 +851,19 @@ entry, which is serving the wrong bytes. Being wrong the other way costs a cold
 cache after an unrelated edit like `timeoutMs`, which nobody notices.
 
 The key is the request URL plus one query parameter, `__jouska_ck`, carrying the
-fingerprint and the method. Two consequences worth knowing: a request whose URL
-already contains that parameter is not cached at all (overwriting it would map two
-different requests onto one entry), and GET and HEAD get separate entries — a HEAD
+fingerprint, the method, and a hash of the folded `key.headers` values. The query
+string in the key is normalised: parameters are filtered by `key.query`, sorted,
+and exact duplicates collapsed, and `URLSearchParams` folds encoding spellings for
+free (`%61=1` and `a=1` are the same pair, as are `?a` and `?a=`). Parameter names
+stay case-sensitive — the query is opaque bytes to HTTP, and an upstream may treat
+`Tab` and `tab` differently. Folding `key.headers` compares a missing header with
+one present and empty, because collapsing those would hand two upstream-distinct
+requests one entry. Three consequences worth knowing: a request whose URL already
+contains that parameter is not cached at all (overwriting it would map two
+different requests onto one entry), GET and HEAD get separate entries — a HEAD
 response has no body, and storing it under the GET key would hand the next GET an
-empty one.
+empty one — and changing `key` itself produces a different fingerprint, so old
+entries expire rather than alias.
 
 ### What is never cached
 
@@ -850,10 +885,17 @@ empty one.
 - A response whose `Cache-Control` says `no-store`, `private` or `no-cache`.
   `no-cache` counts because its real meaning is "revalidate before reuse", and a
   rewritten response has no validator to revalidate with.
-- A response with a `Vary` this key does not cover. `Vary: accept-encoding` is the
-  one exception, and it is provable rather than hopeful: jouska deletes
-  `accept-encoding` from every upstream request, so the upstream sees the same
-  absent value every time and cannot vary on it.
+- A response with a `Vary` this key does not cover. Two ways a `Vary` is covered:
+  `accept-encoding`, which is provable rather than hopeful — jouska deletes it
+  from every upstream request, so the upstream sees the same absent value every
+  time and cannot vary on it — and any header listed in `key.headers`, whose
+  request value is folded into the key, so entries for differing values are
+  distinct by construction. Everything else is unrepresented, and the platform
+  will not make up the difference: verified in workerd, `match` does not honour
+  `Vary` at all, which makes this check the only thing standing between a varying
+  response and one visitor being served another's. `Vary: *` names no header, so
+  nothing can fold it into a key. A Vary refusal reports `miss`, not `bypass` —
+  the request could take part; the response could not be stored.
 - A 200 response whose content type is outside `contentTypes`, matched as a
   prefix. The list guards 200s only — statuses cached by their own window are
   admitted by that window, with the vetoes above still standing.

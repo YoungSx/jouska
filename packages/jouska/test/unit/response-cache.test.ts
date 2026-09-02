@@ -24,6 +24,15 @@ const cacheWith = (extra: Partial<CacheConfig> = {}): CacheConfig => ({
   ...extra,
 });
 
+/** Builds a key through the real default configuration, with optional overrides. */
+const keyFor = (
+  url: string,
+  { cache = cacheWith(), headers = {} as Record<string, string> } = {},
+): Request => cacheKey(new URL(url), 'GET', 'fp', cache, new Headers(headers))!;
+
+/** The discriminator value jouska appends: fingerprint, method, folded-header hash. */
+const discriminator = (key: Request): string => new URL(key.url).searchParams.get('__jouska_ck')!;
+
 /**
  * An in-memory store. Bodies are buffered so an entry can be read more than
  * once, which the Cache API also allows and a stored `Response` object would not.
@@ -83,33 +92,217 @@ describe('routeFingerprint', () => {
     const b = defineConfig({ routes: [{ retries: 1, upstream: 'o.test', match: { path: '/a' } }] });
     expect(routeFingerprint(a.routes[0]!)).toBe(routeFingerprint(b.routes[0]!));
   });
+
+  it('changes when the cache key configuration changes', () => {
+    // Different keys are how an old entry expires: the fingerprint pins the key
+    // shape itself, so a configuration change cannot alias a stored response.
+    expect(
+      routeFingerprint(routeWith({ cache: { key: { query: 'none', headers: [] } } })),
+    ).not.toBe(routeFingerprint(routeWith({ cache: {} })));
+    expect(
+      routeFingerprint(
+        routeWith({ cache: { key: { query: 'all', headers: ['accept-language'] } } }),
+      ),
+    ).not.toBe(routeFingerprint(routeWith({ cache: {} })));
+  });
+});
+
+describe('cache.key schema', () => {
+  it('defaults to keeping everything and folding nothing', () => {
+    const route = routeWith({ cache: {} });
+    expect(route.cache!.key).toEqual({ query: 'all', headers: [] });
+  });
+
+  it('rejects naming ignore and include together', () => {
+    expect(() =>
+      defineConfig({
+        routes: [
+          {
+            match: { path: '/a' },
+            upstream: 'o.test',
+            cache: { key: { query: { ignore: ['utm_source'], include: ['v'] } } },
+          },
+        ],
+      }),
+    ).toThrow(/one selection/);
+  });
+
+  it('rejects an empty selection object', () => {
+    expect(() =>
+      defineConfig({
+        routes: [{ match: { path: '/a' }, upstream: 'o.test', cache: { key: { query: {} } } }],
+      }),
+    ).toThrow(/name parameters/);
+  });
+
+  it('rejects an empty ignore or include list', () => {
+    expect(() =>
+      defineConfig({
+        routes: [
+          { match: { path: '/a' }, upstream: 'o.test', cache: { key: { query: { ignore: [] } } } },
+        ],
+      }),
+    ).toThrow();
+  });
+
+  it('rejects folding cookie or authorization into the key', () => {
+    // A request carrying either is never cached at all, so the entry would be
+    // dead configuration with nothing to fold.
+    expect(() =>
+      defineConfig({
+        routes: [
+          {
+            match: { path: '/a' },
+            upstream: 'o.test',
+            cache: { key: { query: 'all', headers: ['cookie'] } },
+          },
+        ],
+      }),
+    ).toThrow(/never cached/);
+    expect(() =>
+      defineConfig({
+        routes: [
+          {
+            match: { path: '/a' },
+            upstream: 'o.test',
+            cache: { key: { query: 'all', headers: ['Authorization'] } },
+          },
+        ],
+      }),
+    ).toThrow(/never cached/);
+  });
+
+  it('lowercases and deduplicates the header list', () => {
+    const route = routeWith({
+      cache: { key: { query: 'all', headers: ['Accept-Language', 'ACCEPT-LANGUAGE', 'X-Seg'] } },
+    });
+    expect(route.cache!.key.headers).toEqual(['accept-language', 'x-seg']);
+  });
 });
 
 describe('cacheKey', () => {
   it('keeps the request URL and adds a discriminator', () => {
-    const key = cacheKey(new URL('https://p.dev/a.css?v=1'), 'GET', 'fp')!;
-    const url = new URL(key.url);
+    const url = new URL(keyFor('https://p.dev/a.css?v=1').url);
     expect(url.host).toBe('p.dev');
     expect(url.pathname).toBe('/a.css');
     expect(url.searchParams.get('v')).toBe('1');
-    expect(url.searchParams.get('__jouska_ck')).toBe('fp.GET');
+    expect(discriminator(keyFor('https://p.dev/a.css?v=1'))).toMatch(/^fp\.GET\./);
     // The Cache API refuses a non-GET key, so the method lives in the URL.
-    expect(key.method).toBe('GET');
+    expect(keyFor('https://p.dev/a.css?v=1').method).toBe('GET');
   });
 
   it('separates GET from HEAD, whose response has no body', () => {
     const url = new URL('https://p.dev/a.css');
-    expect(cacheKey(url, 'GET', 'fp')!.url).not.toBe(cacheKey(url, 'HEAD', 'fp')!.url);
+    const headers = new Headers();
+    const cache = cacheWith();
+    expect(cacheKey(url, 'GET', 'fp', cache, headers)!.url).not.toBe(
+      cacheKey(url, 'HEAD', 'fp', cache, headers)!.url,
+    );
   });
 
   it('separates two fingerprints', () => {
     const url = new URL('https://p.dev/a.css');
-    expect(cacheKey(url, 'GET', 'one')!.url).not.toBe(cacheKey(url, 'GET', 'two')!.url);
+    const headers = new Headers();
+    const cache = cacheWith();
+    expect(cacheKey(url, 'GET', 'one', cache, headers)!.url).not.toBe(
+      cacheKey(url, 'GET', 'two', cache, headers)!.url,
+    );
   });
 
   it('declines a URL that already carries the parameter, rather than overwriting it', () => {
     // Overwriting would map two different requests onto one entry.
-    expect(cacheKey(new URL('https://p.dev/a.css?__jouska_ck=x'), 'GET', 'fp')).toBeUndefined();
+    expect(
+      cacheKey(
+        new URL('https://p.dev/a.css?__jouska_ck=x'),
+        'GET',
+        'fp',
+        cacheWith(),
+        new Headers(),
+      ),
+    ).toBeUndefined();
+  });
+
+  it('keeps the discriminator stable while folded headers are unconfigured', () => {
+    // A header the key does not name must not touch the key, or every request
+    // with a different User-Agent would fragment the cache for nothing.
+    expect(discriminator(keyFor('https://p.dev/a.css', { headers: { 'user-agent': 'a' } }))).toBe(
+      discriminator(keyFor('https://p.dev/a.css', { headers: { 'user-agent': 'b' } })),
+    );
+  });
+
+  it('folds a configured header value into the discriminator', () => {
+    const cache = cacheWith({ key: { query: 'all', headers: ['accept-language'] } });
+    const zh = keyFor('https://p.dev/a.css', { cache, headers: { 'accept-language': 'zh' } });
+    const en = keyFor('https://p.dev/a.css', { cache, headers: { 'accept-language': 'en' } });
+    expect(discriminator(zh)).not.toBe(discriminator(en));
+  });
+
+  it('distinguishes a missing configured header from one present and empty', () => {
+    // Collapsing them would hand two upstream-distinct requests one entry.
+    const cache = cacheWith({ key: { query: 'all', headers: ['x-seg'] } });
+    const absent = keyFor('https://p.dev/a.css', { cache });
+    const empty = keyFor('https://p.dev/a.css', { cache, headers: { 'x-seg': '' } });
+    expect(discriminator(absent)).not.toBe(discriminator(empty));
+  });
+});
+
+describe('cacheKey query normalisation', () => {
+  it('keeps every parameter by default, in sorted order', () => {
+    const url = new URL(keyFor('https://p.dev/a.css?b=2&a=1').url);
+    url.searchParams.delete('__jouska_ck');
+    expect(url.toString()).toBe('https://p.dev/a.css?a=1&b=2');
+  });
+
+  it('maps twenty tracking-parameter spellings onto one entry', () => {
+    const cache = cacheWith({ key: { query: { ignore: ['utm_source'] }, headers: [] } });
+    const first = keyFor('https://p.dev/a.css?utm_source=1', { cache });
+    for (let index = 2; index <= 20; index += 1) {
+      const key = keyFor(`https://p.dev/a.css?utm_source=${index}`, { cache });
+      expect(key.url).toBe(first.url);
+    }
+  });
+
+  it('keeps only the parameters an include list names', () => {
+    const cache = cacheWith({ key: { query: { include: ['v'] }, headers: [] } });
+    const url = new URL(keyFor('https://p.dev/a.css?v=1&page=3', { cache }).url);
+    expect(url.searchParams.get('v')).toBe('1');
+    expect(url.searchParams.has('page')).toBe(false);
+  });
+
+  it('drops the whole search string under none', () => {
+    const cache = cacheWith({ key: { query: 'none', headers: [] } });
+    const url = new URL(keyFor('https://p.dev/a.css?v=1&page=3', { cache }).url);
+    expect(url.search).toBe(
+      `?__jouska_ck=${discriminator(keyFor('https://p.dev/a.css?v=1&page=3', { cache }))}`,
+    );
+  });
+
+  it('folds equivalent encodings and an empty value spelling into one key', () => {
+    const cache = cacheWith({ key: { query: 'all', headers: [] } });
+    const spelled = keyFor('https://p.dev/a.css?%61=1&a', { cache });
+    const plain = keyFor('https://p.dev/a.css?a=1&a=', { cache });
+    expect(spelled.url).toBe(plain.url);
+  });
+
+  it('treats parameter names as case-sensitive', () => {
+    const cache = cacheWith({ key: { query: { ignore: ['Tab'] }, headers: [] } });
+    const dropped = keyFor('https://p.dev/a.css?Tab=1', { cache });
+    const kept = keyFor('https://p.dev/a.css?tab=1', { cache });
+    expect(dropped.url).not.toBe(kept.url);
+    // A hit against one entry is not a hit against the other.
+    expect(
+      keyFor('https://p.dev/a.css?tab=1', {
+        cache: cacheWith({ key: { query: { ignore: ['Tab'] }, headers: [] } }),
+      }).url,
+    ).toBe(kept.url);
+  });
+
+  it('collapses exactly duplicated pairs but keeps genuinely repeated ones', () => {
+    const cache = cacheWith({ key: { query: 'all', headers: [] } });
+    const deduplicated = keyFor('https://p.dev/a.css?a=1&a=1', { cache });
+    const distinct = keyFor('https://p.dev/a.css?a=1&a=2', { cache });
+    expect(new URL(deduplicated.url).searchParams.getAll('a')).toEqual(['1']);
+    expect(new URL(distinct.url).searchParams.getAll('a')).toEqual(['1', '2']);
   });
 });
 
@@ -224,6 +417,38 @@ describe('responseCacheable', () => {
     expect(asIs(cacheable({ vary: 'Accept-Encoding' }))).toBe(true);
   });
 
+  it('admits a Vary the key headers list, case-insensitively', () => {
+    const cache = cacheWith({ key: { query: 'all', headers: ['accept-language'] } });
+    expect(
+      responseCacheable(
+        cacheable({ vary: 'accept-language' }),
+        cacheable({ vary: 'accept-language' }).headers,
+        cache,
+      ),
+    ).toBe(true);
+    expect(
+      responseCacheable(
+        cacheable({ vary: 'Accept-Language, Accept-Encoding' }),
+        cacheable({ vary: 'Accept-Language, Accept-Encoding' }).headers,
+        cache,
+      ),
+    ).toBe(true);
+  });
+
+  it('refuses a Vary only partly covered, star included', () => {
+    const cache = cacheWith({ key: { query: 'all', headers: ['accept-language'] } });
+    expect(
+      responseCacheable(
+        cacheable({ vary: 'accept-language, user-agent' }),
+        cacheable({ vary: 'accept-language, user-agent' }).headers,
+        cache,
+      ),
+    ).toBe(false);
+    expect(
+      responseCacheable(cacheable({ vary: '*' }), cacheable({ vary: '*' }).headers, cache),
+    ).toBe(false);
+  });
+
   it('refuses a content type outside the list, HTML included by default', () => {
     expect(asIs(cacheable({ 'content-type': 'text/html' }))).toBe(false);
     expect(asIs(cacheable({ 'content-type': 'application/json' }))).toBe(false);
@@ -255,7 +480,7 @@ describe('responseCacheable', () => {
 
 describe('store and read round trip', () => {
   const cache = cacheWith({ ttlSeconds: 100, staleWhileRevalidateSeconds: 50 });
-  const key = cacheKey(new URL('https://p.dev/a.css'), 'GET', 'fp')!;
+  const key = cacheKey(new URL('https://p.dev/a.css'), 'GET', 'fp', cache, new Headers())!;
 
   const store = async (response: Response, now = 1_000_000) => {
     const target = memoryStore();
@@ -383,7 +608,7 @@ describe('per-status lifetimes', () => {
     staleWhileRevalidateSeconds: 0,
     statusTtlSeconds: { 301: 3600, 404: 60 },
   });
-  const key = cacheKey(new URL('https://p.dev/nf.css'), 'GET', 'fp')!;
+  const key = cacheKey(new URL('https://p.dev/nf.css'), 'GET', 'fp', cache, new Headers())!;
 
   const store = async (response: Response) => {
     const target = memoryStore();
@@ -435,7 +660,7 @@ describe('stale-if-error window', () => {
     staleWhileRevalidateSeconds: 0,
     staleIfError: { seconds: 3600, on: ['timeout', 'unreachable', '5xx'] },
   });
-  const key = cacheKey(new URL('https://p.dev/a.css'), 'GET', 'fp')!;
+  const key = cacheKey(new URL('https://p.dev/a.css'), 'GET', 'fp', cache, new Headers())!;
   const fill = async (now = 1_000_000) => {
     const target = memoryStore();
     await storeCachedResponse({

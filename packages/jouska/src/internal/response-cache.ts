@@ -160,6 +160,70 @@ export const routeFingerprint = (route: Route): string => {
 };
 
 /**
+ * Normalises the request's search string into the parameters that reach the key.
+ *
+ * Two spellings of one resource must produce one key or "ignoring noise" has
+ * only reshaped the fragments. So: parameters are filtered by the configured
+ * mode, then sorted, then exact duplicates collapsed. `URLSearchParams` decodes
+ * on read and re-encodes on write, which folds the encoding spellings for free
+ * — `%61=1` and `a=1` arrive here as the same pair — and folds `?a` and `?a=`
+ * into the same empty value. Names stay case-sensitive: the query is opaque
+ * bytes to HTTP, and an upstream may treat `Tab` and `tab` differently.
+ *
+ * `"all"` (the default) sorts too. Parameter order carrying into the key would
+ * mean `?a=1&b=2` and `?b=2&a=1` cache twice for no benefit an upstream has
+ * ever been shown to draw from parameter order.
+ */
+const keySearchParams = (url: URL, cache: CacheConfig): URLSearchParams => {
+  const query = cache.key.query;
+  const params = [...url.searchParams];
+  const filtered =
+    query === 'all'
+      ? params
+      : query === 'none'
+        ? []
+        : params.filter(([name]) =>
+            query.include !== undefined
+              ? query.include.includes(name)
+              : query.ignore !== undefined && !query.ignore.includes(name),
+          );
+  // Sorted in place: `filter` returned a fresh array, and `params` is already
+  // one this function owns. `toSorted` is not in the ES2022 lib this package
+  // targets.
+  // oxlint-disable-next-line no-array-sort
+  filtered.sort(([aName, aValue], [bName, bValue]) =>
+    aName === bName ? (aValue < bValue ? -1 : aValue > bValue ? 1 : 0) : aName < bName ? -1 : 1,
+  );
+  const out = new URLSearchParams();
+  for (let index = 0; index < filtered.length; index += 1) {
+    const [name, value] = filtered[index]!;
+    if (index > 0) {
+      const [previousName, previousValue] = filtered[index - 1]!;
+      if (previousName === name && previousValue === value) {
+        continue;
+      }
+    }
+    out.append(name, value);
+  }
+  return out;
+};
+
+/**
+ * How much of a header's value the key can distinguish.
+ *
+ * Folds the configured headers' request values into the discriminator hash. A
+ * missing header is `null` — distinct from `""`, which is a header present and
+ * empty — because collapsing them would hand two upstream-distinct requests one
+ * entry. Headers that are not configured contribute nothing, so the fold is a
+ * no-op hash for every route that has not opted in.
+ */
+const foldedHeaderHash = (requestHeaders: Headers, cache: CacheConfig): string => {
+  const values = cache.key.headers.map((name) => requestHeaders.get(name) ?? null);
+  const serialised = JSON.stringify(values);
+  return `${fnv1a(serialised).toString(36)}-${djb2(serialised).toString(36)}`;
+};
+
+/**
  * Builds the cache key, or returns undefined when this URL cannot have one.
  *
  * The method goes into the key rather than into the `Request`: the Cache API
@@ -169,16 +233,34 @@ export const routeFingerprint = (route: Route): string => {
  * which they must be: a HEAD response has no body, and storing it under the GET
  * key hands the next GET an empty one (verified: `content-length: 0`).
  *
+ * The discriminator carries the route fingerprint, the method, and a hash of
+ * the configured headers' values. Everything configurable about identity lives
+ * inside this one parameter's value, so no second reserved parameter exists to
+ * collide with — and the route fingerprint already pins `cache.key` itself, so
+ * changing the configuration cannot alias an old entry: different keys, old
+ * entries expire unnoticed.
+ *
  * A request that already carries the parameter gets no key at all. Overwriting it
  * would map two different requests onto one entry, and that is the one failure
  * this module must not have.
  */
-export const cacheKey = (url: URL, method: string, fingerprint: string): Request | undefined => {
+export const cacheKey = (
+  url: URL,
+  method: string,
+  fingerprint: string,
+  cache: CacheConfig,
+  requestHeaders: Headers,
+): Request | undefined => {
   if (url.searchParams.has(KEY_PARAM)) {
     return undefined;
   }
   const key = new URL(url);
-  key.searchParams.set(KEY_PARAM, `${fingerprint}.${method}`);
+  key.search = '';
+  key.search = keySearchParams(url, cache).toString();
+  key.searchParams.set(
+    KEY_PARAM,
+    `${fingerprint}.${method}.${foldedHeaderHash(requestHeaders, cache)}`,
+  );
   return new Request(key.toString(), { method: 'GET' });
 };
 
@@ -276,21 +358,35 @@ const VARY_NAMES_ALREADY_FIXED = new Set(['accept-encoding']);
 /**
  * Whether a `Vary` value is one this key covers.
  *
- * The key is the URL and the method, so anything else the response varies on is
- * unrepresented — and the platform will not make up the difference. Verified in
- * workerd: an entry stored with `Vary: cookie` was returned for a request
- * carrying a *different* cookie, so `match` does not honour `Vary` at all. That
- * makes this check the only thing standing between a varying response and one
- * visitor being served another's.
+ * A varying response is cacheable exactly when every name the upstream points
+ * at is already represented in the key. Two ways that can be true:
+ *
+ * - `accept-encoding`, which the upstream never sees vary (see above) — so the
+ *   key does not need it.
+ * - A header listed in `cache.key.headers`, whose request value is folded into
+ *   the discriminator hash. Entries for differing values are distinct by
+ *   construction, which is the same service `Vary` exists to request.
+ *
+ * Everything else is unrepresented — and the platform will not make up the
+ * difference. Verified in workerd: an entry stored with `Vary: cookie` was
+ * returned for a request carrying a *different* cookie, so `match` does not
+ * honour `Vary` at all. That makes this check the only thing standing between a
+ * varying response and one visitor being served another's. `*` names no header
+ * at all, so nothing can fold it into a key.
  */
-const varyIsCovered = (value: string | null): boolean => {
+const varyIsCovered = (value: string | null, cache: CacheConfig): boolean => {
   if (value === null || value.trim() === '') {
     return true;
   }
   return value
     .toLowerCase()
     .split(',')
-    .every((name) => VARY_NAMES_ALREADY_FIXED.has(name.trim()));
+    .every((name) => {
+      const trimmed = name.trim();
+      return trimmed === '*'
+        ? false
+        : VARY_NAMES_ALREADY_FIXED.has(trimmed) || cache.key.headers.includes(trimmed);
+    });
 };
 
 /**
@@ -352,7 +448,7 @@ export const responseCacheable = (
   ttlForStatus(response.status, cache) > 0 &&
   upstreamHeaders.getSetCookie().length === 0 &&
   !forbidsSharedCaching(upstreamHeaders.get('cache-control')) &&
-  varyIsCovered(upstreamHeaders.get('vary')) &&
+  varyIsCovered(upstreamHeaders.get('vary'), cache) &&
   (response.status !== 200 ||
     contentTypeAllowed(parseContentType(response.headers.get('content-type')), cache.contentTypes));
 

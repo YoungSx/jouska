@@ -360,6 +360,23 @@ describe('dangerFlags', () => {
     ).toContain('cache.contentTypes');
   });
 
+  it('flags cache key headers that were named, not an empty list', () => {
+    expect(
+      dangerFlags({
+        match: { path: '/' },
+        upstream: 'a.com',
+        cache: { key: { query: 'none' } },
+      }).map((f) => f.path),
+    ).not.toContain('cache.key.headers');
+    expect(
+      dangerFlags({
+        match: { path: '/' },
+        upstream: 'a.com',
+        cache: { key: { headers: ['user-agent'] } },
+      }).map((f) => f.path),
+    ).toContain('cache.key.headers');
+  });
+
   it('does not flag anything on a plain safe route', () => {
     const flags = dangerFlags({ match: { host: 'a.com' }, upstream: 'b.com' });
     expect(flags).toEqual([]);
