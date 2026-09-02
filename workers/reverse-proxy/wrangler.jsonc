@@ -21,7 +21,15 @@
         },
       ],
     },
+    // Optional: one structured JSON log line per proxied request, picked up by
+    // Workers Logs because `observability` is enabled. Delete to turn off.
+    "ACCESS_LOGS": "true",
   },
+
+  // Optional Analytics Engine receiver: one data point per proxied request,
+  // queryable per route for latency percentiles and error/timeout rates.
+  // Analytics Engine needs no namespace id; uncomment to enable.
+  // "analytics_engine_datasets": [{ "binding": "ANALYTICS" }],
 
   // Uncomment and fill in a namespace id to serve the route table from KV,
   // which is editable at runtime without redeploying.

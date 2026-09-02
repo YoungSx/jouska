@@ -10,6 +10,9 @@
  * environment variable, with a code-defined table winning either way. The
  * resolved config is cached in isolate memory so the store is read once per TTL
  * rather than once per request.
+ *
+ * Observability receivers (Analytics Engine, access logs) are optional and live
+ * in `observability.ts`; with nothing bound, `onProxy` is never installed.
  */
 import { Hono } from 'hono';
 import {
@@ -25,6 +28,8 @@ import {
   type KVReader,
 } from 'jouska';
 
+import { createProxySink, type ProxySink } from './observability.js';
+
 export interface Env {
   /** Optional KV namespace holding the route table under CONFIG_KEY. */
   CONFIG?: KVReader;
@@ -32,6 +37,13 @@ export interface Env {
   CONFIG_KEY?: string;
   /** Route table as a JSON document, for deployments without KV. */
   JOUSKA_CONFIG?: unknown;
+  /**
+   * Optional Analytics Engine dataset. When bound, one data point per proxied
+   * request is written for per-route latency and error-rate queries.
+   */
+  ANALYTICS?: AnalyticsEngineDataset;
+  /** Set to `"true"` to emit a structured log line per proxied request. */
+  ACCESS_LOGS?: string;
 }
 
 /**
@@ -91,6 +103,26 @@ let state: CachedState | undefined;
 let app: Hono | undefined;
 let appConfig: Config | undefined;
 let appFetch: typeof fetch | undefined;
+let appSink: ProxySink | undefined;
+
+/**
+ * The observability fan-out, cached the same way the app is: cheap to build,
+ * but its identity must be stable or the app would be rebuilt per request.
+ * Keyed on the actual bindings rather than their presence, so swapping a
+ * dataset or flipping `ACCESS_LOGS` swaps the sink too.
+ */
+let sink: ProxySink | undefined;
+let sinkAnalytics: AnalyticsEngineDataset | undefined;
+let sinkAccessLogs: string | undefined;
+
+const getSink = (env: Env): ProxySink | undefined => {
+  if (sinkAnalytics !== env.ANALYTICS || sinkAccessLogs !== env.ACCESS_LOGS) {
+    sink = createProxySink(env);
+    sinkAnalytics = env.ANALYTICS;
+    sinkAccessLogs = env.ACCESS_LOGS;
+  }
+  return sink;
+};
 
 /** Identifies the bindings a loader would read, so a change invalidates it. */
 const bindingKey = (env: Env): string =>
@@ -130,15 +162,35 @@ export const __resetConfigCache = (): void => {
   app = undefined;
   appConfig = undefined;
   appFetch = undefined;
+  sink = undefined;
+  sinkAnalytics = undefined;
+  sinkAccessLogs = undefined;
 };
 
-const getApp = (config: Config, fetchImpl: typeof fetch | undefined): Hono => {
-  if (app === undefined || appConfig !== config || appFetch !== fetchImpl) {
+const getApp = (
+  config: Config,
+  fetchImpl: typeof fetch | undefined,
+  proxySink: ProxySink | undefined,
+): Hono => {
+  if (
+    app === undefined ||
+    appConfig !== config ||
+    appFetch !== fetchImpl ||
+    appSink !== proxySink
+  ) {
     const next = new Hono();
-    next.use('*', jouska({ config, ...(fetchImpl ? { fetchImpl } : {}) }));
+    next.use(
+      '*',
+      jouska({
+        config,
+        ...(fetchImpl ? { fetchImpl } : {}),
+        ...(proxySink ? { onProxy: proxySink } : {}),
+      }),
+    );
     app = next;
     appConfig = config;
     appFetch = fetchImpl;
+    appSink = proxySink;
   }
   return app;
 };
@@ -158,6 +210,6 @@ export default {
       console.error('jouska: no usable config', error);
       return Response.json({ error: 'config_unavailable' }, { status: 503 });
     }
-    return getApp(config, env.UPSTREAM_FETCH).fetch(request, env, ctx);
+    return getApp(config, env.UPSTREAM_FETCH, getSink(env)).fetch(request, env, ctx);
   },
 } satisfies ExportedHandler<Env>;
