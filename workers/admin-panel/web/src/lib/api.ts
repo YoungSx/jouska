@@ -252,6 +252,15 @@ export const api = {
     return { revision: typeof data.revision === 'number' ? data.revision : 0 };
   },
 
+  /**
+   * 舍弃草稿：把草稿重置为线上正在服务的那一版。不写 KV、不产生 revision、
+   * 不过发布闸 —— 是发布的草稿侧镜像，不是一次发布。
+   */
+  discardDraft: async (): Promise<{ sourceRevision: number }> => {
+    const data = await request('POST', '/api/discard');
+    return { sourceRevision: typeof data.sourceRevision === 'number' ? data.sourceRevision : 0 };
+  },
+
   /* ---------- 域名发现 ---------- */
 
   /**

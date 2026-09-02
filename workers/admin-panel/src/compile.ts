@@ -134,6 +134,34 @@ const issueToCompile = (
   };
 };
 
+/**
+ * Extracts the draft rows a snapshot document describes: `{ id, definition }`
+ * pairs where the row id is the identity and a definition carrying `id` too is
+ * the compiled shape — the routes table stores definitions without it, and
+ * compile re-injects the row id.
+ *
+ * Returns `undefined` when `routes` is not an array (a corrupt or foreign
+ * document); malformed entries are skipped rather than failed, matching how
+ * the publish-history list degrades.
+ */
+export const routesFromSnapshot = (
+  doc: Record<string, unknown>,
+): readonly { readonly id: string; readonly definition: unknown }[] | undefined => {
+  const routesDoc = doc['routes'];
+  if (!Array.isArray(routesDoc)) {
+    return undefined;
+  }
+  const routes: { readonly id: string; readonly definition: unknown }[] = [];
+  for (const route of routesDoc as readonly unknown[]) {
+    if (!isRecord(route) || typeof route['id'] !== 'string') {
+      continue;
+    }
+    const { id: _rowId, ...rest } = route;
+    routes.push({ id: route['id'], definition: rest });
+  }
+  return routes;
+};
+
 export const compileConfig = (rows: readonly RouteRow[], defaults: unknown): CompileResult => {
   const routes: RouteInput[] = [];
   const issues: CompileIssue[] = [];

@@ -34,6 +34,7 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { PublishBar } from '@/components/publish-bar';
 import { PublishDialog } from '@/components/publish-dialog';
+import { DiscardDialog } from '@/components/discard-dialog';
 import { ChangePasswordDialog } from '@/components/change-password-dialog';
 import { ViewErrorBoundary } from '@/components/error-boundary';
 import { ThemeToggle } from '@/components/theme-toggle';
@@ -112,6 +113,7 @@ const App = () => {
   } | null>(null);
   const [editorOpen, setEditorOpen] = React.useState(false);
   const [publishOpen, setPublishOpen] = React.useState(false);
+  const [discardOpen, setDiscardOpen] = React.useState(false);
   const [deleteTarget, setDeleteTarget] = React.useState<RouteEntry | null>(null);
   const [passwordOpen, setPasswordOpen] = React.useState(false);
 
@@ -476,6 +478,7 @@ const App = () => {
         publishing={false}
         onPublish={() => setPublishOpen(true)}
         onReview={() => setView('preview')}
+        onDiscard={() => setDiscardOpen(true)}
       />
 
       {editor !== null && (
@@ -503,6 +506,24 @@ const App = () => {
         preview={draft.gate.kind === 'dirty' ? draft.gate.preview : null}
         onPublished={() => {
           setPublishOpen(false);
+          reloadQuietly();
+        }}
+      />
+
+      {/* 弹窗要显示的 liveRevision：按钮只在 dirty/blocked 且 live 非空时出现，
+          所以这里必然拿得到；null 只是类型上的余量。 */}
+      <DiscardDialog
+        open={discardOpen}
+        onOpenChange={setDiscardOpen}
+        liveRevision={
+          (draft.gate.kind === 'clean'
+            ? draft.gate.live
+            : draft.gate.kind === 'dirty' || draft.gate.kind === 'blocked'
+              ? draft.gate.live
+              : null) ?? 0
+        }
+        onDiscarded={() => {
+          setDiscardOpen(false);
           reloadQuietly();
         }}
       />

@@ -221,6 +221,8 @@ export const t = {
     review: '查看发布内容',
     seeIssues: '查看问题',
     liveRevision: (revision: number) => `线上 revision ${revision}`,
+    discard: '舍弃草稿',
+    discarding: '舍弃中…',
   },
 
   routes: {
@@ -589,6 +591,30 @@ export const t = {
     forbidden: '只有管理员能发布。',
   },
 
+  /**
+   * 舍弃草稿 = 发布的草稿侧镜像：不写 KV、不产生 revision、不过发布闸。
+   * 措辞必须与 publishBar / history 一起守住同一口径 —— 舍弃不是发布，线上
+   * 那一版从头到尾没变过，变的只是草稿。
+   */
+  discard: {
+    title: '舍弃未发布的草稿',
+    body: (revision: number) =>
+      `草稿将恢复为正在服务的 revision ${revision}，未发布的改动会被丢弃。线上流量的走向不受影响。`,
+    parkNote: '快照里没有的路由不会被删除，只会停用并保留定义，随时可以重新启用。',
+    cancel: '取消',
+    confirmAction: '舍弃草稿',
+    confirming: '舍弃中…',
+    ok: (revision: number) => `草稿已恢复为 revision ${revision} 的内容。`,
+    failed: (message: string) => `舍弃失败：${message}`,
+    forbidden: '只有管理员能舍弃草稿。',
+    errors: {
+      nothing_published: '还没有发布过任何配置，没有「线上版本」可以恢复。',
+      snapshot_unavailable:
+        '线上那一版没有可用的快照（发布早于历史功能，或快照已损坏），恢复不了。',
+      already_clean: '草稿已经和线上一致了，不需要舍弃。',
+    } as Record<string, string>,
+  },
+
   audit: {
     title: '审计日志',
     description: '每一次写操作都在这里，包括发布。',
@@ -608,6 +634,7 @@ export const t = {
       'defaults.update': '修改默认值',
       'config.publish': '发布配置',
       'config.rollback': '回滚配置',
+      'config.discard': '舍弃草稿',
       'auth.password': '修改密码',
       'auth.recover': '恢复令牌重置',
       'user.create': '新建用户',
