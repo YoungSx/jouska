@@ -329,8 +329,14 @@ describe('match conditions (headers / query / cookies)', () => {
         {
           match: {
             path: '/a',
-            headers: [{ name: 'X-Env', equals: 'prod' }, { name: 'X-Canary', present: true }],
-            query: [{ name: 'debug', equals: '' }, { name: 'v', prefix: '2' }],
+            headers: [
+              { name: 'X-Env', equals: 'prod' },
+              { name: 'X-Canary', present: true },
+            ],
+            query: [
+              { name: 'debug', equals: '' },
+              { name: 'v', prefix: '2' },
+            ],
             cookies: [{ name: 'beta', present: false }],
           },
           upstream: 'o.test',
@@ -383,7 +389,10 @@ describe('match conditions (headers / query / cookies)', () => {
           defineConfig({
             routes: [
               // @ts-expect-error exercising runtime validation with invalid shapes
-              { match: { path: '/a', headers: [{ name: 'x-env', ...operators }] }, upstream: 'o.test' },
+              {
+                match: { path: '/a', headers: [{ name: 'x-env', ...operators }] },
+                upstream: 'o.test',
+              },
             ],
           }),
         JSON.stringify(operators),
@@ -394,7 +403,9 @@ describe('match conditions (headers / query / cookies)', () => {
   it('rejects an empty prefix, which would be present:true spelled twice', () => {
     expect(() =>
       defineConfig({
-        routes: [{ match: { path: '/a', headers: [{ name: 'x-env', prefix: '' }] }, upstream: 'o.test' }],
+        routes: [
+          { match: { path: '/a', headers: [{ name: 'x-env', prefix: '' }] }, upstream: 'o.test' },
+        ],
       }),
     ).toThrow();
   });
@@ -431,14 +442,20 @@ describe('match conditions (headers / query / cookies)', () => {
     expect(() =>
       defineConfig({
         routes: [
-          { match: { path: '/a', headers: Array.from({ length: 16 }, () => header) }, upstream: 'o.test' },
+          {
+            match: { path: '/a', headers: Array.from({ length: 16 }, () => header) },
+            upstream: 'o.test',
+          },
         ],
       }),
     ).not.toThrow();
     expect(() =>
       defineConfig({
         routes: [
-          { match: { path: '/a', headers: Array.from({ length: 17 }, () => header) }, upstream: 'o.test' },
+          {
+            match: { path: '/a', headers: Array.from({ length: 17 }, () => header) },
+            upstream: 'o.test',
+          },
         ],
       }),
     ).toThrow();
@@ -446,7 +463,9 @@ describe('match conditions (headers / query / cookies)', () => {
 
   it('does not fold value case: Prod and prod stay two values', () => {
     const config = defineConfig({
-      routes: [{ match: { path: '/a', headers: [{ name: 'x-env', equals: 'Prod' }] }, upstream: 'o.test' }],
+      routes: [
+        { match: { path: '/a', headers: [{ name: 'x-env', equals: 'Prod' }] }, upstream: 'o.test' },
+      ],
     });
     expect(config.routes[0]!.match.headers![0]!.equals).toBe('Prod');
   });

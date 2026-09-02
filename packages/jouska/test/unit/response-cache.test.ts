@@ -374,9 +374,7 @@ describe('cacheVaryPart', () => {
   const headers = (init: Record<string, string> = {}) => new Headers(init);
   const routeFrom = (matchExtra: Record<string, unknown>): Route =>
     defineConfig({
-      routes: [
-        { match: { path: '/a', ...matchExtra }, upstream: 'o.test' },
-      ],
+      routes: [{ match: { path: '/a', ...matchExtra }, upstream: 'o.test' }],
     }).routes[0]!;
 
   it('is empty when the route matches on nothing finer than the URL', () => {
@@ -402,9 +400,9 @@ describe('cacheVaryPart', () => {
       headers: [{ name: 'x-env', equals: 'prod' }],
       cookies: [{ name: 'beta', present: true }],
     }).match;
-    expect(
-      cacheVaryPart(match, headers({ 'x-env': 'prod', Cookie: 'beta=on' })),
-    ).toBe('x-env=prod;beta=on');
+    expect(cacheVaryPart(match, headers({ 'x-env': 'prod', Cookie: 'beta=on' }))).toBe(
+      'x-env=prod;beta=on',
+    );
   });
 
   it('produces different keys for different branch values', () => {

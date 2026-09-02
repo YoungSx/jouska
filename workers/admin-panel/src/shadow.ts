@@ -85,9 +85,11 @@ const probePaths = (route: Config['routes'][number]): string[] => {
  * logs. `present: true` needs existence only, and the same suffix stands in
  * for any value the visitor might send.
  */
-const probeValue = (
-  condition: { equals?: string | undefined; prefix?: string | undefined; present?: boolean | undefined },
-): string | undefined => {
+const probeValue = (condition: {
+  equals?: string | undefined;
+  prefix?: string | undefined;
+  present?: boolean | undefined;
+}): string | undefined => {
   if (condition.present !== undefined) {
     return condition.present ? 'shadow-probe' : undefined;
   }

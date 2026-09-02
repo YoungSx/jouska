@@ -31,9 +31,10 @@ export const cacheVaryWarnings = (config: Config): CacheVaryWarning[] =>
     if (route.cache?.enabled !== true) {
       return [];
     }
-    const names = [
-      ...(route.match.headers ?? []),
-      ...(route.match.cookies ?? []),
-    ].map((condition) => condition.name);
-    return names.length > 0 ? [{ routeId: route.id ?? `#${index}`, names: [...new Set(names)] }] : [];
+    const names = [...(route.match.headers ?? []), ...(route.match.cookies ?? [])].map(
+      (condition) => condition.name,
+    );
+    return names.length > 0
+      ? [{ routeId: route.id ?? `#${index}`, names: [...new Set(names)] }]
+      : [];
   });
