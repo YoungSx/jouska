@@ -409,6 +409,12 @@ export const t = {
       rewriteLinks: '改写链接',
       rewriteLinksHelp:
         '把指向上游及其子域的绝对地址换成代理自己的域名。关掉之后这一段只做字面替换。',
+      replace: '字面替换',
+      replaceHelp: '对改写后的正文逐段做原文替换。查找为空的行不保存。',
+      replaceFrom: '查找',
+      replaceTo: '替换为',
+      addRow: '加一行替换',
+      removeRow: '删掉这一行替换',
       rewriteStyles: '改写样式里的地址',
       rewriteStylesHelp:
         '`<style>` 块、行内 `style`、以及 `<meta http-equiv="refresh">` 里的地址。关掉之后 CSS 里的背景图仍然从上游加载。',
@@ -433,6 +439,16 @@ export const t = {
       origins: '允许的 origin',
       originsHelp: '留空会反射任何调用方的 origin，等于让别的站点通过这个代理读取带凭据的响应。',
       originsPlaceholder: 'https://app.example.com',
+      allowMethods: '允许的方法',
+      allowMethodsHelp: '留空按反代自带的默认（GET、HEAD、PUT、POST、DELETE、PATCH、QUERY）。',
+      allowHeaders: '允许的请求头',
+      allowHeadersHelp: '浏览器预检时允许携带的自定义请求头，逗号分隔。',
+      exposeHeaders: '暴露给浏览器的响应头',
+      exposeHeadersHelp: '浏览器默认读不到多数自定义响应头，前端要读的头在这里列出来。',
+      credentials: '允许携带凭据',
+      credentialsHelp: '打开后浏览器才会把 cookie 带进跨域请求，也才读得到带凭据的响应。',
+      maxAge: '预检结果缓存',
+      maxAgeHelp: '秒。整数，留空不发送缓存指令。',
     },
     ip: {
       label: 'IP 规则',
@@ -444,21 +460,24 @@ export const t = {
     upstreamHeaders: {
       label: '注入的请求头',
       help: '这些头会原样发给上游。凭据类或身份伪装类的头写在这里等于交给第三方。',
-      addRow: '加一行',
-      removeRow: '删掉这一行',
       name: '头名',
       value: '值',
       // 只报实际写错的那几个名字。把整份保留清单打出来读者还得自己找是哪一个。
       reserved: (names: string) =>
         `这些头由 jouska 从请求推导，或由运行时掌管这一跳的传输与协商，写在这里会被拒：${names}`,
     },
-    rateLimit: {
-      label: '限流',
-      help: '需要在 wrangler 里绑定 native rate limiting binding，表单暂不覆盖，可在 JSON 视图配置。',
-    },
     unknownFields: {
       label: '表单未覆盖的字段',
       help: '下面这些字段只能在 JSON 视图里编辑，保存时会原样保留。',
+      /** 个别键需要一句「为什么表单没有它、它管什么」。 */
+      keyHelp: {
+        rateLimit:
+          '需要在 wrangler 里绑定 native rate limiting binding，表单暂不覆盖，可在 JSON 视图配置。',
+        upstreams: '按顺序排列的上游列表，配合 failover 做故障转移。可在 JSON 视图配置。',
+        trafficSplit: '按权重分流的候选列表，每条是 `{ upstream, weight }`。可在 JSON 视图配置。',
+        failover: '故障转移的触发条件与最大尝试次数，只在多上游路由上有意义。可在 JSON 视图配置。',
+        stickyBy: '`"cookie"` 让同一次分流的后续请求黏在同一个上游。可在 JSON 视图配置。',
+      } as Record<string, string>,
     },
   },
 
@@ -785,6 +804,9 @@ export const t = {
     optional: '可选',
     defaultValue: (value: string) => `默认 ${value}`,
     unset: '未设置',
+    // 行编辑器共用：请求头与字面替换。
+    addRow: '加一行',
+    removeRow: '删掉这一行',
     yes: '是',
     no: '否',
     networkError: '连不上服务器，检查一下网络或者面板是不是在部署中。',

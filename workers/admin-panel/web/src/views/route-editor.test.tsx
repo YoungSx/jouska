@@ -25,9 +25,11 @@ const configured = (hosts: HostBinding[]): DomainsResponse => ({ configured: tru
 
 /** 按下保存，回答服务端收到的 definition —— 断言看的是落进草稿的那份数据。 */
 const saveDraft = async (user: ReturnType<typeof userEvent.setup>) => {
+  const calls = vi.mocked(api.putRoute).mock.calls;
+  const before = calls.length;
   await user.click(screen.getByRole('button', { name: '保存到草稿' }));
-  await waitFor(() => expect(api.putRoute).toHaveBeenCalled());
-  return vi.mocked(api.putRoute).mock.calls[0]?.[1];
+  await waitFor(() => expect(api.putRoute).toHaveBeenCalledTimes(before + 1));
+  return calls.at(-1)?.[1];
 };
 
 const renderEditor = (
@@ -339,5 +341,160 @@ describe('RouteEditor 注入请求头', () => {
 
     await user.click(screen.getByRole('button', { name: '加一行' }));
     expect(screen.getByLabelText('头名 1')).toHaveValue('');
+  });
+});
+
+/**
+ * CORS 与字面替换这两个 P1 子段（issue #38）。
+ *
+ * 焊的是同一类病：schema 里的子键掉进表单与「表单未覆盖」区之间的缝 —— 表单不
+ * 渲染它，未覆盖区只看顶层键也不列它。JSON 里写 `cors: { credentials: true }` 切
+ * 回表单，那个键就彻底隐形：数据还在，但没人看得见自己开着什么。
+ *
+ * credentials 单独焊一条「等于默认值不落键、段壳保留」—— 默认 false，开是落
+ * true，关是删键；删到空对象等于把 CORS 整段关掉，是完全不同的一件事。
+ *
+ * replace 的 `from` 是 `z.string().min(1)`，空查找必被服务端拒。编辑器的选择是
+ * 不把空 from 的行发出去，同时行留在原地 —— 「先写查找再补替换」是正常输入顺序，
+ * 不许把人正在编辑的行抽走（与注入请求头同一教训）。
+ */
+describe('RouteEditor CORS 子段（issue #38）', () => {
+  beforeEach(() => {
+    vi.spyOn(api, 'domains').mockResolvedValue(configured([]));
+    vi.spyOn(api, 'putRoute').mockResolvedValue(undefined);
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('JSON 里写的 credentials 切回表单看得见，改回来删键、段壳留着', async () => {
+    const user = userEvent.setup();
+    renderEditor(true, {
+      upstream: 'origin.example.com',
+      cors: { credentials: true },
+    });
+
+    const toggle = screen.getByRole('switch', { name: '允许携带凭据' });
+    expect(toggle).toBeChecked();
+
+    await user.click(toggle);
+    const draft = await saveDraft(user);
+    expect(draft).not.toHaveProperty('cors.credentials');
+    expect(draft).toMatchObject({ cors: {} });
+  });
+
+  it('打开 credentials 落 true', async () => {
+    const user = userEvent.setup();
+    renderEditor(true, { upstream: 'origin.example.com', cors: {} });
+
+    await user.click(screen.getByRole('switch', { name: '允许携带凭据' }));
+
+    expect(await saveDraft(user)).toMatchObject({ cors: { credentials: true } });
+  });
+
+  it('maxAge 落数字，清空删键', async () => {
+    const user = userEvent.setup();
+    renderEditor(true, { upstream: 'origin.example.com', cors: {} });
+
+    const input = screen.getByLabelText('预检结果缓存（秒）');
+    await user.type(input, '600');
+    expect(await saveDraft(user)).toMatchObject({ cors: { maxAge: 600 } });
+
+    await user.clear(input);
+    expect(await saveDraft(user)).not.toHaveProperty('cors.maxAge');
+  });
+
+  it('allowHeaders 逗号分隔落列表，清空删键', async () => {
+    const user = userEvent.setup();
+    renderEditor(true, { upstream: 'origin.example.com', cors: {} });
+
+    const input = screen.getByLabelText('允许的请求头');
+    await user.type(input, 'x-token, x-trace');
+    expect(await saveDraft(user)).toMatchObject({
+      cors: { allowHeaders: ['x-token', 'x-trace'] },
+    });
+
+    await user.clear(input);
+    expect(await saveDraft(user)).not.toHaveProperty('cors.allowHeaders');
+  });
+});
+
+describe('RouteEditor 字面替换（issue #38）', () => {
+  beforeEach(() => {
+    vi.spyOn(api, 'domains').mockResolvedValue(configured([]));
+    vi.spyOn(api, 'putRoute').mockResolvedValue(undefined);
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('加一行写好查找与替换，落进草稿', async () => {
+    const user = userEvent.setup();
+    renderEditor();
+    await user.click(screen.getByRole('switch', { name: '改写响应体' }));
+    await user.click(screen.getByRole('button', { name: '加一行替换' }));
+    await user.type(screen.getByLabelText('查找 1'), 'cdn.origin.dev');
+    await user.type(screen.getByLabelText('替换为 1'), 'proxy.example.com');
+
+    expect(await saveDraft(user)).toMatchObject({
+      bodyRewrite: {
+        replace: [{ from: 'cdn.origin.dev', to: 'proxy.example.com' }],
+      },
+    });
+  });
+
+  it('查找为空的行不发出去，行也不消失 —— 先写查找再补替换是正常顺序', async () => {
+    const user = userEvent.setup();
+    renderEditor();
+    await user.click(screen.getByRole('switch', { name: '改写响应体' }));
+    await user.click(screen.getByRole('button', { name: '加一行替换' }));
+
+    // 行还在原地可以继续打字；但草稿里没有这个键。
+    expect(screen.getByLabelText('查找 1')).toHaveValue('');
+    await user.type(screen.getByLabelText('替换为 1'), 'half-typed');
+    expect(await saveDraft(user)).not.toHaveProperty('bodyRewrite.replace');
+
+    expect(screen.getByLabelText('替换为 1')).toHaveValue('half-typed');
+    await user.type(screen.getByLabelText('查找 1'), 'from');
+    expect(await saveDraft(user)).toMatchObject({
+      bodyRewrite: { replace: [{ from: 'from', to: 'half-typed' }] },
+    });
+  });
+
+  it('JSON 里已有的 replace 原样显示，加一行接着写不吃掉已有行', async () => {
+    const user = userEvent.setup();
+    renderEditor(true, {
+      upstream: 'origin.example.com',
+      bodyRewrite: { replace: [{ from: 'a', to: 'b' }] },
+    });
+
+    expect(screen.getByLabelText('查找 1')).toHaveValue('a');
+    await user.click(screen.getByRole('button', { name: '加一行替换' }));
+    await user.type(screen.getByLabelText('查找 2'), 'c');
+    await user.type(screen.getByLabelText('替换为 2'), 'd');
+
+    expect(await saveDraft(user)).toMatchObject({
+      bodyRewrite: {
+        replace: [
+          { from: 'a', to: 'b' },
+          { from: 'c', to: 'd' },
+        ],
+      },
+    });
+  });
+
+  it('把唯一一行的查找删空：行留着，键从草稿里消失', async () => {
+    const user = userEvent.setup();
+    renderEditor(true, {
+      upstream: 'origin.example.com',
+      bodyRewrite: { replace: [{ from: 'a', to: 'b' }] },
+    });
+
+    await user.clear(screen.getByLabelText('查找 1'));
+
+    expect(screen.getByLabelText('替换为 1')).toHaveValue('b');
+    expect(await saveDraft(user)).not.toHaveProperty('bodyRewrite.replace');
   });
 });
