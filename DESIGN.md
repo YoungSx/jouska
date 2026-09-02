@@ -191,6 +191,10 @@ components:
 - **表格**：容器内横滚（`-mx-4 overflow-x-auto px-4 sm:mx-0`），窄屏不断行——这些值要逐字符核对，换行会读错。列宽用固定 `w-*` 约束序号、状态、时间、操作列。
 - **密度**：紧凑。空隙档位实测分布：gap-2（8px）最常用，其次 gap-1.5（6px）、gap-4（16px）；危险块、JSON 块内 `p-3`（12px）。
 - **响应式**：`sm:` 断点之上发布栏与顶栏转单行，之下转两行（图标+文案 / 按钮）。导航分两路：`sm:` 及以上平铺 Tabs 横滚（`nav-scroll` 右缘淡出提示还有未入屏项，滚到头即收）；窄屏收进一个官方 DropdownMenu——触发钮显示菜单图标与当前页名，菜单项是 CheckboxItem，当前页打勾（390px 视口下六个导航项挤进一条横滚缝，「现在在哪」不可见，故折叠）。两路指向同一份导航数据与同一个状态，不会漂移成两套导航。
+- **断点只有三档，两档是自定义变体**（`src/index.css`）：`sm`（`min-width: 40rem`）管宽度；`roomy`（`min-width: 40rem` **且** `min-height: 32rem`）管「够宽又够高」；`touch`（`pointer: coarse`）管手指。横屏手机是宽度断点看不见的那一格 —— 844×390 宽得过 `sm`，高只有 390px，居中弹窗在那里只放得下一个半字段（实测滚动区 32px）。凡是「屏幕够大所以可以摊开」的判断都走 `roomy`，不走 `sm`。
+- **路由编辑器弹窗**：`roomy` 之下是贯通上下的全高 sheet（`h-dvh`、上下贴边、`rounded-none`），水平方向始终 `left-1/2 -translate-x-1/2` 居中并限宽 `sm:max-w-2xl`——全高解决的是高度，不该让一行 host 输入框拉到 812px。`roomy` 之上恢复居中卡片（`max-h-[85dvh]`、`rounded-xl`）。弹窗内部只有三样东西常驻：标题、表单/JSON 切换、页脚；**标识（路由 ID 与启用开关）在滚动区内**，因为 ID 已经写在标题上，两份重复的 ID 在 iPhone SE 上要花掉 183px。页脚窄屏也横排且用不透明 `bg-muted`：它下面正滚着表单，半透明会让被切一半的那行字从按钮背后透出来。
+- **触摸命中区**：`touch` 下按钮、tab、开关用伪元素把可点面撑到 44px，视觉尺寸一个都不动（伪元素不参与布局，密度承诺不破）。只补高度不补宽度 —— 横向相邻的控件只隔 8px，向两边扩会让人点 A 命中 B。三个例外：换行的复选框组（HTTP 方法）靠 `<label>` 自己 `touch:py-3.5` 长到 44px，因为看不见的命中面在换行时会上下互吞（实测有效高度反而从 32px 掉到 2px）；弹窗关闭钮靠 `touch:size-11` 真的变大，因为全屏态的弹窗是 `overflow-hidden`，向外铺的那一圈会被裁掉；输入框保持 32px，它通栏宽，而给二十多个字段各加 12px 会把腾出来的可视区吃回去。
+- **软键盘**：viewport meta 带 `interactive-widget=resizes-content`，键盘弹起时 layout viewport 一起收缩，`dvh` 变小，全高 sheet 自己让开。iOS Safari 至今不认这个属性（会忽略），所以它只是加分项，全高 sheet 才是兜底。
 
 ## Elevation & Depth
 
@@ -220,6 +224,7 @@ components:
 - **8px（rounded-md）/ 6px（rounded-sm）**：卡片内再嵌一层的块（JSON `<pre>`、`<details>` 折叠块），内层比外层收敛。
 - **26px（rounded-4xl，胶囊）**：仅 Badge。小胶囊形是状态标签的专属剪影，其他元素不得使用。
 - 小尺寸按钮（sm/xs）用 `rounded-[min(var(--radius-md),12px)]` 收敛，避免矮控件显得过圆。
+- **0px（rounded-none）**：只有一处 —— 路由编辑器在 `roomy` 之下的全高 sheet。它上下贴着视口边，留着 14px 圆角只会在角上露出背景的三角。这是物理必然，不是新增一档形状语言。
 
 边框语言：1px 实线，统一 `border-border`；Card 用 ring 代替 border 以便 overflow 裁切。分隔用 `Separator` 或 border-t/b。没有斜切、没有异形。
 

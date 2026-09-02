@@ -320,6 +320,8 @@ export const t = {
   /** 表单化编辑器的字段文案。help 直接对齐 README 的路由选项表。 */
   fields: {
     sections: {
+      identity: '标识',
+      identityHint: '这条路由的名字，以及它要不要进入发布的配置。',
       match: '匹配',
       matchHint: '决定哪些请求走这条路由。三个条件同时满足才算匹配。',
       upstream: '上游',
