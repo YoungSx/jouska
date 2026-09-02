@@ -131,20 +131,6 @@ const RULES: readonly Rule[] = [
     reason:
       'an unreachable auth endpoint then admits everything — availability outranks admission, so an outage becomes open doors',
   },
-  {
-    // The whole block, not a subfield: a mistyped team or audience admits nobody,
-    // and the failure looks like an outage rather than a config error.
-    path: 'accessJwt',
-    level: 'medium',
-    reason:
-      'a wrong team or audience refuses correctly signed requests with 401 — the lockout reads as an outage, not a typo',
-  },
-  {
-    path: 'apiKey.keys',
-    level: 'high',
-    reason:
-      'anyone who can edit this table can mint themselves a working key — a digest is not an authorisation',
-  },
 ];
 
 /**

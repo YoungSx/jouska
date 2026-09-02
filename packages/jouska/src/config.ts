@@ -1070,79 +1070,14 @@ const forwardAuthSchema = z.object({
 });
 
 /**
- * The auth policy blocks, with a permissive-url variant of `forwardAuth` for
- * private routes. Written as functions of the URL schema so the two branches
- * cannot drift — a check added to one and forgotten in the other would make
- * `allowPrivateUpstream` a way around the SSRF refusal.
- */
-/**
- * Cloudflare Access JWT verification. The token arrives on
- * `Cf-Access-Jwt-Assertion` from every request that passed an Access
- * application; jouska verifies it locally (signature against the team's JWKS,
- * expiry, audience, issuer) so the upstream can trust `X-Access-User`-style
- * identity without doing crypto itself.
- *
- * Only the Cloudflare Access shape is supported — JWKS discovery and generic
- * OIDC are out of scope by design, the same way `rateLimit` binds to the
- * platform's native binding instead of implementing a limiter.
- */
-const accessJwtSchema = z.object({
-  /** Access team domain, e.g. `myteam.cloudflareaccess.com`. No scheme, no wildcard. */
-  team: z
-    .string()
-    .min(1)
-    .regex(
-      /^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/i,
-      'expected the Access team domain, e.g. "myteam.cloudflareaccess.com"',
-    )
-    .transform((v) => v.toLowerCase()),
-  /** `aud` the token must carry — the Access application's AUD tag. */
-  audience: z.string().min(1),
-});
-
-/**
- * API-key checking, local and cheap: hash the presented key and compare against
- * the configured digests.
- *
- * Keys are stored as SHA-256 hex digests, never plaintext — the route table
- * lives in KV and is displayed by the panel, so a plaintext key there is a key
- * anyone with config read access already holds. The presented key is hashed
- * with the same algorithm, so the operator computes the digest once (`sha256sum
- * | cut -d' ' -f1` or the panel's own hashing field) and the proxy never sees
- * the original.
- */
-const apiKeySchema = z.object({
-  /** Header the key arrives on. Defaults to the conventional name. */
-  header: headerName
-    .transform((v) => v.toLowerCase())
-    .refine((v) => !RESERVED_REQUEST_HEADERS.has(v), {
-      message: 'header is reserved; the proxy derives it or the runtime owns it',
-    })
-    .default('x-api-key'),
-  /**
-   * Acceptable keys, as SHA-256 hex digests. The regex is the whole secret
-   * hygiene: a value that is not exactly 64 lowercase-or-uppercase hex digits
-   * is either a typo or someone pasting a plaintext key, and accepting either
-   * would silently make the check useless.
-   */
-  keys: z
-    .array(z.string().regex(/^[0-9a-fA-F]{64}$/, 'expected a SHA-256 hex digest (64 hex digits)'))
-    .min(1)
-    .max(100)
-    .transform((keys) => keys.map((k) => k.toLowerCase())),
-});
-
-/**
- * The auth policy blocks, with a permissive-url variant of `forwardAuth` for
- * private routes. Written as functions of the URL schema so the two branches
+ * The auth policy block, with a permissive-url variant of `forwardAuth` for
+ * private routes. Written as a function of the URL schema so the two branches
  * cannot drift — a check added to one and forgotten in the other would make
  * `allowPrivateUpstream` a way around the SSRF refusal.
  */
 const authBlocks = (url: typeof authUrl) =>
   ({
     forwardAuth: forwardAuthSchema.extend({ url }).optional(),
-    accessJwt: accessJwtSchema.optional(),
-    apiKey: apiKeySchema.optional(),
   }) as const;
 
 const authBehaviour = authBlocks(authUrl);
@@ -1584,8 +1519,6 @@ const defaults = z
     // route does not override is what a route not listing any means. Per-key
     // merging here would splice a table-wide `url` under a route-local
     // `failOpen`, and the half-merged block would be nobody's intent.
-    accessJwt: routeBehaviour.accessJwt,
-    apiKey: routeBehaviour.apiKey,
     forwardAuth: routeBehaviour.forwardAuth,
   })
   .optional();
@@ -1942,7 +1875,7 @@ export const configSchema = z
        * pairing is refused, and the runtime drops the cache block as a backstop
        * in case an older document still carries it.
        */
-      const authFields = [entry.forwardAuth, entry.accessJwt, entry.apiKey];
+      const authFields = [entry.forwardAuth];
       if (entry.cache !== undefined && authFields.some((f) => f !== undefined)) {
         ctx.addIssue({
           code: 'custom',
@@ -2052,8 +1985,6 @@ export type BodyRewriteConfig = z.output<typeof bodyRewrite>;
 export type CacheConfig = z.output<typeof cache>;
 export type RequestPolicyConfig = z.output<typeof requestPolicy>;
 export type ForwardAuthConfig = z.output<typeof forwardAuthSchema>;
-export type AccessJwtConfig = z.output<typeof accessJwtSchema>;
-export type ApiKeyConfig = z.output<typeof apiKeySchema>;
 export type HeaderRulesConfig = HeaderRules;
 export type RouteInput = z.input<typeof anyRoute>;
 /** Input shape, minus the internal bookkeeping field preprocessing supplies. */

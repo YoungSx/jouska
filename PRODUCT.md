@@ -72,7 +72,7 @@ jouska 是 Hono 上的反向代理中间件，运行在 Cloudflare Workers。管
 - 登录、登出、会话；连续 5 次失败锁 15 分钟。
 - 带外密码恢复：一次性令牌，可钉到账号，用过即废，走审计（`auth.recover`）。
 - 域名发现：只读列出账号里绑定到反代的 hostname，与路由表交叉比对；60 秒 isolate 内缓存，不落盘。
-- 路由级访问控制：委托鉴权（forwardAuth，nginx auth_request 语义）、Cloudflare Access JWT 本地验签、API key 摘要比对——三件套可叠加、AND 语义；表单收明文、浏览器本地算 SHA-256 摘要，明文不落盘。
+- 路由级访问控制：委托鉴权（forwardAuth，nginx auth_request 语义）——把「你是谁」交给一个鉴权端点，2xx 放行、其他状态原样回传，端点不可达默认 fail-closed。
 
 技术约束：
 

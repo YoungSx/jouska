@@ -535,24 +535,6 @@ export const t = {
       reserved: (names: string) =>
         `这些头由 jouska 从请求推导，或由运行时掌管传输，不能出现在这里：${names}`,
     },
-    accessJwt: {
-      label: 'Cloudflare Access JWT',
-      team: '团队域名',
-      teamHelp: '形如 `myteam.cloudflareaccess.com`。',
-      audience: 'audience（AUD 标签）',
-      audienceHelp: 'Access 应用的 aud 值。写错会把所有人挡在 401 外面。',
-    },
-    apiKey: {
-      label: 'API key',
-      header: '读取的头',
-      headerHelp: '留空按默认的 `x-api-key`。填 `authorization` 时会自动剥掉 `Bearer ` 前缀。',
-      keys: '已授权的 key',
-      keysHelp:
-        '粘贴明文，失焦后浏览器本地算成 SHA-256 摘要——明文不会离开这台设备，也不会写进配置。已是 64 位十六进制的输入按摘要原样收。',
-      addRow: '加一个 key',
-      removeRow: '删掉这个 key',
-      reserved: '这个头由 jouska 从请求推导，或由运行时掌管传输，不能用作 key 的读取头。',
-    },
     upstreamHeaders: {
       label: '注入的请求头',
       help: '这些头会原样发给上游。凭据类或身份伪装类的头写在这里等于交给第三方。',
