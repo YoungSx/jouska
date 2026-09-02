@@ -1,11 +1,12 @@
 import type { Context, MiddlewareHandler } from 'hono';
 import type { Config, Route } from '../config.js';
 import {
+  contentTypeAllowed,
   htmlRewriter,
   parseContentType,
   resolveCharset,
-  shouldRewrite,
   textRewriteStream,
+  type ContentType,
   type Replacement,
 } from '../internal/body.js';
 import { forward } from '../internal/forward.js';
@@ -17,6 +18,27 @@ import {
   upstreamHostMatcher,
 } from '../internal/headers.js';
 import { matchUrl, resolveUpstreamUrl, routeId, splitUpstream, type Match } from '../router.js';
+
+/**
+ * Why a response body was relayed instead of rewritten.
+ *
+ * Each of these was silent, and that silence is the whole problem: a mirrored
+ * site whose links still point at the origin is indistinguishable from one whose
+ * links were rewritten until a visitor clicks one and leaves. Five different
+ * causes used to collapse into the same absence of any signal.
+ *
+ * - `not_configured` — the route has no `bodyRewrite` at all.
+ * - `bodyless_status` — 204, 206 or 304; see {@link NO_REWRITE_STATUSES}.
+ * - `no_body` — the response carried no body stream, as the answer to a HEAD
+ *   does. Distinct from `bodyless_status`, where the status itself forbids a
+ *   body: here the status permits one and none arrived.
+ * - `content_type` — the type is outside `bodyRewrite.contentTypes`.
+ * - `charset_undecodable` — a declared charset this runtime cannot decode, with
+ *   no usable `fallbackCharset`. The hardest of the five to diagnose: the config
+ *   reads correctly, the page renders, and the links simply do not change.
+ */
+export type RewriteSkipReason =
+  'not_configured' | 'bodyless_status' | 'no_body' | 'content_type' | 'charset_undecodable';
 
 /** What happened to one proxied request. Passed to `onProxy`. */
 export interface ProxyEvent {
@@ -35,6 +57,27 @@ export interface ProxyEvent {
   attempts: number;
   /** Set when the request never reached a normal response. */
   outcome: 'ok' | 'refused' | 'timeout' | 'unreachable' | 'client_closed';
+  /**
+   * True when the body was handed to the rewriter.
+   *
+   * States that the transform was installed, not that it finished: the body is
+   * streamed, and reporting after it drained would hold the event until the
+   * client had already read the response.
+   */
+  bodyRewritten: boolean;
+  /**
+   * Why the body was relayed untouched. Absent when it was rewritten, and also
+   * absent when nothing was proxied — a guard refusal, an upstream that never
+   * answered, or a 101 has no rewrite decision to report, and naming a reason
+   * would describe a response that does not exist.
+   */
+  rewriteSkipped?: RewriteSkipReason;
+  /**
+   * True when the `Location` sent to the client differs from the upstream's, so
+   * the redirect stayed on the proxy. False when there was no `Location`, when
+   * it named a host outside the upstream, or when `rewriteHeaders` is off.
+   */
+  redirectRewritten: boolean;
 }
 
 export interface JouskaOptions {
@@ -102,7 +145,7 @@ export const jouska = ({ config, fetchImpl, onProxy }: JouskaOptions): Middlewar
     // Guards run cheapest-first, so a request that will be refused never
     // reaches the upstream. Geo and IP are local checks; rate limiting costs a
     // binding call; forwarding costs a network round trip.
-    const report = (status: number, outcome: ProxyEvent['outcome'], attempts: number): void => {
+    const report: Report = (status, outcome, attempts, rewrite): void => {
       if (onProxy === undefined) {
         return;
       }
@@ -116,6 +159,16 @@ export const jouska = ({ config, fetchImpl, onProxy }: JouskaOptions): Middlewar
           durationMs: Date.now() - startedAt,
           attempts,
           outcome,
+          // Omitted `rewrite` means the request never reached the point of
+          // deciding, so both flags are false and no reason is named.
+          bodyRewritten: rewrite?.bodyRewritten ?? false,
+          // Spread rather than assigned `undefined`: under
+          // exactOptionalPropertyTypes a consumer distinguishes an absent key
+          // from a present undefined one, and "no decision" is an absent key.
+          ...(rewrite?.rewriteSkipped !== undefined
+            ? { rewriteSkipped: rewrite.rewriteSkipped }
+            : {}),
+          redirectRewritten: rewrite?.redirectRewritten ?? false,
         });
       } catch {
         // Observability must not be able to fail a request.
@@ -211,8 +264,24 @@ const runGuard = async (guard: MiddlewareHandler, c: Context): Promise<Response 
   return result instanceof Response ? result : c.res;
 };
 
+/**
+ * The rewrite conclusions one event carries. Separate from the positional
+ * arguments because most report sites — every guard refusal, every upstream
+ * failure — have no rewrite to describe and pass nothing.
+ */
+interface RewriteReport {
+  readonly bodyRewritten: boolean;
+  readonly rewriteSkipped?: RewriteSkipReason;
+  readonly redirectRewritten: boolean;
+}
+
 /** Reports the outcome of one proxied request. */
-type Report = (status: number, outcome: ProxyEvent['outcome'], attempts: number) => void;
+type Report = (
+  status: number,
+  outcome: ProxyEvent['outcome'],
+  attempts: number,
+  rewrite?: RewriteReport,
+) => void;
 
 /** Forwards the request upstream and rewrites the response. */
 const proxyRequest = async (
@@ -256,34 +325,31 @@ const proxyRequest = async (
   }
 
   const { authority } = splitUpstream(route.upstream);
-  const rewrite = route.bodyRewrite;
   const contentType = parseContentType(upstream.headers.get('content-type'));
-  const eligible =
-    rewrite !== undefined &&
-    upstream.body !== null &&
-    !NO_REWRITE_STATUSES.has(upstream.status) &&
-    shouldRewrite(upstream.headers.get('content-type'), rewrite.contentTypes);
+  const decision = decideRewrite(route.bodyRewrite, upstream, contentType);
 
-  // The charset decides whether rewriting is even safe: an encoding this runtime
-  // cannot decode would be corrupted rather than rewritten, so the body passes
-  // through untouched instead.
-  const charset = eligible
-    ? resolveCharset(contentType?.charset, rewrite.fallbackCharset)
-    : undefined;
-  const willRewrite = eligible && charset !== undefined;
-
-  const headers = route.rewriteHeaders
+  const { headers, redirectRewritten } = route.rewriteHeaders
     ? rewriteResponseHeaders({
         headers: upstream.headers,
         upstreamHost: authority,
         proxyOrigin: url.origin,
-        bodyRewritten: willRewrite,
+        bodyRewritten: decision.rewrite,
       })
-    : stripHopByHop(upstream.headers);
+    : // Nothing was rewritten, so nothing is claimed: `stripHopByHop` does not
+      // touch `Location`.
+      { headers: stripHopByHop(upstream.headers), redirectRewritten: false };
 
-  report(upstream.status, 'ok', attempts);
+  // Reported before `rewriteBody`, deliberately. The rewrite is a stream
+  // transform, so a report that waited for its result would hold the event —
+  // and any `waitUntil` the host queued from it — until the client had finished
+  // reading the body. Everything the event states is already known here.
+  report(upstream.status, 'ok', attempts, {
+    bodyRewritten: decision.rewrite,
+    ...(decision.rewrite ? {} : { rewriteSkipped: decision.skipped }),
+    redirectRewritten,
+  });
 
-  if (!willRewrite) {
+  if (!decision.rewrite) {
     return new Response(upstream.body, {
       status: upstream.status,
       statusText: upstream.statusText,
@@ -298,20 +364,68 @@ const proxyRequest = async (
   }
   // Output is always UTF-8, so a declared charset that is no longer accurate
   // would make the browser decode correct bytes with the wrong table.
-  if (charset.transcoded && contentType !== undefined) {
+  if (decision.transcoded && contentType !== undefined) {
     headers.set('content-type', `${contentType.type}; charset=utf-8`);
   }
 
   return rewriteBody({
     upstream,
     headers,
-    rewrite,
-    charset: charset.charset,
+    rewrite: decision.config,
+    charset: decision.charset,
     isHtml: contentType?.type === 'text/html',
     upstreamHost: authority,
     target,
     proxyHost: url.host,
   });
+};
+
+/**
+ * Whether this response's body is rewritten, and if not, which of the five
+ * reasons applies.
+ *
+ * A discriminated union rather than the chain of `&&` this replaces: that chain
+ * computed one boolean out of conditions that meant entirely different things to
+ * whoever was debugging a mirror whose links never changed, and reported none of
+ * them. The order runs from the route's own configuration outward to this one
+ * response, so the reason named is the outermost thing an operator can change.
+ */
+type RewriteDecision =
+  | {
+      readonly rewrite: true;
+      /** The config that applies, carried so the caller need not re-narrow it. */
+      readonly config: NonNullable<Route['bodyRewrite']>;
+      readonly charset: string;
+      /** True when the body is re-encoded, so `Content-Type` must be corrected. */
+      readonly transcoded: boolean;
+    }
+  | { readonly rewrite: false; readonly skipped: RewriteSkipReason };
+
+const decideRewrite = (
+  config: Route['bodyRewrite'],
+  upstream: Response,
+  contentType: ContentType | undefined,
+): RewriteDecision => {
+  if (config === undefined) {
+    return { rewrite: false, skipped: 'not_configured' };
+  }
+  if (NO_REWRITE_STATUSES.has(upstream.status)) {
+    return { rewrite: false, skipped: 'bodyless_status' };
+  }
+  if (upstream.body === null) {
+    return { rewrite: false, skipped: 'no_body' };
+  }
+  if (!contentTypeAllowed(contentType, config.contentTypes)) {
+    return { rewrite: false, skipped: 'content_type' };
+  }
+  // The charset decides whether rewriting is even safe: an encoding this runtime
+  // cannot decode would be corrupted rather than rewritten, so the body passes
+  // through untouched instead.
+  const charset = resolveCharset(contentType?.charset, config.fallbackCharset);
+  if (charset === undefined) {
+    return { rewrite: false, skipped: 'charset_undecodable' };
+  }
+  return { rewrite: true, config, charset: charset.charset, transcoded: charset.transcoded };
 };
 
 /** Classifies a forward failure for reporting. */

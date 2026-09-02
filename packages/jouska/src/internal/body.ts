@@ -353,14 +353,18 @@ export const parseContentType = (value: string | null): ContentType | undefined 
   return { type, charset };
 };
 
-/** True when the content type is one we are willing to rewrite. */
-export const shouldRewrite = (contentType: string | null, allowed: readonly string[]): boolean => {
-  const parsed = parseContentType(contentType);
-  if (parsed === undefined) {
-    return false;
-  }
-  return allowed.some((a) => parsed.type.startsWith(a.toLowerCase()));
-};
+/**
+ * True when an already-parsed content type is one we are willing to rewrite.
+ *
+ * Takes the parsed form rather than the raw header because its only caller needs
+ * the charset out of that same header, and parsing the string twice per response
+ * to answer two questions about it is one regex too many.
+ */
+export const contentTypeAllowed = (
+  contentType: ContentType | undefined,
+  allowed: readonly string[],
+): boolean =>
+  contentType !== undefined && allowed.some((a) => contentType.type.startsWith(a.toLowerCase()));
 
 /**
  * Labels that this runtime decodes as UTF-8, so the bytes pass through unchanged.

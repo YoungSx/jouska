@@ -61,7 +61,7 @@ describe('rewriteResponseHeaders', () => {
     const headers = new Headers();
     headers.append('set-cookie', 'a=1; Domain=origin.test');
     headers.append('set-cookie', 'b=2; Domain=origin.test');
-    const out = rewriteResponseHeaders({
+    const { headers: out } = rewriteResponseHeaders({
       headers,
       upstreamHost: 'origin.test',
       proxyOrigin: 'https://p.dev',
@@ -72,7 +72,7 @@ describe('rewriteResponseHeaders', () => {
 
   it('rewrites Location and preserves unrelated headers', () => {
     const headers = new Headers({ location: 'https://origin.test/a', 'x-keep': 'yes' });
-    const out = rewriteResponseHeaders({
+    const { headers: out, redirectRewritten } = rewriteResponseHeaders({
       headers,
       upstreamHost: 'origin.test',
       proxyOrigin: 'https://p.dev',
@@ -80,6 +80,35 @@ describe('rewriteResponseHeaders', () => {
     });
     expect(out.get('location')).toBe('https://p.dev/a');
     expect(out.get('x-keep')).toBe('yes');
+    expect(redirectRewritten).toBe(true);
+  });
+
+  it('reports no redirect rewrite when the Location was left alone', () => {
+    // A redirect to a host outside the upstream, and one that is already
+    // relative, both reach the client exactly as the upstream wrote them.
+    for (const location of ['https://other.test/a', '/a']) {
+      const { headers: out, redirectRewritten } = rewriteResponseHeaders({
+        headers: new Headers({ location }),
+        upstreamHost: 'origin.test',
+        proxyOrigin: 'https://p.dev',
+        bodyRewritten: false,
+      });
+      expect(out.get('location')).toBe(location);
+      expect(redirectRewritten).toBe(false);
+    }
+  });
+
+  it('does not count a Content-Location rewrite as a redirect', () => {
+    // It labels the body, it does not navigate — so a true value would stop
+    // meaning "the redirect stayed on the proxy".
+    const { headers: out, redirectRewritten } = rewriteResponseHeaders({
+      headers: new Headers({ 'content-location': 'https://origin.test/canonical' }),
+      upstreamHost: 'origin.test',
+      proxyOrigin: 'https://p.dev',
+      bodyRewritten: false,
+    });
+    expect(out.get('content-location')).toBe('https://p.dev/canonical');
+    expect(redirectRewritten).toBe(false);
   });
 });
 

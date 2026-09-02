@@ -141,8 +141,25 @@ export interface RewriteHeadersOptions {
   bodyRewritten: boolean;
 }
 
+export interface RewrittenHeaders {
+  readonly headers: Headers;
+  /**
+   * True when the `Location` handed to the client differs from the one the
+   * upstream sent.
+   *
+   * Defined as that difference rather than as "the host belonged to the
+   * upstream", because the difference is what a visitor experiences and what an
+   * operator can check. `Content-Location` and `Refresh` are rewritten by the
+   * same pass but do not count here: neither navigates, and folding them in
+   * would make a true value stop meaning "the redirect stayed on the proxy".
+   */
+  readonly redirectRewritten: boolean;
+}
+
 /**
- * Rewrites a response's headers, returning a new `Headers`.
+ * Rewrites a response's headers, returning a new `Headers` alongside the one
+ * conclusion a caller cannot recover from the result: whether the redirect was
+ * actually pointed back at the proxy.
  *
  * `Set-Cookie` is enumerated with `getSetCookie()` so multiple cookies survive
  * being read back.
@@ -152,15 +169,20 @@ export const rewriteResponseHeaders = ({
   upstreamHost,
   proxyOrigin,
   bodyRewritten,
-}: RewriteHeadersOptions): Headers => {
+}: RewriteHeadersOptions): RewrittenHeaders => {
   const out = stripHopByHop(headers);
   const proxy = new URL(proxyOrigin);
   const isUpstreamHost = upstreamHostMatcher(upstreamHost);
 
+  let redirectRewritten = false;
   for (const name of ['location', 'content-location'] as const) {
     const value = out.get(name);
     if (value !== null) {
-      out.set(name, rewriteAbsoluteUrl(value, isUpstreamHost, proxyOrigin));
+      const rewritten = rewriteAbsoluteUrl(value, isUpstreamHost, proxyOrigin);
+      out.set(name, rewritten);
+      if (name === 'location' && rewritten !== value) {
+        redirectRewritten = true;
+      }
     }
   }
 
@@ -189,7 +211,7 @@ export const rewriteResponseHeaders = ({
   if (bodyRewritten) {
     stripBodyValidators(out);
   }
-  return out;
+  return { headers: out, redirectRewritten };
 };
 
 /**
