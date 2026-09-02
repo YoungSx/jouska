@@ -451,6 +451,9 @@ export const t = {
       removeRow: '删掉这一行',
       name: '头名',
       value: '值',
+      // 只报实际写错的那几个名字。把整份保留清单打出来读者还得自己找是哪一个。
+      reserved: (names: string) =>
+        `这些头由 jouska 从请求推导，或由运行时掌管这一跳的传输与协商，写在这里会被拒：${names}`,
     },
     rateLimit: {
       label: '限流',

@@ -62,6 +62,32 @@ const RULES: readonly FieldRisk[] = [
     reason:
       'injected headers reach the upstream verbatim — credential or impersonation headers here are forwarded to a third party',
   },
+  {
+    // The same field under its current name: `upstreamHeaders` is an alias for
+    // this one, so both spellings have to carry the same warning.
+    path: 'requestHeaders.set',
+    level: 'high',
+    reason:
+      'injected headers reach the upstream verbatim — credential or impersonation headers here are forwarded to a third party',
+  },
+  {
+    path: 'requestHeaders.remove',
+    level: 'medium',
+    reason:
+      'removing cookie or authorization makes upstream sessions and authentication fail with nothing said about why',
+  },
+  {
+    path: 'responseHeaders.set',
+    level: 'medium',
+    reason:
+      'these run after the proxy rewrote the response, so a rule can point Location back at the upstream, restore a CSP that blocks the rewritten page from loading its own assets, or restore a validator that makes the client serve the unrewritten body from its own cache',
+  },
+  {
+    path: 'cache.contentTypes',
+    level: 'medium',
+    reason:
+      'the default list is static assets only; adding a document type means a page personalised without a cookie or a private marker would be served to the next visitor',
+  },
 ];
 
 /**

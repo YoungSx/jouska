@@ -56,8 +56,18 @@ describe('analytics receiver', () => {
     expect(dataset.points).toHaveLength(1);
     const point = dataset.points[0];
     expect(point?.indexes).toEqual(['example']);
-    expect(point?.blobs).toEqual(['origin.test', 'GET', 'ok']);
+    // The trailing blob is the cache state, empty on a route without caching.
+    expect(point?.blobs).toEqual(['origin.test', 'GET', 'ok', '']);
     expect(point?.doubles).toEqual([200, 42, 1]);
+  });
+
+  it('carries the cache state so a hit rate is queryable', () => {
+    const dataset = recordingDataset();
+    const sink = createProxySink({ ANALYTICS: dataset });
+    sink?.(event({ cache: 'hit' }));
+    sink?.(event({ cache: 'bypass' }));
+
+    expect(dataset.points.map((point) => point.blobs?.[3])).toEqual(['hit', 'bypass']);
   });
 
   it('bounds the index to the schema limit even for a hostile routeId', () => {
@@ -103,6 +113,15 @@ describe('access-logs receiver', () => {
     });
     // The path is carried but clipped, so a hostile URL cannot balloon a line.
     expect(String(line.path).length).toBeLessThanOrEqual(256);
+    // No cache on this route, so the field is absent rather than null.
+    expect('cache' in line).toBe(false);
+  });
+
+  it('carries the cache state when the route has one', () => {
+    const { lines, log } = collectingLog();
+    const sink = createProxySink({ ACCESS_LOGS: 'true' }, log);
+    sink?.(event({ cache: 'stale' }));
+    expect((JSON.parse(lines[0] ?? '{}') as Record<string, unknown>).cache).toBe('stale');
   });
 
   it('is off unless ACCESS_LOGS is exactly "true"', () => {

@@ -14,14 +14,15 @@ rate limiting to Hono's own middleware and Cloudflare's native binding.
 
 What it does own is the proxying itself:
 
-| Concern                                         | Where it lives            |
-| ----------------------------------------------- | ------------------------- |
-| Route table matching (host, path, method)       | `src/router.ts`           |
-| Header forwarding, deadlines, bounded retries   | `src/internal/forward.ts` |
-| `Location` / `Set-Cookie` / validator rewriting | `src/internal/headers.ts` |
-| Streaming body rewriting                        | `src/internal/body.ts`    |
-| Geo, IP and rate-limit guards                   | `src/internal/guards.ts`  |
-| Config schema, normalisation and validation     | `src/config.ts`           |
+| Concern                                         | Where it lives                   |
+| ----------------------------------------------- | -------------------------------- |
+| Route table matching (host, path, method)       | `src/router.ts`                  |
+| Header forwarding, deadlines, bounded retries   | `src/internal/forward.ts`        |
+| `Location` / `Set-Cookie` / validator rewriting | `src/internal/headers.ts`        |
+| Streaming body rewriting                        | `src/internal/body.ts`           |
+| Upstream response caching                       | `src/internal/response-cache.ts` |
+| Geo, IP and rate-limit guards                   | `src/internal/guards.ts`         |
+| Config schema, normalisation and validation     | `src/config.ts`                  |
 
 ## Install
 
@@ -83,7 +84,10 @@ Routes are evaluated in order and the first match wins.
 | `bodyRewrite`          | off      | Streaming body rewriting; see below.                                  |
 | `blockCountries`       | `[]`     | ISO 3166-1 alpha-2 codes refused with 403.                            |
 | `allowCountries`       | —        | When set, only these are admitted. Fails closed on an unknown origin. |
-| `upstreamHeaders`      | `{}`     | Headers injected into the upstream request.                           |
+| `upstreamHeaders`      | `{}`     | Alias for `requestHeaders.set`; see Header rules.                     |
+| `requestHeaders`       | off      | Headers to write or delete on the way upstream; see Header rules.     |
+| `responseHeaders`      | off      | Headers to write or delete on the way back; see Header rules.         |
+| `cache`                | off      | Upstream response caching; see Response caching.                      |
 | `cors`                 | off      | CORS handling; see Guards.                                            |
 | `ip`                   | off      | IP allow/deny rules; see Guards.                                      |
 | `rateLimit`            | off      | Rate limiting via the native binding; see Guards.                     |
@@ -104,12 +108,18 @@ defineConfig({
 
 A route that states a field keeps its value; `defaults` only fills gaps.
 
-`upstreamHeaders` fills gaps entry by entry, because it is a bag of independent
-headers rather than one setting: a route adding a header of its own keeps the
-table-wide ones, and on a name collision the route still wins. The policy blocks
-—`cors`, `ip`, `rateLimit`, `bodyRewrite`—are replaced whole instead, since
-merging halves of two of them would produce a policy neither the table nor the
-route wrote.
+`upstreamHeaders`, `requestHeaders` and `responseHeaders` fill gaps rule by rule,
+because they are bags of independent headers rather than single settings: a route
+adding a header of its own keeps the table-wide ones, and on a name collision the
+route still wins. Their `remove` lists are unioned — a table-wide "strip the
+`Server` header this upstream leaks" that any route could switch off by adding an
+unrelated rule of its own would be a control lost to an edit that never mentioned
+it. The cost is that a route cannot opt _out_ of a table-wide removal; move the
+rule onto the routes that want it instead.
+
+The policy blocks — `cors`, `ip`, `rateLimit`, `bodyRewrite`, `cache` — are
+replaced whole, since merging halves of two of them would produce a policy neither
+the table nor the route wrote.
 
 ### What is forwarded
 
@@ -124,8 +134,85 @@ On top of that every forwarded request carries `Host` (set to the upstream),
 derived from Cloudflare's `cf-connecting-ip` and **overwrites** any value the
 client sent, so the upstream sees the real visitor address rather than a forged
 chain; with no `cf-connecting-ip` to trust, the header is removed rather than
-passed through. `upstreamHeaders` may not set any of these four — the config is
-rejected rather than silently ignored.
+passed through. A route may neither write nor delete any of these four — the
+config is rejected rather than silently ignored. See Header rules for every name a
+route cannot touch, and why each one is on the list.
+
+### Header rules
+
+`requestHeaders` and `responseHeaders` name headers to write and headers to
+delete, in one direction each:
+
+```ts
+{
+  match: { path: '/api' },
+  upstream: 'api.example.com',
+  requestHeaders: {
+    set: { 'x-api-version': '2026-09' },
+    remove: ['x-legacy-client'],
+  },
+  responseHeaders: {
+    set: { 'x-content-type-options': 'nosniff' },
+    remove: ['server', 'x-powered-by'],
+  },
+}
+```
+
+Values are literal strings. There is no interpolation — `${host}` would be a
+second grammar with its own escaping rules — and credentials belong in Secrets
+Store rather than in a route table a panel can display.
+
+**Not a callback, deliberately.** The obvious alternative is an `onRequest` /
+`onResponse` hook, which is how [reflare](https://github.com/latticehr/reflare)
+(the project this was forked from) solves the same problem. jouska's route table
+lives in KV or D1 and is edited from a panel, so a JS hook there would mean
+"anyone who can edit the route table can run arbitrary code in the Worker". These
+two operations cover what operators actually reach for and open no such surface.
+
+**Order is fixed, and tested.** On the way out, the rules run after the
+hop-by-hop strip and before jouska writes the forwarding headers, so a rule cannot
+forge `Host` or `X-Forwarded-For` even if the refusals below were bypassed. On the
+way back, the rules run **last** — after `Location`, `Refresh`, `Set-Cookie` and
+`Content-Location` have been rewritten onto the proxy, and after the body
+validators and CSP have been stripped.
+
+Running last is a trade-off with a sharp edge, and it is a choice rather than an
+accident: `responseHeaders.set` can put an upstream URL back into `Location` and
+send the visitor off the proxy, or restore a `Content-Security-Policy` that blocks
+the rewritten page from loading its own assets. The alternative — operator rules
+first — makes every rule silently unreliable, which is worse for a value someone
+wrote on purpose. Both fields are flagged in the admin panel instead.
+
+Within one direction, deletions are applied before writes. A name that appears in
+both `set` and `remove` is refused, so the order is not observable today; it is
+written this way because "clear it, then write it" is the only reading that stays
+correct if that ever relaxes.
+
+**Names a route cannot touch.** Each of these is refused at parse time rather
+than ignored at request time, because a rule that cannot take effect should say so:
+
+| Direction | Names                                                              | Refused for                                                                                                                           |
+| --------- | ------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------- |
+| Request   | `host`, `x-forwarded-host`, `x-forwarded-proto`, `x-forwarded-for` | jouska derives them from the request; a value here would be overwritten.                                                              |
+| Request   | the hop-by-hop set, `content-length`                               | They describe this one connection. `transfer-encoding` is the sharpest case — a forged one is where request smuggling starts.         |
+| Request   | `accept-encoding`                                                  | Deleted so bodies arrive uncompressed. Writing it back leaves the body rewriter scanning compressed bytes and silently doing nothing. |
+| Request   | `upgrade`, `sec-websocket-*`                                       | The `websocket` flag governs these. Writing them back would let an upgrade through on a route that turned it off.                     |
+| Response  | the hop-by-hop set, `content-length`, `content-encoding`           | The runtime recomputes them for the hop out; a value here describes bytes the client is not about to read.                            |
+| Response  | `set-cookie`                                                       | `Headers.set` replaces _every_ value under a name, so writing one cookie discards all of the upstream's — writing it is deleting it.  |
+| Response  | `location`, `content-location`, `refresh` (deletion only)          | Deleting one makes a redirect vanish or loses a rewrite quietly. Writing them is permitted; see the trade-off above.                  |
+
+Two spellings of one name in the same map (`X-Foo` and `x-foo`) are refused too:
+header names are case-insensitive, so that is one rule with two values, and which
+survives would depend on key order.
+
+**`upstreamHeaders` is an alias** for `requestHeaders.set`, kept so a route table
+written before `requestHeaders` existed keeps working. It is folded into
+`requestHeaders.set` after `defaults` are applied and does not survive into the
+parsed route, so "both fields exist and each half takes effect" cannot happen. A
+name written in both places with _different_ values is refused, since nothing in
+the document says which should win; the same value twice is a harmless duplicate
+and is merged. The alias carries exactly the refusals above — validating it more
+loosely would have made renaming a way around them.
 
 ### Normalisation and matching
 
@@ -485,6 +572,146 @@ choice. Counting is per-location rather than globally exact — the documented t
 of the native binding, and adequate for abuse control. A missing binding is
 reported as a 500 rather than silently admitting traffic.
 
+## Response caching
+
+Off unless a route asks for it. When it does, GET and HEAD responses are stored in
+the Cloudflare Cache API, so a mirrored site's stylesheets, scripts and images cost
+one edge-to-origin round trip between visitors instead of one each:
+
+```ts
+{
+  match: { host: 'mirror.example.com' },
+  upstream: 'origin.example.com',
+  bodyRewrite: {},
+  cache: {
+    ttlSeconds: 300,
+    staleWhileRevalidateSeconds: 60,
+    // Defaults shown; `enabled` exists so a tuned block can be switched off
+    // without deleting the numbers that took work to arrive at.
+    enabled: true,
+    methods: ['GET', 'HEAD'],
+    contentTypes: ['text/css', 'text/javascript', 'application/javascript', 'image/', 'font/'],
+  },
+}
+```
+
+`text/html` is absent from the defaults on purpose. A document is the response most
+likely to be personalised, and while the guards below catch the usual signals — a
+request carrying `Cookie`, a response carrying `Set-Cookie` or
+`Cache-Control: private` — a page personalised without any of them would be served
+to the next visitor. Adding a document type is allowed, and flagged in the admin
+panel, rather than forbidden: a static site is exactly where caching HTML pays off.
+
+### What is stored, and under what key
+
+**The rewritten bytes, not the upstream's.** Storing the original and re-running
+the rewrite on each hit would save the network and spend the CPU, which is the half
+Workers bills for:
+
+| Stored form       | Gains                             | Costs                                                    |
+| ----------------- | --------------------------------- | -------------------------------------------------------- |
+| The original      | A config change needs no eviction | Every hit re-runs `HTMLRewriter`; network saved, CPU not |
+| The rewritten one | A hit is served as-is             | An entry is only valid for the config that produced it   |
+
+That cost is paid by the key rather than by eviction. The key carries a fingerprint
+of the whole route, so a configuration change simply produces different keys and
+the old entries expire unnoticed — nothing has to be enumerated and deleted, which
+the Cache API cannot do anyway. The fingerprint hashes the _entire_ route rather
+than a curated list of response-affecting fields: a curated list is a standing
+invitation to forget one, and a forgotten field means two configurations sharing an
+entry, which is serving the wrong bytes. Being wrong the other way costs a cold
+cache after an unrelated edit like `timeoutMs`, which nobody notices.
+
+The key is the request URL plus one query parameter, `__jouska_ck`, carrying the
+fingerprint and the method. Two consequences worth knowing: a request whose URL
+already contains that parameter is not cached at all (overwriting it would map two
+different requests onto one entry), and GET and HEAD get separate entries — a HEAD
+response has no body, and storing it under the GET key would hand the next GET an
+empty one.
+
+### What is never cached
+
+- A method outside `methods`, or anything but GET and HEAD.
+- A request carrying `Authorization` or `Cookie` — its response is probably about
+  the person who sent it, and this cache is keyed by URL alone.
+- A request carrying `Range`: the answer is either a 206, which the Cache API
+  refuses outright, or a 200 the client will slice itself.
+- Anything but a 200 response. Negative caching is not on offer, and a 404 _is_
+  storable as far as the platform is concerned, so this is a refusal here rather
+  than an impossibility.
+- A response carrying `Set-Cookie`.
+- A response whose `Cache-Control` says `no-store`, `private` or `no-cache`.
+  `no-cache` counts because its real meaning is "revalidate before reuse", and a
+  rewritten response has no validator to revalidate with.
+- A response with a `Vary` this key does not cover. `Vary: accept-encoding` is the
+  one exception, and it is provable rather than hopeful: jouska deletes
+  `accept-encoding` from every upstream request, so the upstream sees the same
+  absent value every time and cannot vary on it.
+- A content type outside `contentTypes`, matched as a prefix.
+
+Those decisions read the headers the **upstream** sent, not the response as it will
+be delivered — so a `responseHeaders.remove` naming `cache-control` or `vary`
+deletes the upstream's statement without changing the fact it stated. Only `status`
+and `Content-Type` are read from the delivered response, because a content type is
+a label an operator may legitimately correct.
+
+An upstream `max-age` is _not_ honoured as a ceiling: `ttlSeconds` is what the
+operator decided, and mirrored origins routinely send `max-age=0` for assets that
+never change. The refusals above are the upstream's veto; the window is the
+operator's. A client's own `Cache-Control` is ignored entirely, since honouring
+`no-cache` from a request would let anyone aim the full load at the upstream.
+
+### Freshness, and staleness
+
+Freshness is TTL and nothing else. A body jouska rewrote has no `ETag` or
+`Last-Modified` — they are stripped, because keeping them lets a client answer its
+own next request with the _unrewritten_ body — so there is nothing to revalidate
+against. This is a direct consequence of the rewriting design rather than an
+oversight, and the cache is built to admit it.
+
+Past `ttlSeconds` and within `staleWhileRevalidateSeconds`, the stale entry is
+served immediately and a refresh runs behind the response, so the visitor who
+happened to arrive past the TTL does not pay for the revalidation. A burst of stale
+requests triggers one refresh per isolate, not one each, and a refresh that fails
+leaves the stale entry in place for the next attempt. Set
+`staleWhileRevalidateSeconds: 0` to make that visitor wait for the upstream instead.
+
+The age of an entry is computed from a timestamp jouska stores on it, not from the
+platform's `Age` header — verified in workerd, that header reads 0 no matter how
+long the entry has been held. The response the client receives carries an accurate
+`Age`, which a shared cache owes it, and the upstream's own `Cache-Control`
+restored; the lifetime jouska declares on the stored copy covers the stale window
+too, because an entry the platform considers expired is invisible to `match` rather
+than returned as stale.
+
+### Seeing whether it works
+
+Every response from a caching route carries `x-jouska-cache`, and every `onProxy`
+event carries the same value on `event.cache`:
+
+| Value    | Meaning                                                                   |
+| -------- | ------------------------------------------------------------------------- |
+| `hit`    | Served from a fresh entry. No upstream trip; `attempts` is 0.             |
+| `stale`  | Served from an expired entry, with a refresh running behind the response. |
+| `miss`   | Eligible, no entry there, so the upstream was asked.                      |
+| `bypass` | Never a candidate — the method, or credentials in the request.            |
+
+`bypass` and `miss` are distinguished because tuning a hit rate needs them apart:
+one says the cache was not allowed to help, the other that it was and could not.
+
+A hit also reports `rewriteSkipped: 'served_from_cache'` when the route configures
+`bodyRewrite`, so the rewrite rate does not read as broken once caching is on. See
+Observability for why that reason exists.
+
+The store defaults to `caches.default` and can be replaced with the `cacheImpl`
+option, which takes anything with `match` and `put`. A failed write is swallowed —
+it must not be able to fail a response that already succeeded — so the symptom of a
+store that keeps refusing, an object over the size limit most likely, is a hit rate
+of zero rather than an error.
+
+Cache API rather than KV, deliberately: a KV read per request is the cost the config
+cache exists to avoid, and paying it back here would spend the saving twice.
+
 ## Observability
 
 `onProxy` is called once per proxied request, after the response is decided:
@@ -510,16 +737,17 @@ app.use(
 );
 ```
 
-| Field        | Meaning                                                            |
-| ------------ | ------------------------------------------------------------------ |
-| `routeId`    | The matched route, labelled the way rate-limit buckets are.        |
-| `upstream`   | Authority the request was sent to.                                 |
-| `method`     | Request method.                                                    |
-| `path`       | Path as the client wrote it, before normalisation.                 |
-| `status`     | Status returned to the client, including jouska's own 4xx and 5xx. |
-| `durationMs` | Wall-clock milliseconds from match to response.                    |
-| `attempts`   | Upstream attempts, including the first — so a retry is visible.    |
-| `outcome`    | `ok`, `refused`, `timeout`, `unreachable`, or `client_closed`.     |
+| Field        | Meaning                                                             |
+| ------------ | ------------------------------------------------------------------- |
+| `routeId`    | The matched route, labelled the way rate-limit buckets are.         |
+| `upstream`   | Authority the request was sent to.                                  |
+| `method`     | Request method.                                                     |
+| `path`       | Path as the client wrote it, before normalisation.                  |
+| `status`     | Status returned to the client, including jouska's own 4xx and 5xx.  |
+| `durationMs` | Wall-clock milliseconds from match to response.                     |
+| `attempts`   | Upstream attempts, including the first — so a retry is visible.     |
+| `outcome`    | `ok`, `refused`, `timeout`, `unreachable`, or `client_closed`.      |
+| `cache`      | `hit`, `stale`, `miss` or `bypass`; absent without a `cache` block. |
 
 Three more report what happened to the response body, which is what a mirrored
 site is judged by:
@@ -530,7 +758,7 @@ site is judged by:
 | `rewriteSkipped`    | Why it was not. Absent when it was, and when nothing was proxied.        |
 | `redirectRewritten` | True when the `Location` sent to the client differs from the upstream's. |
 
-`rewriteSkipped` names one of five causes. Every one of them used to be silent,
+`rewriteSkipped` names one of six causes. Every one of them used to be silent,
 and that silence is the problem: a mirror whose links still point at the origin
 renders identically to one whose links were rewritten, until a visitor clicks one
 and leaves.
@@ -542,9 +770,18 @@ and leaves.
 | `no_body`             | The status permits a body and none arrived, as for the answer to a HEAD.         |
 | `content_type`        | The type is outside `bodyRewrite.contentTypes`.                                  |
 | `charset_undecodable` | A declared charset this runtime cannot decode, with no usable `fallbackCharset`. |
+| `served_from_cache`   | The response came from the route's cache, so no rewrite ran on this request.     |
 
 `charset_undecodable` is the one worth alerting on: the config reads correctly,
 the page renders, and the links simply do not change.
+
+`served_from_cache` keeps a caching route's rewrite rate readable: without it every
+hit would report `bodyRewritten: false` with nothing to tell that apart from a
+rewrite nobody configured. It is reported only when the route _does_ configure
+`bodyRewrite` — a route that does not keeps saying `not_configured`, so "which
+routes forgot to turn rewriting on" stays answerable through a cache. The bytes in
+an entry were rewritten when it was stored; the key carries a fingerprint of the
+configuration that did it, so an entry cannot outlive the config it belongs to.
 
 All three are known, and reported, before the body is streamed. `bodyRewritten`
 therefore states that the transform was installed rather than that it finished:
@@ -571,20 +808,27 @@ don't have to. Both receivers live in one file, `observability.ts`, are optional
 and deletable, and are a no-op when nothing is configured:
 
 - **Analytics Engine** — bind `ANALYTICS` and every proxied request writes one
-  data point: `routeId` as the index, blobs `[upstream, method, outcome]`,
+  data point: `routeId` as the index, blobs `[upstream, method, outcome, cache]`,
   doubles `[status, durationMs, attempts]`. Per-route latency percentiles,
-  4xx/5xx and timeout rates are then plain SQL over the dataset:
+  4xx/5xx and timeout rates, and the response-cache hit rate are then plain SQL
+  over the dataset:
 
   ```sql
   SELECT index AS route_id,
     quantile(0.5)(double2) AS p50, quantile(0.95)(double2) AS p95,
     quantile(0.99)(double2) AS p99,
     countIf(double1 >= 400) / count() AS error_rate,
-    countIf(blob3 = 'timeout') / count() AS timeout_rate
+    countIf(blob3 = 'timeout') / count() AS timeout_rate,
+    countIf(blob4 = 'hit') / countIf(blob4 != '') AS cache_hit_rate
   FROM jouska
   WHERE timestamp > NOW() - INTERVAL '1' HOUR
   GROUP BY route_id
   ```
+
+  `cache` is the fourth blob rather than an inserted one, so a query written
+  against the previous three-blob layout keeps returning the same columns. It is
+  the empty string on a route without caching, which is what separates "not
+  caching" from a `bypass` the cache decided on.
 
 - **Workers Logs** — set `ACCESS_LOGS: "true"` (the reference config does) and
   every proxied request emits one structured JSON line via `console.info`,
@@ -632,6 +876,13 @@ These are Workers limits, not choices, and they shape the architecture:
 - **128MB memory, on every plan.** Body rewriting is streaming throughout;
   nothing calls `await response.text()` on a proxied body.
 - **CPU time limits.** `timeoutMs` is capped at 30s to stay inside them.
+- **The Cache API keys on GET and does not honour `Vary`.** `put` throws on a
+  non-GET key, on a 206 and on `Vary: *`; it accepts and then silently drops a
+  304, a 5xx, a `Set-Cookie` response and anything marked `private`, `no-store`
+  or `no-cache`; and it stores a 404 quite happily. It also returns an entry
+  stored with `Vary: cookie` to a request carrying a different cookie. Response
+  caching therefore decides every one of those itself rather than leaning on the
+  platform — all verified in workerd.
 
 ## Admin panel
 

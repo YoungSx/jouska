@@ -7,8 +7,8 @@
  * is configured. Two receivers, both optional:
  *
  * - `ANALYTICS` (Analytics Engine): one data point per proxied request, from
- *   which per-route latency percentiles and 4xx/5xx/timeout rates are queried
- *   with the Analytics Engine SQL API.
+ *   which per-route latency percentiles, 4xx/5xx/timeout rates and response-cache
+ *   hit rates are queried with the Analytics Engine SQL API.
  * - `ACCESS_LOGS: "true"`: one structured JSON line per proxied request, which
  *   Workers Logs picks up because the deployment has `observability` enabled.
  *
@@ -60,14 +60,19 @@ const clip = (value: string, limit: number): string => {
  * One data point per proxied request.
  *
  * `index: routeId` is what every useful query groups by. Layout: blobs
- * `[upstream, method, outcome]`, doubles `[status, durationMs, attempts]`.
+ * `[upstream, method, outcome, cache]`, doubles `[status, durationMs, attempts]`.
+ *
+ * `cache` is appended rather than inserted, so a query written against the
+ * previous three-blob layout keeps returning the same columns. It is the empty
+ * string on a route without caching, which is what distinguishes "not caching"
+ * from a `bypass` the cache decided on.
  */
 const analyticsReceiver =
   (dataset: AnalyticsEngineDataset): ProxySink =>
   (event) => {
     dataset.writeDataPoint({
       indexes: [clip(event.routeId, INDEX_LIMIT)],
-      blobs: [clip(event.upstream, BLOB_LIMIT), event.method, event.outcome],
+      blobs: [clip(event.upstream, BLOB_LIMIT), event.method, event.outcome, event.cache ?? ''],
       doubles: [event.status, event.durationMs, event.attempts],
     });
   };
@@ -87,6 +92,9 @@ const logsReceiver =
         durationMs: event.durationMs,
         attempts: event.attempts,
         outcome: event.outcome,
+        // Omitted by JSON.stringify on a route without caching, so a line only
+        // carries the field when there is a cache to report on.
+        cache: event.cache,
       }),
     );
   };

@@ -16,8 +16,8 @@ export const isRetryable = (method: string): boolean => IDEMPOTENT.has(method.to
  * and `user-agent` all silently dropped. Any API needing a bearer token, and any
  * site needing a session, was broken by construction.
  *
- * Order matters: route headers are applied first, then the forwarding headers
- * overwrite them, so a route cannot forge `Host` or `X-Forwarded-For`. The
+ * Order matters: the route's own rules are applied first, then the forwarding
+ * headers overwrite them, so a rule cannot forge `Host` or `X-Forwarded-For`. The
  * schema also refuses those names outright, making this belt and braces.
  */
 export const buildUpstreamHeaders = (
@@ -54,8 +54,18 @@ export const buildUpstreamHeaders = (
   // scanning compressed bytes and silently do nothing.
   headers.delete('accept-encoding');
 
-  for (const [name, value] of Object.entries(route.upstreamHeaders)) {
-    headers.set(name, value);
+  // The operator's declarative rules. Deletions run before writes: the schema
+  // refuses a name that appears in both, so the order is not observable today,
+  // but "clear it, then write it" is the only reading that stays correct if that
+  // ever relaxes.
+  const rules = route.requestHeaders;
+  if (rules !== undefined) {
+    for (const name of rules.remove) {
+      headers.delete(name);
+    }
+    for (const [name, value] of Object.entries(rules.set)) {
+      headers.set(name, value);
+    }
   }
 
   headers.set('host', target.host);
@@ -89,6 +99,15 @@ export interface ForwardOptions {
   requestUrl: URL;
   /** Overridable for tests; defaults to the runtime `fetch`. */
   fetchImpl?: typeof fetch;
+  /**
+   * Ignore the client's abort signal.
+   *
+   * For work that must outlive the connection that triggered it — a
+   * stale-while-revalidate refresh being the case this exists for. With the
+   * client's signal attached, the visitor closing the tab would cancel the
+   * revalidation and leave the stale entry to be served again.
+   */
+  detached?: boolean;
 }
 
 /** Raised when the combined budget for all attempts is spent. */
@@ -112,6 +131,7 @@ export const forward = async ({
   request,
   requestUrl,
   fetchImpl,
+  detached = false,
 }: ForwardOptions): Promise<Response> => {
   const fetcher = fetchImpl ?? fetch;
   const headers = buildUpstreamHeaders(request, route, target, requestUrl);
@@ -157,7 +177,16 @@ export const forward = async ({
       // fire N simultaneous upstream requests, which is both wasteful and
       // counter to the 6-connection-per-request cap.
       // oxlint-disable-next-line no-await-in-loop
-      return await attemptFetch({ request, target, headers, route, budget, upgrade, fetcher });
+      return await attemptFetch({
+        request,
+        target,
+        headers,
+        route,
+        budget,
+        upgrade,
+        fetcher,
+        detached,
+      });
     } catch (error) {
       lastError = error;
       // The client hanging up is not a fault to retry: nobody is waiting.
@@ -180,6 +209,7 @@ interface AttemptOptions {
   budget: number;
   upgrade: boolean;
   fetcher: typeof fetch;
+  detached: boolean;
 }
 
 /**
@@ -200,9 +230,10 @@ const attemptFetch = async ({
   budget,
   upgrade,
   fetcher,
+  detached,
 }: AttemptOptions): Promise<Response> => {
   const signals: AbortSignal[] = [AbortSignal.timeout(budget)];
-  if (request.signal !== null && request.signal !== undefined) {
+  if (!detached && request.signal !== null && request.signal !== undefined) {
     signals.push(request.signal);
   }
 

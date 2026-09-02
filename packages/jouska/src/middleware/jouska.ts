@@ -1,5 +1,5 @@
 import type { Context, MiddlewareHandler } from 'hono';
-import type { Config, Route } from '../config.js';
+import type { CacheConfig, Config, Route } from '../config.js';
 import {
   contentTypeAllowed,
   htmlRewriter,
@@ -12,11 +12,24 @@ import {
 import { forward } from '../internal/forward.js';
 import { checkRateLimit, corsMiddleware, ipMiddleware } from '../internal/guards.js';
 import {
+  applyResponseHeaderRules,
   rewriteResponseHeaders,
   stripBodyValidators,
   stripHopByHop,
   upstreamHostMatcher,
 } from '../internal/headers.js';
+import {
+  CACHE_STATE_HEADER,
+  cacheKey,
+  readCachedResponse,
+  refreshOnce,
+  requestCacheable,
+  responseCacheable,
+  routeFingerprint,
+  storeCachedResponse,
+  type CacheState,
+  type ResponseCacheStore,
+} from '../internal/response-cache.js';
 import { matchUrl, resolveUpstreamUrl, routeId, splitUpstream, type Match } from '../router.js';
 
 /**
@@ -36,9 +49,21 @@ import { matchUrl, resolveUpstreamUrl, routeId, splitUpstream, type Match } from
  * - `charset_undecodable` — a declared charset this runtime cannot decode, with
  *   no usable `fallbackCharset`. The hardest of the five to diagnose: the config
  *   reads correctly, the page renders, and the links simply do not change.
+ * - `served_from_cache` — the response came from the route's response cache, so
+ *   no rewrite ran on this request. The bytes were rewritten when the entry was
+ *   stored, under the configuration that produced it; the cache key carries a
+ *   fingerprint of that configuration, so an entry cannot outlive it. This reason
+ *   exists so a caching route's rewrite rate does not read as broken: without it,
+ *   every hit would report `bodyRewritten: false` with no way to tell that apart
+ *   from a rewrite that never got configured.
  */
 export type RewriteSkipReason =
-  'not_configured' | 'bodyless_status' | 'no_body' | 'content_type' | 'charset_undecodable';
+  | 'not_configured'
+  | 'bodyless_status'
+  | 'no_body'
+  | 'content_type'
+  | 'charset_undecodable'
+  | 'served_from_cache';
 
 /** What happened to one proxied request. Passed to `onProxy`. */
 export interface ProxyEvent {
@@ -78,12 +103,29 @@ export interface ProxyEvent {
    * it named a host outside the upstream, or when `rewriteHeaders` is off.
    */
   redirectRewritten: boolean;
+  /**
+   * What the response cache did, when the route has one enabled.
+   *
+   * `bypass` means the request was never a candidate — a method the cache does
+   * not cover, or credentials in the request — as opposed to `miss`, where it was
+   * a candidate and no entry was there. Tuning a hit rate needs those apart.
+   *
+   * Absent on a route without caching, and on a refusal that never got that far.
+   */
+  cache?: CacheState | undefined;
 }
 
 export interface JouskaOptions {
   config: Config;
   /** Overridable for tests; defaults to the runtime `fetch`. */
   fetchImpl?: typeof fetch;
+  /**
+   * Store backing the response cache. Defaults to `caches.default`.
+   *
+   * Overridable for tests, and for a deployment that wants a named cache. Only
+   * consulted by routes with a `cache` block.
+   */
+  cacheImpl?: ResponseCacheStore;
   /**
    * Called once per proxied request, after the response is decided.
    *
@@ -130,7 +172,12 @@ const NO_REWRITE_STATUSES = new Set([204, 206, 304]);
  * on a match, forwards it upstream and rewrites the response. On no match it
  * calls `next()`, so an app can mix proxied routes with its own handlers.
  */
-export const jouska = ({ config, fetchImpl, onProxy }: JouskaOptions): MiddlewareHandler => {
+export const jouska = ({
+  config,
+  fetchImpl,
+  cacheImpl,
+  onProxy,
+}: JouskaOptions): MiddlewareHandler => {
   return async (c, next) => {
     const startedAt = Date.now();
     // Parsed once and threaded through: the URL was previously re-parsed four
@@ -145,7 +192,7 @@ export const jouska = ({ config, fetchImpl, onProxy }: JouskaOptions): Middlewar
     // Guards run cheapest-first, so a request that will be refused never
     // reaches the upstream. Geo and IP are local checks; rate limiting costs a
     // binding call; forwarding costs a network round trip.
-    const report: Report = (status, outcome, attempts, rewrite): void => {
+    const report: Report = (status, outcome, attempts, rewrite, cache): void => {
       if (onProxy === undefined) {
         return;
       }
@@ -169,6 +216,7 @@ export const jouska = ({ config, fetchImpl, onProxy }: JouskaOptions): Middlewar
             ? { rewriteSkipped: rewrite.rewriteSkipped }
             : {}),
           redirectRewritten: rewrite?.redirectRewritten ?? false,
+          cache,
         });
       } catch {
         // Observability must not be able to fail a request.
@@ -216,10 +264,10 @@ export const jouska = ({ config, fetchImpl, onProxy }: JouskaOptions): Middlewar
     // and the response carries the negotiated headers.
     if (route.cors !== undefined) {
       return corsMiddleware(route.cors)(c, async () => {
-        c.res = await proxyRequest(match, c, url, fetchImpl, report);
+        c.res = await proxyRequest(match, c, url, fetchImpl, cacheImpl, report);
       });
     }
-    return proxyRequest(match, c, url, fetchImpl, report);
+    return proxyRequest(match, c, url, fetchImpl, cacheImpl, report);
   };
 };
 
@@ -281,16 +329,227 @@ type Report = (
   outcome: ProxyEvent['outcome'],
   attempts: number,
   rewrite?: RewriteReport,
+  cache?: CacheState,
 ) => void;
 
-/** Forwards the request upstream and rewrites the response. */
+/**
+ * The default response store: the runtime's own cache.
+ *
+ * Resolved defensively rather than at module load. `caches` is a Workers global,
+ * and a route table that turns caching on in an environment without it should
+ * degrade to not caching rather than throw on the first request.
+ */
+const defaultCacheStore = (): ResponseCacheStore | undefined =>
+  typeof caches === 'undefined' ? undefined : caches.default;
+
+/** Everything a caching route needs for one request, resolved once. */
+interface CachePlan {
+  config: CacheConfig;
+  store: ResponseCacheStore;
+  key: Request;
+}
+
+/**
+ * Builds the caching plan, or returns undefined when this request cannot take
+ * part — nothing is read, nothing is stored, and `bypass` is reported.
+ */
+const buildCachePlan = (
+  config: CacheConfig,
+  route: Route,
+  request: Request,
+  url: URL,
+  method: string,
+  cacheImpl: ResponseCacheStore | undefined,
+): CachePlan | undefined => {
+  const store = cacheImpl ?? defaultCacheStore();
+  if (store === undefined || !requestCacheable(request, method, config)) {
+    return undefined;
+  }
+  const key = cacheKey(url, method, routeFingerprint(route));
+  return key === undefined ? undefined : { config, store, key };
+};
+
+/**
+ * Schedules work that must not hold the response.
+ *
+ * Hono throws from `executionCtx` when there is none — verified, `app.request()`
+ * in a test raises `This context has no ExecutionContext` — so the fallback runs
+ * the work detached. In a real deployment that risks cancellation once the
+ * response completes, and for a cache write the only consequence is a missing
+ * entry.
+ */
+const inBackground = (c: Context, work: Promise<unknown> | undefined): void => {
+  if (work === undefined) {
+    return;
+  }
+  try {
+    c.executionCtx.waitUntil(work);
+  } catch {
+    void work.catch(() => {
+      // Detached: nothing is waiting on the result, and see above for the cost.
+    });
+  }
+};
+
+/**
+ * Serves one matched request, through the response cache when the route has one.
+ *
+ * The cache is consulted before the upstream and written after it. A stale entry
+ * is served immediately and revalidated behind the response, so the visitor who
+ * happened to arrive past the TTL does not pay for the refresh.
+ */
 const proxyRequest = async (
   match: Match,
   c: Context,
   url: URL,
   fetchImpl: typeof fetch | undefined,
+  cacheImpl: ResponseCacheStore | undefined,
   report: Report,
 ): Promise<Response> => {
+  const { route } = match;
+  const caching = route.cache?.enabled === true ? route.cache : undefined;
+  const plan =
+    caching === undefined
+      ? undefined
+      : buildCachePlan(caching, route, c.req.raw, url, c.req.method, cacheImpl);
+
+  if (plan !== undefined) {
+    const cached = await readCachedResponse({
+      store: plan.store,
+      key: plan.key,
+      cache: plan.config,
+      now: Date.now(),
+    });
+    if (cached !== undefined) {
+      // The rules already ran on the bytes that were stored — a change to them
+      // changes the fingerprint and so the key — but the diagnostic headers
+      // `readCachedResponse` just wrote did not exist then, and an operator who
+      // asked for one of those to be removed meant it on a hit too.
+      applyResponseHeaderRules(cached.response.headers, route.responseHeaders);
+      report(
+        cached.response.status,
+        'ok',
+        0,
+        {
+          bodyRewritten: false,
+          // A route with no rewrite configured keeps saying so, so "which routes
+          // forgot to turn rewriting on" stays answerable through a cache. Only a
+          // route that does rewrite reports the cache as the reason this request
+          // did not.
+          rewriteSkipped: route.bodyRewrite === undefined ? 'not_configured' : 'served_from_cache',
+          // Only 200s are stored, so a cached response never carried a Location
+          // to rewrite; false is accurate rather than a stand-in.
+          redirectRewritten: false,
+        },
+        cached.state,
+      );
+      if (cached.state === 'stale') {
+        inBackground(
+          c,
+          refreshOnce(plan.key, async () => {
+            const refreshed = await produceResponse({
+              match,
+              c,
+              url,
+              fetchImpl,
+              detached: true,
+              cacheState: undefined,
+            });
+            if (
+              refreshed.fromUpstream &&
+              responseCacheable(refreshed.response, refreshed.upstreamHeaders, plan.config)
+            ) {
+              await storeCachedResponse({
+                store: plan.store,
+                key: plan.key,
+                response: refreshed.response,
+                cache: plan.config,
+                now: Date.now(),
+                alsoServed: false,
+              });
+            }
+          }),
+        );
+      }
+      return cached.response;
+    }
+  }
+
+  const cacheState: CacheState | undefined =
+    caching === undefined ? undefined : plan === undefined ? 'bypass' : 'miss';
+  const produced = await produceResponse({ match, c, url, fetchImpl, detached: false, cacheState });
+  // Reported before the body is read, deliberately. The rewrite is a stream
+  // transform, so a report that waited for its result would hold the event — and
+  // any `waitUntil` the host queued from it — until the client had finished
+  // reading. Everything the event states is already known.
+  report(produced.status, produced.outcome, produced.attempts, produced.rewrite, cacheState);
+
+  if (
+    plan !== undefined &&
+    produced.fromUpstream &&
+    responseCacheable(produced.response, produced.upstreamHeaders, plan.config)
+  ) {
+    // Called before the response is returned, so the clone inside is taken while
+    // the body is still unread — `put` on a consumed body throws.
+    inBackground(
+      c,
+      storeCachedResponse({
+        store: plan.store,
+        key: plan.key,
+        response: produced.response,
+        cache: plan.config,
+        now: Date.now(),
+        alsoServed: true,
+      }),
+    );
+  }
+  return produced.response;
+};
+
+interface ProduceOptions {
+  match: Match;
+  c: Context;
+  url: URL;
+  fetchImpl: typeof fetch | undefined;
+  /** True for a background refresh, which must outlive the client's connection. */
+  detached: boolean;
+  /** Recorded on the response, so a caching route's behaviour is visible from outside. */
+  cacheState: CacheState | undefined;
+}
+
+/** One trip to the upstream and the rewriting of what comes back. */
+interface Produced {
+  response: Response;
+  status: number;
+  outcome: ProxyEvent['outcome'];
+  attempts: number;
+  /**
+   * False when the response is jouska's own error rather than the upstream's, so
+   * a 502 for an unreachable origin is never mistaken for something to cache.
+   */
+  fromUpstream: boolean;
+  /**
+   * The upstream's own headers, before any rewriting.
+   *
+   * Carried through because cacheability is partly the upstream's statement about
+   * the response — `Cache-Control`, `Set-Cookie`, `Vary` — and an operator rule
+   * that deleted the statement must not be able to change the answer. See
+   * `responseCacheable`.
+   */
+  upstreamHeaders: Headers;
+  /** Absent when nothing was proxied, which is what `report` expects. */
+  rewrite?: RewriteReport;
+}
+
+/** Forwards the request upstream and rewrites the response. */
+const produceResponse = async ({
+  match,
+  c,
+  url,
+  fetchImpl,
+  detached,
+  cacheState,
+}: ProduceOptions): Promise<Produced> => {
   const { route } = match;
   const target = resolveUpstreamUrl(match, url);
   // Counted by forward itself, so a retry is visible to the caller rather than
@@ -309,25 +568,40 @@ const proxyRequest = async (
       request: c.req.raw,
       requestUrl: url,
       fetchImpl: counting,
+      detached,
     });
   } catch (error) {
     const failure = upstreamFailure(error, c, target);
-    report(failure.status, failureOutcome(error), attempts);
-    return failure;
+    return {
+      response: failure,
+      status: failure.status,
+      outcome: failureOutcome(error),
+      attempts,
+      fromUpstream: false,
+      upstreamHeaders: new Headers(),
+    };
   }
 
   // A 101 carries the socket itself and cannot be reconstructed: `new Response`
   // refuses any status outside 200–599, and rewrapping would drop the
   // `webSocket` property even if it did not. Verified against workerd, both.
   if (upstream.status === 101) {
-    report(101, 'ok', attempts);
-    return upstream;
+    return {
+      response: upstream,
+      status: 101,
+      outcome: 'ok',
+      attempts,
+      fromUpstream: true,
+      upstreamHeaders: upstream.headers,
+    };
   }
 
   const { authority } = splitUpstream(route.upstream);
   const contentType = parseContentType(upstream.headers.get('content-type'));
   const decision = decideRewrite(route.bodyRewrite, upstream, contentType);
 
+  // Every change to the headers happens here, in order, so "who runs last" is
+  // readable rather than inferred from two return paths.
   const { headers, redirectRewritten } = route.rewriteHeaders
     ? rewriteResponseHeaders({
         headers: upstream.headers,
@@ -339,47 +613,53 @@ const proxyRequest = async (
       // touch `Location`.
       { headers: stripHopByHop(upstream.headers), redirectRewritten: false };
 
-  // Reported before `rewriteBody`, deliberately. The rewrite is a stream
-  // transform, so a report that waited for its result would hold the event —
-  // and any `waitUntil` the host queued from it — until the client had finished
-  // reading the body. Everything the event states is already known here.
-  report(upstream.status, 'ok', attempts, {
-    bodyRewritten: decision.rewrite,
-    ...(decision.rewrite ? {} : { rewriteSkipped: decision.skipped }),
-    redirectRewritten,
-  });
-
-  if (!decision.rewrite) {
-    return new Response(upstream.body, {
-      status: upstream.status,
-      statusText: upstream.statusText,
-      headers,
-    });
-  }
-
-  // With rewriting off, the validators were left intact above; they still have
-  // to go once the body changes.
-  if (!route.rewriteHeaders) {
+  // With header rewriting off, the validators were left intact above; they still
+  // have to go once the body changes.
+  if (decision.rewrite && !route.rewriteHeaders) {
     stripBodyValidators(headers);
   }
   // Output is always UTF-8, so a declared charset that is no longer accurate
   // would make the browser decode correct bytes with the wrong table.
-  if (decision.transcoded && contentType !== undefined) {
+  if (decision.rewrite && decision.transcoded && contentType !== undefined) {
     headers.set('content-type', `${contentType.type}; charset=utf-8`);
   }
+  if (cacheState !== undefined) {
+    headers.set(CACHE_STATE_HEADER, cacheState);
+  }
+  // Last, deliberately: the operator's rules can override anything above,
+  // including the proxy's own rewrites. See `applyResponseHeaderRules`.
+  applyResponseHeaderRules(headers, route.responseHeaders);
 
-  return rewriteBody({
-    upstream,
-    headers,
-    rewrite: decision.config,
-    charset: decision.charset,
-    isHtml: contentType?.type === 'text/html',
-    upstreamHost: authority,
-    target,
-    proxyHost: url.host,
-  });
+  const response = decision.rewrite
+    ? rewriteBody({
+        upstream,
+        headers,
+        rewrite: decision.config,
+        charset: decision.charset,
+        isHtml: contentType?.type === 'text/html',
+        upstreamHost: authority,
+        target,
+        proxyHost: url.host,
+      })
+    : new Response(upstream.body, {
+        status: upstream.status,
+        statusText: upstream.statusText,
+        headers,
+      });
+  return {
+    response,
+    status: upstream.status,
+    outcome: 'ok',
+    attempts,
+    fromUpstream: true,
+    upstreamHeaders: upstream.headers,
+    rewrite: {
+      bodyRewritten: decision.rewrite,
+      ...(decision.rewrite ? {} : { rewriteSkipped: decision.skipped }),
+      redirectRewritten,
+    },
+  };
 };
-
 /**
  * Whether this response's body is rewritten, and if not, which of the five
  * reasons applies.

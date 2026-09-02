@@ -3,10 +3,12 @@ export type { CacheOptions, ConfigCache } from './cache.js';
 export { CONFIG_VERSION, configSchema, defineConfig } from './config.js';
 export type {
   BodyRewriteConfig,
+  CacheConfig,
   Config,
   ConfigInput,
   ConfigMeta,
   CorsConfig,
+  HeaderRulesConfig,
   RateLimitConfig,
   Route,
   RouteInput,
@@ -22,3 +24,8 @@ export type { ConfigSource, KVReader, KVSourceOptions } from './sources.js';
 export type { MergeStrategy, ResolveOptions } from './resolve.js';
 export { jouska } from './middleware/jouska.js';
 export type { JouskaOptions, ProxyEvent, RewriteSkipReason } from './middleware/jouska.js';
+// Response-cache surface a host needs: the state names that appear on
+// `ProxyEvent.cache` and in the `x-jouska-cache` header, and the store shape for
+// a deployment that supplies its own cache rather than `caches.default`.
+export { CACHE_STATE_HEADER } from './internal/response-cache.js';
+export type { CacheState, ResponseCacheStore } from './internal/response-cache.js';
