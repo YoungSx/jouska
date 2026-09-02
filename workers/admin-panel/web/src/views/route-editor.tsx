@@ -527,9 +527,14 @@ const HeadersEditor = ({
   const write = (next: readonly HeaderRow[]) => {
     setRows(next);
     const record = rowsToHeaders(next);
-    emitted.current = JSON.stringify(record);
     // 一行有效数据都没有 = 未设置：删键而不是留 {}。
-    onChange(Object.keys(record).length === 0 ? undefined : record);
+    const emit = Object.keys(record).length === 0 ? undefined : record;
+    // 回声指纹必须和 signature 同口径（`?? null`）。写 `JSON.stringify(record)` 时，
+    // 「一行有效数据都没有」上报的是 undefined、下一次渲染的 signature 是 `"null"`，
+    // 而指纹留着 `"{}"` —— 自己的回声被当成「外部改了值」，刚加的空行在同一次渲染
+    // 里就被复位抹掉。表现为点「加一行」毫无反应，以及把最后一个头名删空时整行消失。
+    emitted.current = JSON.stringify(emit ?? null);
+    onChange(emit);
   };
 
   return (
