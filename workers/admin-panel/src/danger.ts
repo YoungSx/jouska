@@ -13,10 +13,21 @@ export interface FieldRisk {
 }
 
 /**
+ * Value guard for a rule. Absent means "the field's existence is the risk";
+ * present, the rule only fires when the stored value also qualifies — `scheme`
+ * is the case in point, where `https` written out is a deliberate statement,
+ * not a risk, and flagging it makes the publish dialog lie about the config.
+ */
+type ValueGuard = (node: unknown) => boolean;
+
+/**
  * Classification per dot-path. Looked up by walking the definition, so a
  * nested hit (`bodyRewrite.fallbackCharset`) is reported with its full path.
+ * The `guard` is internal classification data and never leaks into a FieldRisk.
  */
-const RULES: readonly FieldRisk[] = [
+type Rule = FieldRisk & { guard?: ValueGuard };
+
+const RULES: readonly Rule[] = [
   {
     path: 'allowPrivateUpstream',
     level: 'high',
@@ -26,6 +37,9 @@ const RULES: readonly FieldRisk[] = [
   {
     path: 'scheme',
     level: 'medium',
+    // Only `http` is the risk; `https` is the default spelled out and must not
+    // raise a false warning on publish.
+    guard: (node) => node === 'http',
     reason: 'http forwards traffic unencrypted between the edge and the upstream',
   },
   {
@@ -113,6 +127,9 @@ export const dangerFlags = (definition: Record<string, unknown>): FieldRisk[] =>
         break;
       }
     }
+    if (found && rule.guard !== undefined && !rule.guard(node)) {
+      found = false;
+    }
     if (rule.path === 'cors.origins') {
       // Absence is the dangerous state, and only when cors is configured at
       // all — no cors means no CORS behaviour to widen.
@@ -122,7 +139,9 @@ export const dangerFlags = (definition: Record<string, unknown>): FieldRisk[] =>
       continue;
     }
     if (found) {
-      flags.push(rule);
+      // Strip the guard: it is classification input, not reportable data.
+      const { guard: _guard, ...risk } = rule;
+      flags.push(risk);
     }
   }
   return flags;

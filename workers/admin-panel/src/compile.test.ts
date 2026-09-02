@@ -264,6 +264,18 @@ describe('dangerFlags', () => {
     expect(flags.map((f) => f.path)).toContain('scheme');
   });
 
+  it('does not flag scheme spelled out as https — the value, not the field, is the risk', () => {
+    const flags = dangerFlags({ match: { path: '/' }, upstream: 'a.com', scheme: 'https' });
+    expect(flags.map((f) => f.path)).not.toContain('scheme');
+  });
+
+  it('leaks no classification internals into the reported risks', () => {
+    const flags = dangerFlags({ match: { path: '/' }, upstream: 'a.com', scheme: 'http' });
+    expect(flags.every((f) => Object.keys(f).every((k) => k in ({ path: 1, level: 1, reason: 1 })))).toBe(
+      true,
+    );
+  });
+
   it('flags upstreamHeaders at the top level only when present', () => {
     expect(
       dangerFlags({ match: { path: '/' }, upstream: 'a.com' }).map((f) => f.path),
