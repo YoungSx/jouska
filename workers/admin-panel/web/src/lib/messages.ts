@@ -402,7 +402,6 @@ export const t = {
        * 就不生效，于是要么不敢开，要么去手填一个更宽的列表。
        */
       help: '流式改写 HTML 里的链接，让站内导航留在代理上。默认只对 `text/html` 生效。',
-      enable: '开启响应体改写',
       /** 打开之后立刻要看见的两件事：代价，和覆盖不到的地方。都是静默发生的。 */
       cost: '改写会剥掉上游的 `ETag`、`Last-Modified` 和 CSP —— 客户端缓存和上游的安全头都会跟着降级。',
       scope:
@@ -431,14 +430,12 @@ export const t = {
     },
     cors: {
       label: 'CORS',
-      enable: '开启 CORS 处理',
       origins: '允许的 origin',
       originsHelp: '留空会反射任何调用方的 origin，等于让别的站点通过这个代理读取带凭据的响应。',
       originsPlaceholder: 'https://app.example.com',
     },
     ip: {
       label: 'IP 规则',
-      enable: '开启 IP 规则',
       allow: 'allow（CIDR 或地址）',
       allowHelp: 'allow 列表写错一个字符，就会放进本想排除的地址。',
       deny: 'deny（CIDR 或地址）',

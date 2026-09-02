@@ -1187,7 +1187,6 @@ export const RouteEditor = ({
                 <Field orientation="horizontal">
                   <Switch
                     id="route-editor-body-rewrite"
-                    aria-label={t.fields.bodyRewrite.enable}
                     checked={definition.bodyRewrite !== undefined}
                     onCheckedChange={(checked) =>
                       checked ? setSectionOn('bodyRewrite') : setSectionOff('bodyRewrite')
@@ -1276,7 +1275,6 @@ export const RouteEditor = ({
                 <Field orientation="horizontal">
                   <Switch
                     id="route-editor-cors"
-                    aria-label={t.fields.cors.enable}
                     checked={definition.cors !== undefined}
                     onCheckedChange={(checked) =>
                       checked ? setSectionOn('cors') : setSectionOff('cors')
@@ -1307,7 +1305,6 @@ export const RouteEditor = ({
                 <Field orientation="horizontal">
                   <Switch
                     id="route-editor-ip"
-                    aria-label={t.fields.ip.enable}
                     checked={definition.ip !== undefined}
                     onCheckedChange={(checked) =>
                       checked ? setSectionOn('ip') : setSectionOff('ip')
