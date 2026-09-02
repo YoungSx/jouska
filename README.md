@@ -760,9 +760,9 @@ upstream.
 
 ### Access control
 
-Three route-level guards answer "who are you". They are independent, compose
-with AND — every configured one must pass — and sit after rate limiting but
-before forwarding, so a refused caller costs no upstream round trip:
+Delegated auth answers "who are you" without a login flow in the library. It
+sits after rate limiting but before forwarding, so a refused caller costs no
+upstream round trip:
 
 ```ts
 {
@@ -780,13 +780,6 @@ before forwarding, so a refused caller costs no upstream round trip:
     timeoutMs: 2000,      // timeout and other network failures fail closed (503)…
     failOpen: true,       // …unless you opt out, which is flagged as high-risk.
   },
-
-  // Cloudflare Access: the JWT is verified locally (ES256 against the team's
-  // JWKS, cached 60 minutes) plus aud, iss and exp — no login flow in the library.
-  accessJwt: { team: 'myteam.cloudflareaccess.com', audience: 'my-app' },
-
-  // API keys: config stores SHA-256 digests only, never plaintext.
-  apiKey: { keys: ['<64 hex chars>'] },   // header defaults to `x-api-key`
 }
 ```
 
@@ -797,13 +790,11 @@ needs. It is issued with a direct `fetch`, never through the route table, so a
 Copied response headers go through the same reserved-name refusal as
 `requestHeaders`, so a verdict cannot inject the headers jouska derives itself.
 
-A route with any of the three refuses `cache` at config time: the response is
+A route with delegated auth refuses `cache` at config time: the response is
 about the caller, and a shared cache keyed by URL cannot be trusted to tell
 callers apart. A route whose auth endpoint is unreachable fails closed with 503
 (`{ error: 'forward_auth_unavailable' }`); `failOpen` inverts that, and the
-panel flags it as high risk because an outage then becomes open doors. JWT
-verification keeps its own failure shape: a JWKS fetch that fails with no cache
-is a 503, everything else about the token is a plain 401.
+panel flags it as high risk because an outage then becomes open doors.
 
 `rateLimit` needs a `binding` name and an optional `by` strategy:
 
@@ -1032,9 +1023,9 @@ entries expire rather than alias.
 
 ### What is never cached
 
-- A route with any access-control guard (`forwardAuth`, `accessJwt`, `apiKey`).
-  This is refused at config time rather than filtered at runtime — the response
-  is about the caller, and no URL key can tell callers apart.
+- A route with delegated auth (`forwardAuth`). This is refused at config time
+  rather than filtered at runtime — the response is about the caller, and no URL
+  key can tell callers apart.
 - A method outside `methods`, or anything but GET and HEAD.
 - A request carrying `Authorization` or `Cookie` — its response is probably about
   the person who sent it, and this cache is keyed by URL alone.

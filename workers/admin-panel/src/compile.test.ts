@@ -93,16 +93,14 @@ describe('compileConfig', () => {
     expect(result.issues.some((i) => i.path === 'defaults')).toBe(true);
   });
 
-  it('accepts the form-shaped auth trio as written by the editor', () => {
-    // 表单落盘的形状：failOpen 只有开着才写、header 空缺省、keys 是摘要。
+  it('accepts the form-shaped delegated auth as written by the editor', () => {
+    // 表单落盘的形状：failOpen 只有开着才写、copyResponseHeaders 只在有值时写。
     const result = compileConfig(
       [
         row('auth', {
           match: { path: '/private' },
           upstream: 'app.example.com',
           forwardAuth: { url: 'https://sso.example.com/check', copyResponseHeaders: ['x-user-id'] },
-          accessJwt: { team: 'myteam.cloudflareaccess.com', audience: 'my-app' },
-          apiKey: { keys: ['b'.repeat(64)] },
         }, 0)],
       undefined,
     );
@@ -411,17 +409,13 @@ describe('dangerFlags', () => {
     expect(flags).toEqual([]);
   });
 
-  it('flags the auth trio on presence, with http forwardAuth url on value', () => {
+  it('flags delegated auth: failOpen on presence, http url on value', () => {
     const paths = dangerFlags({
       match: { path: '/' },
       upstream: 'a.com',
       forwardAuth: { url: 'https://sso.example.com/check', failOpen: true },
-      accessJwt: { team: 'myteam.cloudflareaccess.com', audience: 'my-app' },
-      apiKey: { keys: ['a'.repeat(64)] },
     }).map((f) => f.path);
     expect(paths).toContain('forwardAuth.failOpen');
-    expect(paths).toContain('accessJwt');
-    expect(paths).toContain('apiKey.keys');
     // https url 是慎重写出的默认，不是风险。
     expect(paths).not.toContain('forwardAuth.url');
 

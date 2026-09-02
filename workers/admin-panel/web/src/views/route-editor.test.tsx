@@ -557,74 +557,28 @@ describe('RouteEditor 访问控制（issue #34）', () => {
 
     expect(await saveDraft(user)).not.toHaveProperty('access');
   });
+});
 
-  const openSection = async (user: ReturnType<typeof userEvent.setup>, label: string) => {
-    await user.click(screen.getByRole('switch', { name: label }));
-  };
-
-  it('apiKey：粘明文失焦后 definition 落 64 位摘要，无明文残留', async () => {
-    const user = userEvent.setup();
-    renderEditor(true, { upstream: 'origin.example.com' });
-
-    await openSection(user, 'API key');
-    await user.click(screen.getByRole('button', { name: '加一个 key' }));
-    const input = screen.getByLabelText('已授权的 key 1');
-    await user.type(input, 'my-secret-key');
-    // 失焦触发摘要转换；遮蔽展示是「前 8 位 + …」。
-    await user.tab();
-    const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode('my-secret-key'));
-    const hex = Array.from(new Uint8Array(digest), (b) => b.toString(16).padStart(2, '0')).join('');
-    await waitFor(() =>
-      expect(screen.getByLabelText('已授权的 key 1')).toHaveValue(`${hex.slice(0, 8)}…`),
-    );
-
-    const draft = await saveDraft(user);
-    const keys = (draft as { apiKey?: { keys?: string[] } }).apiKey?.keys;
-    expect(keys).toHaveLength(1);
-    expect(keys?.[0]).toMatch(/^[0-9a-f]{64}$/);
-    // 摘要确实是这个明文的，且明文没出现在落盘数据里。
-    expect(keys?.[0]).toBe(hex);
-    expect(JSON.stringify(draft)).not.toContain('my-secret-key');
+describe('RouteEditor 委托鉴权段（#53）', () => {
+  beforeEach(() => {
+    vi.spyOn(api, 'domains').mockResolvedValue(configured([]));
+    vi.spyOn(api, 'putRoute').mockResolvedValue(undefined);
   });
 
-  it('apiKey：已是 64 位十六进制的输入按摘要原样收', async () => {
-    const user = userEvent.setup();
-    renderEditor(true, { upstream: 'origin.example.com' });
-
-    await openSection(user, 'API key');
-    await user.click(screen.getByRole('button', { name: '加一个 key' }));
-    const existing = 'a'.repeat(64);
-    await user.type(screen.getByLabelText('已授权的 key 1'), existing);
-    await user.tab();
-    await waitFor(() => expect(api.putRoute).not.toHaveBeenCalled());
-
-    const draft = await saveDraft(user);
-    expect((draft as { apiKey?: { keys?: string[] } }).apiKey?.keys).toEqual([existing]);
+  afterEach(() => {
+    vi.restoreAllMocks();
   });
 
   it('forwardAuth：开关与 url、failOpen 进 definition', async () => {
     const user = userEvent.setup();
     renderEditor(true, { upstream: 'origin.example.com' });
 
-    await openSection(user, '委托鉴权');
+    await user.click(screen.getByRole('switch', { name: '委托鉴权' }));
     await user.type(screen.getByLabelText('鉴权端点 URL'), 'https://sso.example.com/check');
     await user.click(screen.getByRole('switch', { name: /端点不可达时放行/ }));
 
     expect(await saveDraft(user)).toMatchObject({
       forwardAuth: { url: 'https://sso.example.com/check', failOpen: true },
-    });
-  });
-
-  it('accessJwt：team 与 audience 进 definition', async () => {
-    const user = userEvent.setup();
-    renderEditor(true, { upstream: 'origin.example.com' });
-
-    await openSection(user, 'Cloudflare Access JWT');
-    await user.type(screen.getByLabelText('团队域名'), 'myteam.cloudflareaccess.com');
-    await user.type(screen.getByLabelText('audience（AUD 标签）'), 'my-app');
-
-    expect(await saveDraft(user)).toMatchObject({
-      accessJwt: { team: 'myteam.cloudflareaccess.com', audience: 'my-app' },
     });
   });
 });

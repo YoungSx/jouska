@@ -779,66 +779,7 @@ describe('access control config', () => {
 });
 
 describe('access control config (cache cross-check)', () => {
-  const keyDigest = 'a'.repeat(64);
-
-  it('refuses an apiKey key that is not 64 hex characters', () => {
-    expect(() =>
-      defineConfig({
-        routes: [
-          {
-            match: { path: '/a' },
-            upstream: 'a.test',
-            apiKey: { keys: ['tooshort'] },
-          },
-        ],
-      }),
-    ).toThrow();
-  });
-
-  it('refuses a reserved apiKey header', () => {
-    expect(() =>
-      defineConfig({
-        routes: [
-          {
-            match: { path: '/a' },
-            upstream: 'a.test',
-            apiKey: { keys: [keyDigest], header: 'host' },
-          },
-        ],
-      }),
-    ).toThrow();
-  });
-
-  it('lowercases the apiKey header and key digests', () => {
-    const config = defineConfig({
-      routes: [
-        {
-          match: { path: '/a' },
-          upstream: 'a.test',
-          apiKey: { keys: [keyDigest.toUpperCase()], header: 'X-Api-Key' },
-        },
-      ],
-    });
-    expect(config.routes[0]!.apiKey).toEqual({ keys: [keyDigest], header: 'x-api-key' });
-  });
-
-  it('rejects an expired audience miss on accessJwt config', () => {
-    // The audience is a required string; an empty one is a config error, not a
-    // route that admits everyone.
-    expect(() =>
-      defineConfig({
-        routes: [
-          {
-            match: { path: '/a' },
-            upstream: 'a.test',
-            accessJwt: { team: 'myteam.cloudflareaccess.com', audience: '' },
-          },
-        ],
-      }),
-    ).toThrow();
-  });
-
-  it('refuses cache alongside any access control', () => {
+  it('refuses cache alongside delegated auth', () => {
     expect(() =>
       defineConfig({
         routes: [
@@ -846,7 +787,7 @@ describe('access control config (cache cross-check)', () => {
             match: { path: '/a' },
             upstream: 'a.test',
             cache: { enabled: true },
-            apiKey: { keys: [keyDigest] },
+            forwardAuth: { url: 'https://auth.test/check' },
           },
         ],
       }),

@@ -1,18 +1,18 @@
 import { Hono } from 'hono';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import { defineConfig, type ConfigInput } from '../../src/config';
-import { resetJwksCache } from '../../src/internal/auth';
 import { jouska, type ProxyEvent } from '../../src/middleware/jouska';
 
 /**
- * Route-level access control: apiKey, accessJwt, forwardAuth.
+ * Delegated authentication (forwardAuth) — the guard that answers "who are you"
+ * by asking a URL, in the nginx `auth_request` shape.
  *
  * The assertions follow the #53 acceptance list and, as everywhere else in this
  * suite, check what the client and the upstream actually received — not what
  * the middleware thinks it did.
  */
 
-/** One stub answering every outbound call: the auth endpoint, JWKS, upstreams. */
+/** One stub answering every outbound call: the auth endpoint and upstreams. */
 const appWith = (
   routes: ConfigInput['routes'],
   fetchImpl: typeof fetch,
@@ -57,26 +57,6 @@ const stubFetch =
     const req = input instanceof Request ? input : new Request(input, init);
     if (new URL(req.url).host === 'auth.test') {
       return auth(req);
-    }
-    return upstream(req);
-  };
-
-/** The JWKS host for the accessJwt tests. */
-const jwksHost = 'myteam.cloudflareaccess.com';
-const jwksUrl = `https://${jwksHost}/cdn-cgi/access/certs`;
-
-/** Dispatch that additionally serves `jwks` on the Access certs endpoint. */
-const stubWithJwks =
-  (
-    jwks: object | undefined,
-    upstream: (req: Request) => Response | Promise<Response> = () => new Response('ok'),
-  ) =>
-  async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
-    const req = input instanceof Request ? input : new Request(input, init);
-    if (req.url === jwksUrl) {
-      return jwks === undefined
-        ? new Response('down', { status: 500 })
-        : Response.json(jwks);
     }
     return upstream(req);
   };
@@ -199,202 +179,6 @@ describe('forwardAuth', () => {
   });
 });
 
-describe('apiKey', () => {
-  const sha256Hex = async (text: string): Promise<string> => {
-    const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
-    return Array.from(new Uint8Array(digest), (b) => b.toString(16).padStart(2, '0')).join('');
-  };
-
-  it('admits the matching key and refuses a wrong one', async () => {
-    const requests: Request[] = [];
-    const app = appWith(
-      [
-        {
-          match: { path: '/a' },
-          upstream: 'o.test',
-          apiKey: { keys: [await sha256Hex('secret-key')] },
-        },
-      ],
-      (req) => {
-        requests.push(req);
-        return new Response('from upstream');
-      },
-    );
-    const good = await app.request('https://p.dev/a', {
-      headers: { 'x-api-key': 'secret-key' },
-    });
-    expect(good.status).toBe(200);
-    expect(requests).toHaveLength(1);
-
-    const bad = await app.request('https://p.dev/a', {
-      headers: { 'x-api-key': 'wrong-key' },
-    });
-    expect(bad.status).toBe(401);
-    expect(requests).toHaveLength(1);
-  });
-
-  it('refuses a request with no key header', async () => {
-    const app = appWith(
-      [
-        {
-          match: { path: '/a' },
-          upstream: 'o.test',
-          apiKey: { keys: [await sha256Hex('secret-key')] },
-        },
-      ],
-      () => new Response('ok'),
-    );
-    expect((await app.request('https://p.dev/a')).status).toBe(401);
-  });
-
-  it('strips the Bearer scheme when the key arrives on authorization', async () => {
-    const app = appWith(
-      [
-        {
-          match: { path: '/a' },
-          upstream: 'o.test',
-          apiKey: { keys: [await sha256Hex('thetoken')], header: 'authorization' },
-        },
-      ],
-      () => new Response('from upstream'),
-    );
-    const withScheme = await app.request('https://p.dev/a', {
-      headers: { authorization: 'Bearer thetoken' },
-    });
-    expect(withScheme.status).toBe(200);
-    // The scheme word is framing; the bare token matches too.
-    const bare = await app.request('https://p.dev/a', {
-      headers: { authorization: 'thetoken' },
-    });
-    expect(bare.status).toBe(200);
-  });
-});
-
-describe('accessJwt', () => {
-  const team = 'myteam.cloudflareaccess.com';
-  const kid = 'test-key';
-
-  /** ES256 keypair whose public half feeds the JWKS stub. */
-  const makeSigner = async () => {
-    const pair = await crypto.subtle.generateKey({ name: 'ECDSA', namedCurve: 'P-256' }, true, [
-      'sign',
-      'verify',
-    ]);
-    const jwk = await crypto.subtle.exportKey('jwk', pair.publicKey);
-    return { private: pair.privateKey, jwks: { keys: [{ ...jwk, kid, alg: 'ES256' }] } };
-  };
-
-  const b64url = (value: object): string =>
-    btoa(JSON.stringify(value)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
-
-  const signJwt = async (privateKey: CryptoKey, claims: object): Promise<string> => {
-    const head = b64url({ alg: 'ES256', typ: 'JWT', kid });
-    const body = b64url(claims);
-    const signature = await crypto.subtle.sign(
-      { name: 'ECDSA', hash: 'SHA-256' },
-      privateKey,
-      new TextEncoder().encode(`${head}.${body}`),
-    );
-    const sig = btoa(String.fromCharCode(...new Uint8Array(signature)))
-      .replace(/\+/g, '-')
-      .replace(/\//g, '_')
-      .replace(/=+$/, '');
-    return `${head}.${body}.${sig}`;
-  };
-
-  const validClaims = (): object => ({
-    aud: 'my-app',
-    iss: `https://${team}`,
-    exp: Math.floor(Date.now() / 1000) + 600,
-  });
-
-  const route: ConfigInput['routes'][number] = {
-    match: { path: '/a' },
-    upstream: 'o.test',
-    accessJwt: { team, audience: 'my-app' },
-  };
-
-  beforeEach(() => {
-    // The JWKS cache is module-level and keyed by team; without this every
-    // test after the first would read the previous test's stub.
-    resetJwksCache();
-  });
-
-  it('admits a correctly signed token and refuses a missing one', async () => {
-    const signer = await makeSigner();
-    const app = appWith([route], stubWithJwks(signer.jwks));
-    const refused = await app.request('https://p.dev/a');
-    expect(refused.status).toBe(401);
-
-    const token = await signJwt(signer.private, validClaims());
-    const admitted = await app.request('https://p.dev/a', {
-      headers: { 'cf-access-jwt-assertion': token },
-    });
-    expect(admitted.status).toBe(200);
-  });
-
-  it('refuses a token that does not parse', async () => {
-    const app = appWith([route], stubWithJwks({ keys: [] }));
-    expect(
-      (await app.request('https://p.dev/a', { headers: { 'cf-access-jwt-assertion': 'x.y.z' } }))
-        .status,
-    ).toBe(401);
-  });
-
-  it('refuses a token signed by another key', async () => {
-    const signer = await makeSigner();
-    const impostor = await makeSigner();
-    const app = appWith([route], stubWithJwks(signer.jwks));
-    const token = await signJwt(impostor.private, validClaims());
-    const res = await app.request('https://p.dev/a', {
-      headers: { 'cf-access-jwt-assertion': token },
-    });
-    expect(res.status).toBe(401);
-  });
-
-  it('refuses a token whose audience does not match', async () => {
-    const signer = await makeSigner();
-    const app = appWith([route], stubWithJwks(signer.jwks));
-    const token = await signJwt(signer.private, { ...validClaims(), aud: 'other-app' });
-    const res = await app.request('https://p.dev/a', {
-      headers: { 'cf-access-jwt-assertion': token },
-    });
-    expect(res.status).toBe(401);
-  });
-
-  it('refuses an expired token', async () => {
-    const signer = await makeSigner();
-    const app = appWith([route], stubWithJwks(signer.jwks));
-    const token = await signJwt(signer.private, {
-      ...validClaims(),
-      exp: Math.floor(Date.now() / 1000) - 10,
-    });
-    const res = await app.request('https://p.dev/a', {
-      headers: { 'cf-access-jwt-assertion': token },
-    });
-    expect(res.status).toBe(401);
-  });
-
-  it('refuses an overlong token before parsing it', async () => {
-    const app = appWith([route], stubWithJwks({ keys: [] }));
-    const res = await app.request('https://p.dev/a', {
-      headers: { 'cf-access-jwt-assertion': 'a'.repeat(5000) },
-    });
-    expect(res.status).toBe(401);
-  });
-
-  it('answers 503 when the key set cannot be fetched', async () => {
-    const signer = await makeSigner();
-    const app = appWith([route], stubWithJwks(undefined));
-    const token = await signJwt(signer.private, validClaims());
-    const res = await app.request('https://p.dev/a', {
-      headers: { 'cf-access-jwt-assertion': token },
-    });
-    expect(res.status).toBe(503);
-    expect(await res.json()).toEqual({ error: 'auth_unavailable' });
-  });
-});
-
 describe('access control and the guard chain', () => {
   it('skips auth on a CORS preflight and answers locally', async () => {
     let fetchCalls = 0;
@@ -407,7 +191,7 @@ describe('access control and the guard chain', () => {
         match: { path: '/a' },
         upstream: 'o.test',
         cors: { allowMethods: ['POST'] },
-        apiKey: { keys: ['b'.repeat(64)] },
+        forwardAuth: { url: 'https://auth.test/check' },
       },
     ], fetchImpl);
     const res = await app.request(new Request('https://p.dev/a', {
@@ -421,19 +205,11 @@ describe('access control and the guard chain', () => {
   it('reports the auth stage duration and zero attempts on refusal', async () => {
     const events: ProxyEvent[] = [];
     const app = appWith(
-      [
-        {
-          match: { path: '/a' },
-          upstream: 'o.test',
-          apiKey: { keys: ['b'.repeat(64)] },
-        },
-      ],
-      () => new Response('ok'),
+      [forwardAuthRoute()],
+      stubFetch(() => auth401()),
       events,
     );
-    const refused = await app.request('https://p.dev/a', {
-      headers: { 'x-api-key': 'wrong' },
-    });
+    const refused = await app.request('https://p.dev/a');
     expect(refused.status).toBe(401);
     expect(events[0]!.attempts).toBe(0);
     expect(events[0]!.outcome).toBe('refused');
