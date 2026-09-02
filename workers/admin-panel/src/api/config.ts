@@ -42,6 +42,11 @@ export interface PreviewResult {
   readonly ok: boolean;
   readonly issues?: readonly { routeId: string | undefined; path: string; message: string }[];
   readonly shadowWarnings?: readonly { shadowedId: string; byId: string; probe: string }[];
+  /**
+   * Whole-site routes that will not rewrite their links. Advisory: publish is
+   * never gated on it, unlike `dangers`.
+   */
+  readonly mirrorWarnings?: readonly { routeId: string; upstream: string }[];
   readonly dangers?: Record<string, readonly FieldRisk[]>;
   readonly document?: unknown;
   readonly routeCount?: number;
@@ -186,7 +191,7 @@ configRoutes.put('/defaults', requireAdmin, async (c) => {
   return c.json({ ok: true });
 });
 
-/** Dry-run: compile, validate, shadow-check — no KV write. */
+/** Dry-run: compile, validate, shadow- and mirror-check — no KV write. */
 configRoutes.get('/preview', async (c) => {
   const rows: RouteRow[] = await listEnabledRoutes(c.env.DB);
   const defaults = await getSetting(c.env.DB, 'defaults');
@@ -221,6 +226,7 @@ configRoutes.get('/preview', async (c) => {
     ok: true,
     document: compiled.document,
     shadowWarnings: compiled.shadowWarnings,
+    mirrorWarnings: compiled.mirrorWarnings,
     dangers,
     routeCount: rows.length,
     live: liveField,
@@ -259,6 +265,7 @@ configRoutes.post('/publish', requireAdmin, async (c) => {
             ok: false,
             dangers: result.dangers,
             shadowWarnings: result.shadowWarnings,
+            mirrorWarnings: result.mirrorWarnings,
             error: 'confirmation_required',
           },
           409,
@@ -268,6 +275,7 @@ configRoutes.post('/publish', requireAdmin, async (c) => {
     ok: true,
     revision: result.revision,
     shadowWarnings: result.shadowWarnings,
+    mirrorWarnings: result.mirrorWarnings,
     dangers: result.dangers,
   });
 });

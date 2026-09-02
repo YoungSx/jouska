@@ -20,6 +20,7 @@ import {
   revisionStmt,
   settingStmt,
 } from './store.js';
+import type { MirrorWarning } from './mirror.js';
 import type { ShadowWarning } from './shadow.js';
 
 /**
@@ -38,6 +39,8 @@ export type PublishOutcome =
       readonly ok: true;
       readonly revision: number;
       readonly shadowWarnings: readonly ShadowWarning[];
+      /** Whole-site routes that will not rewrite their links. Advisory only. */
+      readonly mirrorWarnings: readonly MirrorWarning[];
       readonly dangers: Record<string, readonly FieldRisk[]>;
       readonly routeCount: number;
     }
@@ -52,6 +55,7 @@ export type PublishOutcome =
       readonly reason: 'confirmation_required';
       readonly dangers: Record<string, readonly FieldRisk[]>;
       readonly shadowWarnings: readonly ShadowWarning[];
+      readonly mirrorWarnings: readonly MirrorWarning[];
     };
 
 interface PublishEnv {
@@ -114,6 +118,7 @@ export const publishDraft = async (
       reason: 'confirmation_required',
       dangers,
       shadowWarnings: compiled.shadowWarnings,
+      mirrorWarnings: compiled.mirrorWarnings,
     };
   }
 
@@ -146,6 +151,7 @@ export const publishDraft = async (
     revision,
     routeCount: rows.length,
     shadowWarnings: compiled.shadowWarnings,
+    mirrorWarnings: compiled.mirrorWarnings,
     dangers,
     ...(args.rollbackOf === undefined ? {} : { rollbackOf: args.rollbackOf }),
     ...(args.note === undefined ? {} : { note: args.note }),
@@ -173,6 +179,7 @@ export const publishDraft = async (
     ok: true,
     revision,
     shadowWarnings: compiled.shadowWarnings,
+    mirrorWarnings: compiled.mirrorWarnings,
     dangers,
     routeCount: rows.length,
   };

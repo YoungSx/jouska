@@ -1,4 +1,5 @@
 import { CONFIG_VERSION, configSchema, type ConfigInput, type RouteInput } from 'jouska';
+import { mirrorWarnings, type MirrorWarning } from './mirror.js';
 import { shadowWarnings, type ShadowWarning } from './shadow.js';
 import { CORRUPT } from './validate.js';
 
@@ -34,6 +35,12 @@ export type CompileResult =
       /** Validated input document — what gets written to KV (plus `meta`). */
       readonly document: ConfigInput;
       readonly shadowWarnings: readonly ShadowWarning[];
+      /**
+       * Whole-site routes that will not rewrite their links. An advisory, so it
+       * sits beside `shadowWarnings` rather than among `issues`: publishing one
+       * is legitimate, and the operator only has to know what it means.
+       */
+      readonly mirrorWarnings: readonly MirrorWarning[];
       /** Parsed output, for previews: defaults folded in, stated keys resolved. */
       readonly parsed: ReturnType<typeof configSchema.parse>;
     }
@@ -190,6 +197,9 @@ export const compileConfig = (rows: readonly RouteRow[], defaults: unknown): Com
     ok: true,
     document,
     parsed: result.data,
+    // Both read the parsed document, so defaults are folded in and every check
+    // sees what the proxy will see.
     shadowWarnings: shadowWarnings(result.data),
+    mirrorWarnings: mirrorWarnings(result.data),
   };
 };

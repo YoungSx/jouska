@@ -268,17 +268,32 @@ describe('admin panel end-to-end', () => {
       ok: boolean;
       routeCount?: number;
       document?: { version?: number };
+      mirrorWarnings?: readonly { routeId: string; upstream: string }[];
     };
     expect(previewBody.ok).toBe(true);
     expect(previewBody.routeCount).toBe(1);
     expect(previewBody.document?.version).toBe(1);
+    // `theRoute` takes the whole site with no `bodyRewrite`, so the mirror
+    // advisory travels the whole way out to the response — and, being an
+    // advisory, changes nothing about whether this publishes.
+    expect(previewBody.mirrorWarnings).toEqual([
+      { routeId: 'app', upstream: 'app.internal.example.com' },
+    ]);
 
     // Publish: one KV write, revision 1.
     const publish = await call('POST', '/api/publish', { note: 'first' }, auth);
     expect(publish.status).toBe(200);
-    const publishBody = (await publish.json()) as { ok: boolean; revision?: number };
+    const publishBody = (await publish.json()) as {
+      ok: boolean;
+      revision?: number;
+      mirrorWarnings?: readonly { routeId: string }[];
+    };
     expect(publishBody.ok).toBe(true);
     expect(publishBody.revision).toBe(1);
+    // Advisory, not a gate: it is reported alongside a successful publish.
+    expect(publishBody.mirrorWarnings).toEqual([
+      { routeId: 'app', upstream: 'app.internal.example.com' },
+    ]);
 
     // The proxy reads the same KV namespace under the same key. jouska
     // matches on the request URL's host (in production that is the real host),

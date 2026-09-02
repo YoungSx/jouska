@@ -3,6 +3,7 @@ import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { RouteEditor } from './route-editor';
 import { api, type DomainsResponse, type HostBinding } from '@/lib/api';
+import type { RouteDefinition } from '@/lib/types';
 
 /**
  * 焊两条教训与一个承诺：
@@ -22,14 +23,24 @@ const binding = (host: string, kind: HostBinding['kind'], pattern?: string): Hos
 
 const configured = (hosts: HostBinding[]): DomainsResponse => ({ configured: true, hosts });
 
-const renderEditor = (createMode = true) =>
+/** 按下保存，回答服务端收到的 definition —— 断言看的是落进草稿的那份数据。 */
+const saveDraft = async (user: ReturnType<typeof userEvent.setup>) => {
+  await user.click(screen.getByRole('button', { name: '保存到草稿' }));
+  await waitFor(() => expect(api.putRoute).toHaveBeenCalled());
+  return vi.mocked(api.putRoute).mock.calls[0]?.[1];
+};
+
+const renderEditor = (
+  createMode = true,
+  definition: RouteDefinition = { upstream: 'origin.example.com' },
+) =>
   render(
     <RouteEditor
       open
       onOpenChange={() => {}}
       initial={{
         id: 'new-route',
-        definition: { upstream: 'origin.example.com' },
+        definition,
         enabled: true,
       }}
       createMode={createMode}
@@ -159,5 +170,77 @@ describe('RouteEditor host 字段（issue #19）', () => {
       />,
     );
     await waitFor(() => expect(api.domains).toHaveBeenCalledTimes(2));
+  });
+});
+
+/**
+ * 正文改写这一段（issue #29 / #30）。
+ *
+ * 焊三件事：
+ *
+ * 1. `rewriteLinks` / `rewriteStyles` 必须在表单里，而且默认显示为**开** —— 它们的
+ *    schema 默认值是 true，也就是说 `bodyRewrite: {}` 已经在改链接和样式了。之前
+ *    表单只暴露 contentTypes 与 fallbackCharset，想单独关掉样式改写只能去写原始
+ *    JSON。
+ * 2. 关掉一个子开关只落那一个 false，**段壳必须留着**。删到空对象等于把整段改写
+ *    关掉，那是完全不同的一件事。
+ * 3. 打开改写的**代价当场可见**：改写会剥掉上游的 ETag / Last-Modified / CSP。
+ *    默认打开这个开关等于默认降级客户端缓存和上游的安全头，所以按下它的人要知道
+ *    自己按下了什么。
+ */
+describe('RouteEditor 正文改写（issue #29）', () => {
+  beforeEach(() => {
+    vi.spyOn(api, 'domains').mockResolvedValue(configured([]));
+    vi.spyOn(api, 'putRoute').mockResolvedValue(undefined);
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('打开改写：两个子开关出现，且都显示为 schema 默认的开', async () => {
+    const user = userEvent.setup();
+    renderEditor();
+
+    expect(screen.queryByRole('switch', { name: '改写链接' })).not.toBeInTheDocument();
+    await user.click(screen.getByRole('switch', { name: '改写响应体' }));
+
+    expect(screen.getByRole('switch', { name: '改写链接' })).toBeChecked();
+    expect(screen.getByRole('switch', { name: '改写样式里的地址' })).toBeChecked();
+  });
+
+  it('打开改写就摊开代价：剥掉验证器与 CSP 这件事不能等出问题才发现', async () => {
+    const user = userEvent.setup();
+    renderEditor();
+    await user.click(screen.getByRole('switch', { name: '改写响应体' }));
+
+    const note = screen.getByRole('alert');
+    expect(note).toHaveTextContent('改写会剥掉上游的');
+    // 覆盖范围也要如实：开了不等于全都留在代理上。
+    expect(note).toHaveTextContent('都改不到');
+  });
+
+  it('关掉样式改写只落那一个 false，段壳留着', async () => {
+    const user = userEvent.setup();
+    renderEditor();
+    await user.click(screen.getByRole('switch', { name: '改写响应体' }));
+    await user.click(screen.getByRole('switch', { name: '改写样式里的地址' }));
+
+    expect(await saveDraft(user)).toMatchObject({ bodyRewrite: { rewriteStyles: false } });
+  });
+
+  it('已经关掉的子开关显示为关，再打开就把键删掉 —— 等于默认值不落盘', async () => {
+    const user = userEvent.setup();
+    renderEditor(true, {
+      upstream: 'origin.example.com',
+      bodyRewrite: { rewriteLinks: false },
+    });
+
+    const links = screen.getByRole('switch', { name: '改写链接' });
+    expect(links).not.toBeChecked();
+    await user.click(links);
+
+    // 段壳还在（改写仍然开着），只是里面回到了默认。
+    expect(await saveDraft(user)).toMatchObject({ bodyRewrite: {} });
   });
 });

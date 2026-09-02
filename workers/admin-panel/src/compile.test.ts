@@ -2,6 +2,7 @@ import { configSchema, matchUrl, type Config } from 'jouska';
 import { describe, expect, it } from 'vitest';
 import { compileConfig, type RouteRow } from './compile.js';
 import { dangerFlags } from './danger.js';
+import { mirrorWarnings } from './mirror.js';
 import { shadowWarnings } from './shadow.js';
 
 const row = (id: string, definition: unknown, position = 0, enabled = true): RouteRow => ({
@@ -166,6 +167,88 @@ describe('shadowWarnings', () => {
       expect(match).toBeDefined();
       expect(config.routes[match!.index]?.id).toBe(warning.byId);
     }
+  });
+});
+
+describe('mirrorWarnings', () => {
+  const parseConfig = (routes: unknown[], defaults?: unknown): Config =>
+    configSchema.parse({ routes, ...(defaults === undefined ? {} : { defaults }) }) as Config;
+
+  it('flags a host route with no path — the whole-site mirror', () => {
+    const config = parseConfig([
+      { id: 'gh', match: { host: 'gh.example.com' }, upstream: 'github.com' },
+    ]);
+    expect(mirrorWarnings(config)).toEqual([{ routeId: 'gh', upstream: 'github.com' }]);
+  });
+
+  it('flags a route whose path is "/" — the same intent written out', () => {
+    const config = parseConfig([{ id: 'all', match: { path: '/' }, upstream: 'origin.com' }]);
+    expect(mirrorWarnings(config)).toEqual([{ routeId: 'all', upstream: 'origin.com' }]);
+  });
+
+  it('says nothing about a prefix route', () => {
+    // The judgement that keeps this advisory worth reading: an API gateway is
+    // not supposed to rewrite bodies, and a warning on every one of them is a
+    // warning operators stop seeing.
+    const config = parseConfig([
+      { id: 'api', match: { host: 'a.com', path: '/api' }, upstream: 'origin.com' },
+      { id: 'assets', match: { path: '/static' }, upstream: 'cdn.com' },
+    ]);
+    expect(mirrorWarnings(config)).toEqual([]);
+  });
+
+  it('says nothing once the route rewrites its body', () => {
+    const config = parseConfig([
+      { id: 'gh', match: { host: 'gh.example.com' }, upstream: 'github.com', bodyRewrite: {} },
+    ]);
+    expect(mirrorWarnings(config)).toEqual([]);
+  });
+
+  it('counts a bodyRewrite supplied by table defaults', () => {
+    // Reads the parsed document, so `defaults` are folded in exactly as the
+    // proxy will fold them. Checking the raw row would have warned about a route
+    // that does rewrite.
+    const config = parseConfig(
+      [{ id: 'gh', match: { host: 'gh.example.com' }, upstream: 'github.com' }],
+      { bodyRewrite: {} },
+    );
+    expect(mirrorWarnings(config)).toEqual([]);
+  });
+
+  it('says nothing when the route opened the section and turned rewriteLinks off', () => {
+    // Navigation lands in the same place, but somebody went in and decided this.
+    // The advisory is for the operator who never saw the switch.
+    const config = parseConfig([
+      {
+        id: 'gh',
+        match: { host: 'gh.example.com' },
+        upstream: 'github.com',
+        bodyRewrite: { rewriteLinks: false },
+      },
+    ]);
+    expect(mirrorWarnings(config)).toEqual([]);
+  });
+
+  it('reports the authority alone, without the upstream base path', () => {
+    const config = parseConfig([
+      { id: 'gh', match: { host: 'g.com' }, upstream: 'github.com/org' },
+    ]);
+    expect(mirrorWarnings(config)[0]?.upstream).toBe('github.com');
+  });
+
+  it('labels an id-less route by position, matching shadowWarnings', () => {
+    const config = parseConfig([{ match: { host: 'a.com' }, upstream: 'origin.com' }]);
+    expect(mirrorWarnings(config)[0]?.routeId).toBe('#0');
+  });
+
+  it('reaches the compile result, so preview and publish both carry it', () => {
+    const result = compileConfig(
+      [row('gh', { match: { host: 'gh.example.com' }, upstream: 'github.com' })],
+      undefined,
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error('expected ok');
+    expect(result.mirrorWarnings).toEqual([{ routeId: 'gh', upstream: 'github.com' }]);
   });
 });
 

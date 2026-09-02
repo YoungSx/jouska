@@ -735,9 +735,10 @@ what a screen for authoring `match.host` should show.
 ### Architecture notes
 
 - **Publish is the only KV write.** Editing routes or defaults only changes
-  D1; preview compiles the full document and reports issues, shadowed routes
-  and dangerous switches before anything reaches the proxy. Publishing with
-  dangerous switches requires an explicit `confirm`.
+  D1; preview compiles the full document and reports issues, shadowed routes,
+  whole-site routes that will not rewrite their links, and dangerous switches
+  before anything reaches the proxy. Publishing with dangerous switches requires
+  an explicit `confirm`.
 - **The proxy keeps winning merges.** The panel writes the same document shape
   `resolveConfig` reads, so `merge: 'byId'` with a code table continues to
   work: code wins ties, git stays the reviewable fallback.
