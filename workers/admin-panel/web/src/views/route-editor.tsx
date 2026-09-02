@@ -68,7 +68,7 @@ import {
   HTTP_METHODS,
   LIMITS,
   NUMERIC_BOUNDS,
-  RESERVED_UPSTREAM_HEADERS,
+  RESERVED_REQUEST_HEADERS,
   ROUTE_ID_PATTERN,
   SCHEME_DEFAULT,
 } from '@/lib/types';
@@ -535,7 +535,7 @@ const HeadersEditor = ({
   return (
     <div className="flex flex-col gap-2">
       {rows.map((row, index) => {
-        const reserved = RESERVED_UPSTREAM_HEADERS.has(row.name.trim().toLowerCase());
+        const reserved = RESERVED_REQUEST_HEADERS.has(row.name.trim().toLowerCase());
         return (
           <div key={index} className="flex items-center gap-2">
             <Input
@@ -947,7 +947,7 @@ export const RouteEditor = ({
   };
 
   const unknownKeys = Object.keys(definition).filter((key) => !FORM_COVERED_KEYS.includes(key));
-  const hasReservedHeader = reservedHeaderPresent(definition);
+  const reservedHeaders = reservedHeaderNames(definition);
 
   return (
     <Dialog
@@ -1335,7 +1335,7 @@ export const RouteEditor = ({
                 )}
               </FieldSet>
 
-              <FieldSet data-invalid={hasReservedHeader ? true : undefined}>
+              <FieldSet data-invalid={reservedHeaders.length > 0 ? true : undefined}>
                 <FieldLegend>{t.fields.sections.headers}</FieldLegend>
                 <FieldDescription>
                   <Hint text={t.fields.sections.headersHint} />
@@ -1350,9 +1350,9 @@ export const RouteEditor = ({
                     value={definition.upstreamHeaders}
                     onChange={(value) => setTopLevel('upstreamHeaders', value)}
                   />
-                  {hasReservedHeader && (
+                  {reservedHeaders.length > 0 && (
                     <FieldError>
-                      {`${t.fields.upstreamHeaders.name}: ${[...RESERVED_UPSTREAM_HEADERS].join(', ')}`}
+                      {t.fields.upstreamHeaders.reserved(reservedHeaders.join(', '))}
                     </FieldError>
                   )}
                 </Field>
@@ -1379,6 +1379,11 @@ export const RouteEditor = ({
                             {t.fields.rateLimit.help}
                           </dd>
                         )}
+                        {dangerousSubPaths(key, definition[key]).map((path) => (
+                          <dd key={path}>
+                            <DangerNote path={path} />
+                          </dd>
+                        ))}
                       </div>
                     ))}
                   </dl>
@@ -1460,11 +1465,31 @@ export const RouteEditor = ({
   );
 };
 
-/** upstreamHeaders 里是否出现 jouska 自己推导、schema 会拒绝的保留头名。 */
-const reservedHeaderPresent = (definition: RouteDefinition): boolean => {
-  const headers = definition.upstreamHeaders;
-  if (headers === undefined) {
-    return false;
+/**
+ * upstreamHeaders 里出现的保留头名 —— jouska 自己推导，或运行时掌管，schema 会拒。
+ *
+ * 只覆盖表单在编辑的这个字段。`requestHeaders` 走 JSON 视图，它的同类错误由服务端
+ * 预览报出来；把那份错误挂在这个控件下面只会指错地方。
+ */
+const reservedHeaderNames = (definition: RouteDefinition): string[] =>
+  Object.keys(definition.upstreamHeaders ?? {}).filter((name) =>
+    RESERVED_REQUEST_HEADERS.has(name.trim().toLowerCase()),
+  );
+
+/**
+ * 未覆盖字段里命中的危险子路径。
+ *
+ * 让 JSON 视图里手写的 `responseHeaders.set` 之类在表单视图也开口说话，而不是安静
+ * 地躺在一行值预览里 —— 表单不认识一个字段，不等于它不危险。
+ */
+const dangerousSubPaths = (key: string, value: unknown): string[] => {
+  if (DANGEROUS_PATHS.has(key)) {
+    return [key];
   }
-  return Object.keys(headers).some((name) => RESERVED_UPSTREAM_HEADERS.has(name.toLowerCase()));
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return [];
+  }
+  return Object.keys(value)
+    .map((child) => `${key}.${child}`)
+    .filter((path) => DANGEROUS_PATHS.has(path));
 };

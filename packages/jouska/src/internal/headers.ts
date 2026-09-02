@@ -7,6 +7,7 @@
  * every cookie.
  */
 
+import type { HeaderRulesConfig } from '../config.js';
 import { HOP_BY_HOP, stripConnectionNamed } from './hop.js';
 
 /**
@@ -272,4 +273,37 @@ export const stripBodyValidators = (headers: Headers): void => {
   // half-fixed: the proxy has already taken responsibility for the body's URLs.
   headers.delete('content-security-policy');
   headers.delete('content-security-policy-report-only');
+};
+
+/**
+ * Applies the operator's declarative response rules.
+ *
+ * Runs **last**, after every rewrite this module and the middleware perform, so a
+ * rule can override the proxy's own result. That is a deliberate trade-off with a
+ * sharp edge: `responseHeaders.set` can put an upstream URL back into `Location`
+ * and send the visitor off the proxy. It is documented in the README's header
+ * rules section and flagged by the admin panel rather than prevented here, because
+ * the alternative — running the operator's rules first — makes every one of them
+ * silently unreliable, which is worse for a value someone wrote on purpose.
+ *
+ * Deletion is refused by the schema for the headers the proxy rewrote, so a rule
+ * cannot make a redirect vanish or a login silently fail by tidying up.
+ *
+ * Deletions run before writes for the same reason as on the request side: the
+ * schema refuses a name in both, so the order is not observable, and "clear it,
+ * then write it" is the reading that survives if that relaxes.
+ */
+export const applyResponseHeaderRules = (
+  headers: Headers,
+  rules: HeaderRulesConfig | undefined,
+): void => {
+  if (rules === undefined) {
+    return;
+  }
+  for (const name of rules.remove) {
+    headers.delete(name);
+  }
+  for (const [name, value] of Object.entries(rules.set)) {
+    headers.set(name, value);
+  }
 };

@@ -44,6 +44,20 @@ export interface RateLimitRules {
   countPreflight?: boolean;
 }
 
+/** 一个方向上的声明式头规则：写哪些、删哪些。 */
+export interface HeaderRules {
+  set?: Record<string, string>;
+  remove?: string[];
+}
+
+export interface CacheRules {
+  enabled?: boolean;
+  methods?: ('GET' | 'HEAD')[];
+  ttlSeconds?: number;
+  staleWhileRevalidateSeconds?: number;
+  contentTypes?: string[];
+}
+
 /**
  * 一条路由的定义。
  *
@@ -66,7 +80,11 @@ export interface RouteDefinition {
   websocket?: boolean;
   blockCountries?: string[];
   allowCountries?: string[];
+  /** `requestHeaders.set` 的旧名；schema 把它折进前者，两处写同一个头名且值不同会被拒。 */
   upstreamHeaders?: Record<string, string>;
+  requestHeaders?: HeaderRules;
+  responseHeaders?: HeaderRules;
+  cache?: CacheRules;
   bodyRewrite?: BodyRewrite;
   cors?: CorsRules;
   ip?: IpRules;
@@ -197,6 +215,10 @@ export const DANGEROUS_PATHS = new Set([
   'ip.allow',
   'ip.deny',
   'upstreamHeaders',
+  'requestHeaders.set',
+  'requestHeaders.remove',
+  'responseHeaders.set',
+  'cache.contentTypes',
 ]);
 
 /** 危险字段的中文说明。服务端 reason 是英文，面板要用自己的语言说清后果。 */
@@ -213,12 +235,39 @@ export const DANGER_REASONS: Record<string, string> = {
   'ip.allow': 'allow 列表写错一个字符，就会放进本想排除的地址。',
   'ip.deny': 'deny 列表写错一个字符，就会挡掉正常的调用方。',
   upstreamHeaders: '这些头会原样发给上游。凭据类或身份伪装类的头写在这里等于交给第三方。',
+  'requestHeaders.set': '这些头会原样发给上游。凭据类或身份伪装类的头写在这里等于交给第三方。',
+  'requestHeaders.remove': '删掉 cookie 或 authorization，上游的会话和认证会静默失效。',
+  'responseHeaders.set':
+    '这些规则在代理改写之后跑，所以能把 Location 指回上游、能加回一条让改写后页面加载不了自己资源的 CSP、也能加回让客户端从自己缓存里取未改写正文的校验头。',
+  'cache.contentTypes':
+    '默认只缓存静态资源。把文档类型加进来，一个没带 cookie、也没标 private 的个性化页面就会被发给下一个访客。',
 };
 
-/** 保留的上游请求头：jouska 自己从请求推导，写了会被 schema 拒绝。 */
-export const RESERVED_UPSTREAM_HEADERS = new Set([
+/**
+ * 请求方向的保留头：写或删都会被 schema 拒绝。
+ *
+ * 三组，各有各的原因（详见 `packages/jouska/src/config.ts`）：jouska 自己从请求推导
+ * 的转发头；描述这一跳连接与分帧、由运行时掌管的传输头；以及 jouska 已经替你决定
+ * 的协商头 —— `accept-encoding` 被删掉才让改写看得见明文，WebSocket 握手头由
+ * `websocket` 开关决定。
+ */
+export const RESERVED_REQUEST_HEADERS = new Set([
   'host',
   'x-forwarded-host',
   'x-forwarded-proto',
   'x-forwarded-for',
+  'connection',
+  'keep-alive',
+  'proxy-authenticate',
+  'proxy-authorization',
+  'te',
+  'trailer',
+  'transfer-encoding',
+  'content-length',
+  'accept-encoding',
+  'upgrade',
+  'sec-websocket-key',
+  'sec-websocket-version',
+  'sec-websocket-protocol',
+  'sec-websocket-extensions',
 ]);

@@ -298,6 +298,51 @@ describe('dangerFlags', () => {
     ).not.toContain('cors.origins (absent)');
   });
 
+  it('flags both spellings of the injected request headers', () => {
+    // `upstreamHeaders` is an alias for `requestHeaders.set`; a warning on only
+    // one of them would be a warning an operator can route around by renaming.
+    const paths = dangerFlags({
+      match: { path: '/' },
+      upstream: 'a.com',
+      requestHeaders: { set: { 'x-key': 'v' }, remove: ['cookie'] },
+    }).map((f) => f.path);
+    expect(paths).toContain('requestHeaders.set');
+    expect(paths).toContain('requestHeaders.remove');
+    expect(dangerFlags({ requestHeaders: { set: { 'x-key': 'v' } } }).map((f) => f.path)).toEqual([
+      'requestHeaders.set',
+    ]);
+  });
+
+  it('flags writing response headers but not deleting them', () => {
+    // Deleting is already bounded by the schema, which refuses the headers the
+    // proxy depends on; writing is where the sharp edges are.
+    const paths = dangerFlags({
+      match: { path: '/' },
+      upstream: 'a.com',
+      responseHeaders: {
+        set: { 'content-security-policy': "default-src 'self'" },
+        remove: ['server'],
+      },
+    }).map((f) => f.path);
+    expect(paths).toContain('responseHeaders.set');
+    expect(paths).not.toContain('responseHeaders.remove');
+  });
+
+  it('flags a cache whose content types were widened, not one on its defaults', () => {
+    expect(
+      dangerFlags({ match: { path: '/' }, upstream: 'a.com', cache: { ttlSeconds: 300 } }).map(
+        (f) => f.path,
+      ),
+    ).not.toContain('cache.contentTypes');
+    expect(
+      dangerFlags({
+        match: { path: '/' },
+        upstream: 'a.com',
+        cache: { contentTypes: ['text/html'] },
+      }).map((f) => f.path),
+    ).toContain('cache.contentTypes');
+  });
+
   it('does not flag anything on a plain safe route', () => {
     const flags = dangerFlags({ match: { host: 'a.com' }, upstream: 'b.com' });
     expect(flags).toEqual([]);
