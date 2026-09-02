@@ -345,7 +345,12 @@ describe('access control', () => {
 
     const makeSigner = async () => {
       const pair = await crypto.subtle.generateKey(
-        { name: 'RSASSA-PKCS1-v1_5', modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: 'SHA-256' },
+        {
+          name: 'RSASSA-PKCS1-v1_5',
+          modulusLength: 2048,
+          publicExponent: new Uint8Array([1, 0, 1]),
+          hash: 'SHA-256',
+        },
         true,
         ['sign', 'verify'],
       );
@@ -389,10 +394,7 @@ describe('access control', () => {
     it('admits a valid token and reaches the upstream', async () => {
       const { jwk, sign } = await makeSigner();
       const { impl } = jwksFetch([jwk]);
-      const app = appWithAccess(
-        { cloudflare: { team: 'acme', audience: 'app-audience' } },
-        impl,
-      );
+      const app = appWithAccess({ cloudflare: { team: 'acme', audience: 'app-audience' } }, impl);
       const res = await app.request(
         new Request('https://p.dev/x', {
           headers: { 'cf-access-jwt-assertion': await sign(validClaims()) },
@@ -420,14 +422,14 @@ describe('access control', () => {
     it('refuses an expired token with 401', async () => {
       const { jwk, sign } = await makeSigner();
       const { impl } = jwksFetch([jwk]);
-      const app = appWithAccess(
-        { cloudflare: { team: 'acme', audience: 'app-audience' } },
-        impl,
-      );
+      const app = appWithAccess({ cloudflare: { team: 'acme', audience: 'app-audience' } }, impl);
       const res = await app.request(
         new Request('https://p.dev/x', {
           headers: {
-            'cf-access-jwt-assertion': await sign({ ...validClaims(), exp: Math.floor(Date.now() / 1000) - 10 }),
+            'cf-access-jwt-assertion': await sign({
+              ...validClaims(),
+              exp: Math.floor(Date.now() / 1000) - 10,
+            }),
           },
         }),
       );
@@ -436,13 +438,10 @@ describe('access control', () => {
     });
 
     it('refuses a token signed by another key with 401', async () => {
-      const { jwk, sign } = await makeSigner();
+      const { jwk } = await makeSigner();
       const impostor = await makeSigner();
       const { impl } = jwksFetch([jwk]);
-      const app = appWithAccess(
-        { cloudflare: { team: 'acme', audience: 'app-audience' } },
-        impl,
-      );
+      const app = appWithAccess({ cloudflare: { team: 'acme', audience: 'app-audience' } }, impl);
       const res = await app.request(
         new Request('https://p.dev/x', {
           headers: { 'cf-access-jwt-assertion': await impostor.sign(validClaims()) },
@@ -455,13 +454,12 @@ describe('access control', () => {
     it('refuses a token for a different audience with 403', async () => {
       const { jwk, sign } = await makeSigner();
       const { impl } = jwksFetch([jwk]);
-      const app = appWithAccess(
-        { cloudflare: { team: 'acme', audience: 'app-audience' } },
-        impl,
-      );
+      const app = appWithAccess({ cloudflare: { team: 'acme', audience: 'app-audience' } }, impl);
       const res = await app.request(
         new Request('https://p.dev/x', {
-          headers: { 'cf-access-jwt-assertion': await sign({ ...validClaims(), aud: 'other-app' }) },
+          headers: {
+            'cf-access-jwt-assertion': await sign({ ...validClaims(), aud: 'other-app' }),
+          },
         }),
       );
       expect(res.status).toBe(403);
@@ -484,7 +482,10 @@ describe('access control', () => {
       const res = await app.request(
         new Request('https://p.dev/x', {
           headers: {
-            'cf-access-jwt-assertion': await sign({ ...validClaims(), email: 'mallory@example.com' }),
+            'cf-access-jwt-assertion': await sign({
+              ...validClaims(),
+              email: 'mallory@example.com',
+            }),
           },
         }),
       );
@@ -499,10 +500,7 @@ describe('access control', () => {
         }
         return new Response('upstream reached');
       };
-      const app = appWithAccess(
-        { cloudflare: { team: 'acme', audience: 'app-audience' } },
-        impl,
-      );
+      const app = appWithAccess({ cloudflare: { team: 'acme', audience: 'app-audience' } }, impl);
       const res = await app.request(
         new Request('https://p.dev/x', {
           headers: { 'cf-access-jwt-assertion': await (await makeSigner()).sign(validClaims()) },
@@ -515,10 +513,7 @@ describe('access control', () => {
     it('hits the certs endpoint once for several requests, thanks to the cache', async () => {
       const { jwk, sign } = await makeSigner();
       const { impl, certsCalls } = jwksFetch([jwk]);
-      const app = appWithAccess(
-        { cloudflare: { team: 'acme', audience: 'app-audience' } },
-        impl,
-      );
+      const app = appWithAccess({ cloudflare: { team: 'acme', audience: 'app-audience' } }, impl);
       const token = await sign(validClaims());
       for (let i = 0; i < 3; i += 1) {
         const res = await app.request(

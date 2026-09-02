@@ -199,7 +199,9 @@ describe('guard config', () => {
   it('requires an audience when Cloudflare Access is configured', () => {
     expect(() =>
       defineConfig({
-        routes: [{ match: { path: '/a' }, upstream: 'o.test', access: { cloudflare: { team: 'acme' } } }],
+        routes: [
+          { match: { path: '/a' }, upstream: 'o.test', access: { cloudflare: { team: 'acme' } } },
+        ],
       }),
     ).toThrow();
   });

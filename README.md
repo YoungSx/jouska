@@ -65,41 +65,41 @@ Routes are evaluated in order and the first match wins.
 
 ## Route options
 
-| Option                 | Default  | Meaning                                                               |
-| ---------------------- | -------- | --------------------------------------------------------------------- |
-| `id`                   | —        | Stable handle. Used for `byId` merges and rate-limit buckets.         |
-| `match.host`           | —        | Host to match. `*.example.com` matches subdomains, not the apex.      |
-| `match.path`           | —        | Path prefix, matched on segment boundaries.                           |
-| `match.methods`        | all      | Restrict the route to specific methods.                               |
-| `match.headers`        | `[]`     | Request-header conditions; see Match conditions below.                |
-| `match.query`          | `[]`     | Query-parameter conditions; see Match conditions below.               |
-| `match.cookies`        | `[]`     | Cookie conditions; see Match conditions below.                        |
-| `upstream`             | —        | `host`, `host:port` or `host/base/path`. No scheme.                   |
-| `upstreams`            | —        | Ordered candidates for failover; see Failover and traffic splitting.  |
-| `trafficSplit`         | —        | Weighted split entries; see Failover and traffic splitting.           |
-| `failover`             | see text | Switch policy and attempt cap for the multi-candidate forms.          |
-| `stickyBy`             | —        | `'cookie'`: split-assigned callers keep their upstream via a cookie.  |
-| `scheme`               | `https`  | Scheme used to reach the upstream.                                    |
-| `allowPrivateUpstream` | off      | Permit a loopback, private or metadata upstream.                      |
-| `stripPrefix`          | `false`  | Remove the matched prefix before forwarding.                          |
-| `timeoutMs`            | `10000`  | Per-attempt upstream deadline.                                        |
-| `totalTimeoutMs`       | `30000`  | Ceiling on all attempts combined, including backoff.                  |
-| `retries`              | `0`      | Extra attempts. Only idempotent methods retry.                        |
-| `retryBackoffMs`       | `100`    | Delay before the first retry, doubled for each subsequent one.        |
-| `rewriteHeaders`       | `true`   | Rewrite `Location`, `Refresh` and `Set-Cookie` onto the proxy.        |
-| `manualRedirect`       | `true`   | Ask for the redirect instead of following it upstream.                |
-| `websocket`            | `true`   | Forward WebSocket upgrades.                                           |
-| `bodyRewrite`          | off      | Streaming body rewriting; see below.                                  |
-| `blockCountries`       | `[]`     | ISO 3166-1 alpha-2 codes refused with 403.                            |
-| `allowCountries`       | —        | When set, only these are admitted. Fails closed on an unknown origin. |
-| `upstreamHeaders`      | `{}`     | Alias for `requestHeaders.set`; see Header rules.                     |
-| `requestHeaders`       | off      | Headers to write or delete on the way upstream; see Header rules.     |
-| `responseHeaders`      | off      | Headers to write or delete on the way back; see Header rules.         |
-| `cache`                | off      | Upstream response caching; see Response caching.                      |
-| `requestPolicy`        | off      | Method allow-list and body size cap; see Guards.                      |
-| `cors`                 | off      | CORS handling; see Guards.                                            |
-| `ip`                   | off      | IP allow/deny rules; see Guards.                                      |
-| `rateLimit`            | off      | Rate limiting via the native binding; see Guards.                     |
+| Option                 | Default  | Meaning                                                                    |
+| ---------------------- | -------- | -------------------------------------------------------------------------- |
+| `id`                   | —        | Stable handle. Used for `byId` merges and rate-limit buckets.              |
+| `match.host`           | —        | Host to match. `*.example.com` matches subdomains, not the apex.           |
+| `match.path`           | —        | Path prefix, matched on segment boundaries.                                |
+| `match.methods`        | all      | Restrict the route to specific methods.                                    |
+| `match.headers`        | `[]`     | Request-header conditions; see Match conditions below.                     |
+| `match.query`          | `[]`     | Query-parameter conditions; see Match conditions below.                    |
+| `match.cookies`        | `[]`     | Cookie conditions; see Match conditions below.                             |
+| `upstream`             | —        | `host`, `host:port` or `host/base/path`. No scheme.                        |
+| `upstreams`            | —        | Ordered candidates for failover; see Failover and traffic splitting.       |
+| `trafficSplit`         | —        | Weighted split entries; see Failover and traffic splitting.                |
+| `failover`             | see text | Switch policy and attempt cap for the multi-candidate forms.               |
+| `stickyBy`             | —        | `'cookie'`: split-assigned callers keep their upstream via a cookie.       |
+| `scheme`               | `https`  | Scheme used to reach the upstream.                                         |
+| `allowPrivateUpstream` | off      | Permit a loopback, private or metadata upstream.                           |
+| `stripPrefix`          | `false`  | Remove the matched prefix before forwarding.                               |
+| `timeoutMs`            | `10000`  | Per-attempt upstream deadline.                                             |
+| `totalTimeoutMs`       | `30000`  | Ceiling on all attempts combined, including backoff.                       |
+| `retries`              | `0`      | Extra attempts. Only idempotent methods retry.                             |
+| `retryBackoffMs`       | `100`    | Delay before the first retry, doubled for each subsequent one.             |
+| `rewriteHeaders`       | `true`   | Rewrite `Location`, `Refresh` and `Set-Cookie` onto the proxy.             |
+| `manualRedirect`       | `true`   | Ask for the redirect instead of following it upstream.                     |
+| `websocket`            | `true`   | Forward WebSocket upgrades.                                                |
+| `bodyRewrite`          | off      | Streaming body rewriting; see below.                                       |
+| `blockCountries`       | `[]`     | ISO 3166-1 alpha-2 codes refused with 403.                                 |
+| `allowCountries`       | —        | When set, only these are admitted. Fails closed on an unknown origin.      |
+| `upstreamHeaders`      | `{}`     | Alias for `requestHeaders.set`; see Header rules.                          |
+| `requestHeaders`       | off      | Headers to write or delete on the way upstream; see Header rules.          |
+| `responseHeaders`      | off      | Headers to write or delete on the way back; see Header rules.              |
+| `cache`                | off      | Upstream response caching; see Response caching.                           |
+| `requestPolicy`        | off      | Method allow-list and body size cap; see Guards.                           |
+| `cors`                 | off      | CORS handling; see Guards.                                                 |
+| `ip`                   | off      | IP allow/deny rules; see Guards.                                           |
+| `rateLimit`            | off      | Rate limiting via the native binding; see Guards.                          |
 | `access`               | off      | Route-level identity checks (Cloudflare Access JWT, API keys); see Guards. |
 
 A `defaults` block at the top of the table supplies any of the behavioural
@@ -747,10 +747,10 @@ panel stores its own MCP tokens.
 Every refusal is final — the request never reaches the upstream — and the status
 says which thing failed:
 
-| Status | Meaning                                                        |
-| ------ | -------------------------------------------------------------- |
-| `401`  | No usable credential: missing, malformed, expired, wrong key.  |
-| `403`  | A valid credential that does not grant this route (`aud`, email). |
+| Status | Meaning                                                               |
+| ------ | --------------------------------------------------------------------- |
+| `401`  | No usable credential: missing, malformed, expired, wrong key.         |
+| `403`  | A valid credential that does not grant this route (`aud`, email).     |
 | `503`  | The verification material (JWKS) could not be obtained — fail closed. |
 
 Credentials are length-capped before any parsing or hashing (512 characters for
