@@ -185,6 +185,7 @@ const DocumentDetails = ({ doc }: { readonly doc: unknown }) => (
 const PreviewOk = ({ preview }: { readonly preview: PreviewResult }) => {
   const dangers = Object.entries(preview.dangers ?? {});
   const shadowWarnings = preview.shadowWarnings ?? [];
+  const mirrorWarnings = preview.mirrorWarnings ?? [];
   // ok 的响应按契约不该带 issues；带着就照实列出来，而不是静默吞掉。
   const issues = preview.issues ?? [];
 
@@ -214,6 +215,25 @@ const PreviewOk = ({ preview }: { readonly preview: PreviewResult }) => {
               </li>
             ))}
           </ul>
+        </section>
+      )}
+
+      {/*
+        整站代理没开改写。放在遮蔽之后：遮蔽是「这条路由根本不跑」，这里是「路由在
+        跑，但访客一点链接就走了」—— 后者按下发布仍然合法，所以只提示，不拦。
+      */}
+      {mirrorWarnings.length > 0 && (
+        <section className="flex flex-col gap-2">
+          <SectionHeader title={t.preview.mirrorTitle} hint={t.preview.mirrorHint} />
+          <ul className="flex flex-col gap-2">
+            {mirrorWarnings.map((warning) => (
+              <li key={warning.routeId}>
+                <p className="text-sm">{t.preview.mirrorLine(warning.routeId, warning.upstream)}</p>
+              </li>
+            ))}
+          </ul>
+          {/* 文案如实：开了也有覆盖不到的地方，别让提示变成一句承诺。 */}
+          <p className="text-muted-foreground text-xs">{t.preview.mirrorScope}</p>
         </section>
       )}
 

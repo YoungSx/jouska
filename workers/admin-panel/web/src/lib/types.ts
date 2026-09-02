@@ -88,6 +88,17 @@ export interface ShadowWarning {
   readonly probe: string;
 }
 
+/**
+ * 整站镜像提示：这条路由把整站代理过来，但没开正文改写。
+ *
+ * 来自服务端 mirror.ts。它是提示不是错误 —— 整站不改写完全合法（纯 API 网关、
+ * 只做资源代理），所以发布从不因它被拦。
+ */
+export interface MirrorWarning {
+  readonly routeId: string;
+  readonly upstream: string;
+}
+
 /** 危险字段，来自服务端 danger.ts。`path` 是点号路径，reason 是英文原文。 */
 export interface FieldRisk {
   readonly path: string;
@@ -111,6 +122,18 @@ export const BOOLEAN_DEFAULTS = {
   rewriteHeaders: true,
   manualRedirect: true,
   websocket: true,
+} as const;
+
+/**
+ * bodyRewrite 子段里 boolean 字段的 schema 默认值。
+ *
+ * 两个都默认 true：`bodyRewrite: {}` 就已经在改链接和样式了。所以这两个开关是
+ * 「关掉」用的，与顶层那批「打开」用的开关方向相反 —— 表单上要显示默认值，不然
+ * 没人记得空对象到底做了什么。
+ */
+export const BODY_REWRITE_BOOLEAN_DEFAULTS = {
+  rewriteLinks: true,
+  rewriteStyles: true,
 } as const;
 
 export const SCHEME_DEFAULT = 'https' as const;

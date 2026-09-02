@@ -63,7 +63,7 @@ jouska 是 Hono 上的反向代理中间件，运行在 Cloudflare Workers。管
 
 - 路由 CRUD、顺序调整（顺序即优先级，首个匹配胜出）、启用/停用。
 - 表级 `defaults` 块，逐字段填补空缺。
-- 发布预览：编译 + 校验 + 遮蔽检测 + 危险开关分类，不写 KV。
+- 发布预览：编译 + 校验 + 遮蔽检测 + 整站镜像提示 + 危险开关分类，不写 KV。
 - 发布：三重闸门（必须编译通过、危险开关需显式 `confirm`、全部进审计日志），一次发布恰好一次 KV 写，`meta` 带 revision/操作者/备注。
 - 发布历史与回滚：每次发布存一份快照（含 `defaults` 与全部启用路由，滚动保留 50 版），时间轴可按 revision 浏览、任选两版做服务端字段级 diff；回滚把目标快照恢复进草稿并复用同一条发布管道——它是发布成新 revision，不是倒带计数，`rollbackOf` 记录出处；目标快照先过 schema 校验、再重过全部发布闸门。历史功能之前的旧发布以审计日志回填为「无快照」条目，能看、不能比。
 - 审计日志，最多 200 条每页。
@@ -97,6 +97,7 @@ jouska 是 Hono 上的反向代理中间件，运行在 Cloudflare Workers。管
 - `packages/jouska/src/config.ts`：权威 zod schema，含归一化规则与安全注释。
 - `workers/admin-panel/src/danger.ts`：8 条危险字段分类，每条带 level 与人类可读的 reason。
 - `workers/admin-panel/src/shadow.ts`：遮蔽检测，产出 `shadowedId` / `byId` / `probe`。
+- `workers/admin-panel/src/mirror.ts`：整站镜像提示，产出 `routeId` / `upstream`；判据只覆盖整站路由，且是提示不是错误。
 - `workers/admin-panel/migrations/`：`0001_init.sql`、`0002_tables.sql`、`0003_revisions.sql` 的真实表结构。
 - `workers/admin-panel/src/cloudflare.ts`：域名发现的三个来源与它们各自的失败模式。
 - `workers/admin-panel/src/recovery.ts`：恢复令牌的窗口、过期与一次性消费语义。

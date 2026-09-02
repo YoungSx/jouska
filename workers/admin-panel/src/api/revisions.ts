@@ -327,5 +327,8 @@ revisionRoutes.post('/revisions/rollback', requireAdmin, async (c) => {
     sourceRevision,
     routeCount: result.routeCount,
     shadowWarnings: result.shadowWarnings,
+    // Rolling back to a snapshot can restore a whole-site route that never had
+    // body rewriting, so the advisory travels with the rollback too.
+    mirrorWarnings: result.mirrorWarnings,
   });
 });

@@ -13,7 +13,7 @@
 
 import * as React from 'react';
 import { Autocomplete } from '@base-ui/react';
-import { PlusIcon, SaveIcon, Trash2Icon, TriangleAlertIcon } from 'lucide-react';
+import { InfoIcon, PlusIcon, SaveIcon, Trash2Icon, TriangleAlertIcon } from 'lucide-react';
 import { toast } from 'sonner';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
@@ -60,6 +60,7 @@ import type { HostBinding } from '@/lib/api';
 import { jsonByteLength, parseList, stableStringify } from '@/lib/format';
 import { t } from '@/lib/messages';
 import {
+  BODY_REWRITE_BOOLEAN_DEFAULTS,
   BOOLEAN_DEFAULTS,
   DANGEROUS_PATHS,
   DANGER_REASONS,
@@ -91,6 +92,31 @@ const NUMERIC_FIELDS: Record<
 
 const BOOLEAN_KEYS = ['stripPrefix', 'rewriteHeaders', 'manualRedirect', 'websocket'] as const;
 type BooleanKey = (typeof BOOLEAN_KEYS)[number];
+
+/**
+ * bodyRewrite 子段里的两个开关。
+ *
+ * 单独列出来是因为方向相反：这两个默认 true，所以它们是「关掉」用的。顶层那批默认
+ * false 的开关是「打开」用的，混在一起会让默认值提示失去意义。
+ */
+const BODY_REWRITE_BOOLEAN_KEYS = ['rewriteLinks', 'rewriteStyles'] as const;
+type BodyRewriteBooleanKey = (typeof BODY_REWRITE_BOOLEAN_KEYS)[number];
+
+const BODY_REWRITE_BOOLEAN_FIELDS: Record<
+  BodyRewriteBooleanKey,
+  { readonly id: string; readonly label: string; readonly help: string }
+> = {
+  rewriteLinks: {
+    id: 'route-editor-body-rewrite-links',
+    label: t.fields.bodyRewrite.rewriteLinks,
+    help: t.fields.bodyRewrite.rewriteLinksHelp,
+  },
+  rewriteStyles: {
+    id: 'route-editor-body-rewrite-styles',
+    label: t.fields.bodyRewrite.rewriteStyles,
+    help: t.fields.bodyRewrite.rewriteStylesHelp,
+  },
+};
 
 const BOOLEAN_FIELDS: Record<
   BooleanKey,
@@ -162,6 +188,27 @@ const DangerNote = ({ path }: { readonly path: string }) => {
     </Alert>
   );
 };
+
+/**
+ * 打开正文改写之后立刻要看见的两件事：代价，与覆盖不到的地方。
+ *
+ * 不是 DangerNote —— 它不需要发布时确认，配置本身也没有危险。但也不能只当一行小
+ * 字：改写会静默剥掉上游的验证器和 CSP，而「开了就全都留在代理上」是不成立的，两
+ * 件事都得在按下开关的那一刻摊开，而不是等页面出问题再回来查。
+ */
+const RewriteNote = () => (
+  <Alert>
+    <InfoIcon />
+    <AlertDescription className="flex flex-col gap-1">
+      <span>
+        <Hint text={t.fields.bodyRewrite.cost} />
+      </span>
+      <span>
+        <Hint text={t.fields.bodyRewrite.scope} />
+      </span>
+    </AlertDescription>
+  </Alert>
+);
 
 /** 表单未覆盖字段的值预览：只求认得出是什么，不求完整。 */
 const previewValue = (value: unknown): string => {
@@ -802,6 +849,22 @@ export const RouteEditor = ({
     return typeof value === 'boolean' ? value : BOOLEAN_DEFAULTS[key];
   };
 
+  /**
+   * bodyRewrite 子段里的布尔。与 setBoolean 同样的「等于默认值不落键」语义，但
+   * 不能复用它：段壳必须留下来，删到空对象就等于把整个改写关掉了。
+   */
+  const setBodyRewriteBoolean = (key: BodyRewriteBooleanKey, checked: boolean) =>
+    setSectionKey(
+      'bodyRewrite',
+      key,
+      checked === BODY_REWRITE_BOOLEAN_DEFAULTS[key] ? undefined : checked,
+    );
+
+  const bodyRewriteBoolValue = (key: BodyRewriteBooleanKey): boolean => {
+    const value = definition.bodyRewrite?.[key];
+    return typeof value === 'boolean' ? value : BODY_REWRITE_BOOLEAN_DEFAULTS[key];
+  };
+
   /* ---------- 视图与保存 ---------- */
 
   const handleTabChange = (nextTab: string) => {
@@ -1137,6 +1200,20 @@ export const RouteEditor = ({
 
                 {definition.bodyRewrite !== undefined && (
                   <>
+                    <RewriteNote />
+                    {BODY_REWRITE_BOOLEAN_KEYS.map((key) => (
+                      <SwitchProperty
+                        key={key}
+                        id={BODY_REWRITE_BOOLEAN_FIELDS[key].id}
+                        label={BODY_REWRITE_BOOLEAN_FIELDS[key].label}
+                        hint={BODY_REWRITE_BOOLEAN_FIELDS[key].help}
+                        defaultNote={t.common.defaultValue(
+                          String(BODY_REWRITE_BOOLEAN_DEFAULTS[key]),
+                        )}
+                        checked={bodyRewriteBoolValue(key)}
+                        onCheckedChange={(checked) => setBodyRewriteBoolean(key, checked)}
+                      />
+                    ))}
                     <ListProperty
                       id="route-editor-body-rewrite-content-types"
                       label={t.fields.bodyRewrite.contentTypes}

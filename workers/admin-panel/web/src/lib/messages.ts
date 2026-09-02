@@ -395,12 +395,28 @@ export const t = {
     },
     bodyRewrite: {
       label: '改写响应体',
-      help: '流式改写 HTML 里的链接，让站内导航留在代理上。开启后需要指定生效的 content-type。',
+      /**
+       * 这里原来写着「开启后需要指定生效的 content-type」，是错的：`contentTypes`
+       * 的 schema 默认值就是 `['text/html']`，开关一开就够用。那句话让人以为不填
+       * 就不生效，于是要么不敢开，要么去手填一个更宽的列表。
+       */
+      help: '流式改写 HTML 里的链接，让站内导航留在代理上。默认只对 `text/html` 生效。',
       enable: '开启响应体改写',
+      /** 打开之后立刻要看见的两件事：代价，和覆盖不到的地方。都是静默发生的。 */
+      cost: '改写会剥掉上游的 `ETag`、`Last-Modified` 和 CSP —— 客户端缓存和上游的安全头都会跟着降级。',
+      scope:
+        '只覆盖上游 HTML 里的 URL 属性和 CSS 的 `url()`。JS 在运行时拼出来的地址、跨到另一个注册域的资源（比如 `githubassets.com`），都改不到。',
+      rewriteLinks: '改写链接',
+      rewriteLinksHelp:
+        '把指向上游及其子域的绝对地址换成代理自己的域名。关掉之后这一段只做字面替换。',
+      rewriteStyles: '改写样式里的地址',
+      rewriteStylesHelp:
+        '`<style>` 块、行内 `style`、以及 `<meta http-equiv="refresh">` 里的地址。关掉之后 CSS 里的背景图仍然从上游加载。',
       contentTypes: '生效的 content-type',
-      contentTypesHelp: '列表写宽了会把非文本响应改写成乱码。',
+      contentTypesHelp: '留空按默认的 `text/html`。列表写宽了会把非文本响应改写成乱码。',
       fallbackCharset: '兜底字符集',
-      fallbackCharsetHelp: '响应没声明字符集时按这个解码。猜错比不改写更糟。',
+      fallbackCharsetHelp:
+        '响应没声明字符集、或者声明了一个这个运行时解不了的，就按这个解码。猜错比不改写更糟。',
     },
     blockCountries: {
       label: '拒绝这些国家',
@@ -513,6 +529,13 @@ export const t = {
     shadowHint: '顺序在前的路由已经把这些流量收走了，被遮蔽的那条永远不会执行。',
     shadowLine: (shadowed: string, by: string) => `${shadowed} 收不到流量，被 ${by} 抢先匹配`,
     shadowProbe: (probe: string) => `证据：${probe}`,
+    mirrorTitle: '整站代理，但没开正文改写',
+    mirrorHint:
+      '转发没坏，是改写没开：上游 HTML 里的绝对链接会把访客直接带回上游。要留住站内导航，去那条路由的「响应改写」里打开「改写响应体」。',
+    mirrorLine: (routeId: string, upstream: string) =>
+      `${routeId} 把整站代理过来，页面里指向 ${upstream} 的绝对链接会把访客带走`,
+    mirrorScope:
+      '打开也不等于全都留得住：改写只覆盖服务端 HTML 里的 URL 与 CSS 的 url()，JS 运行时拼出来的地址、跨到另一个注册域的资源都不在范围内。',
     dangerTitle: '危险开关',
     dangerHint: '这些字段都有正当用途，但发布时需要你亲手确认一次。',
     dangerHigh: '高',
