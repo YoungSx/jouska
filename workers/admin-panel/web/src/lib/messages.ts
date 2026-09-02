@@ -524,8 +524,7 @@ export const t = {
       copyRequestHeaders: '抄给鉴权端点的请求头',
       copyRequestHeadersHelp: '留空按默认的 `authorization, cookie`。鉴权端点靠它们认人。',
       copyResponseHeaders: '从鉴权响应抄进上游请求的头',
-      copyResponseHeadersHelp:
-        '比如 `x-user-id`——鉴权端点认完人之后，用这些头告诉上游「是谁」。',
+      copyResponseHeadersHelp: '比如 `x-user-id`——鉴权端点认完人之后，用这些头告诉上游「是谁」。',
       timeoutMs: '鉴权请求超时',
       timeoutMsHelp: '超过就按端点不可用处理。留空按默认的 2000 毫秒。',
       failOpen: '端点不可达时放行',
