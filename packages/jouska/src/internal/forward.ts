@@ -19,6 +19,10 @@ export const isRetryable = (method: string): boolean => IDEMPOTENT.has(method.to
  * Order matters: the route's own rules are applied first, then the forwarding
  * headers overwrite them, so a rule cannot forge `Host` or `X-Forwarded-For`. The
  * schema also refuses those names outright, making this belt and braces.
+ *
+ * Built per candidate, not once for the list: `host` names the target, so
+ * forwarding a rebuilt header set at a different origin would announce the
+ * wrong host to every upstream after the first.
  */
 export const buildUpstreamHeaders = (
   request: Request,
@@ -93,7 +97,11 @@ export const isWebSocketUpgrade = (request: Request): boolean =>
 
 export interface ForwardOptions {
   route: Route;
-  target: URL;
+  /**
+   * Ordered candidates: the first is the primary, the rest are backups the
+   * failover walk may reach. A single-element list is the plain case.
+   */
+  targets: readonly URL[];
   request: Request;
   /** Parsed request URL, so callers that already have one need not re-parse. */
   requestUrl: URL;
@@ -110,6 +118,16 @@ export interface ForwardOptions {
   detached?: boolean;
 }
 
+export interface ForwardResult {
+  response: Response;
+  /**
+   * The candidate that produced `response`. Response rewrites and failure
+   * reports follow whichever candidate actually answered, not the one that
+   * started the walk.
+   */
+  target: URL;
+}
+
 /** Raised when the combined budget for all attempts is spent. */
 export class TotalTimeoutError extends Error {
   override readonly name = 'TotalTimeoutError';
@@ -118,23 +136,55 @@ export class TotalTimeoutError extends Error {
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
 /**
- * Forwards a request upstream with a per-attempt deadline, a total deadline and
- * bounded retries with backoff.
+ * The attempt plan: which targets are tried, in order.
  *
- * Retrying requires both an idempotent method and no request body. The method
- * alone is not enough: `OPTIONS` and `TRACE` are idempotent and may still carry
- * one, and a body stream is consumed by the first attempt.
+ * A single target keeps the classic semantics — an idempotent, bodyless request
+ * is retried against the same upstream `retries` times, whatever went wrong.
+ * Several targets switch to failover semantics: each candidate is tried once
+ * (listing the same upstream twice is how a same-upstream retry is spelled in a
+ * failover list), capped by the policy's `maxAttempts`.
+ *
+ * A body or a WebSocket handshake gets one attempt regardless: the body stream
+ * is consumed by the first attempt, and a socket is not replayable at all.
+ */
+const attemptPlan = (route: Route, targets: readonly URL[], walkable: boolean): URL[] => {
+  if (!walkable) {
+    return [targets[0]!];
+  }
+  if (targets.length > 1) {
+    return targets.slice(
+      0,
+      Math.min(route.failover?.maxAttempts ?? targets.length, targets.length),
+    );
+  }
+  return Array.from({ length: route.retries + 1 }, () => targets[0]!);
+};
+
+/**
+ * Forwards a request upstream with a per-attempt deadline, a total deadline and
+ * bounded retries — against one upstream, or walked across several in order.
+ *
+ * Failover is strictly sequential: the next candidate only sees the request
+ * after the previous one failed with a condition the route's `failover.on`
+ * names, and only while the request is still replayable. There is no racing —
+ * Workers allows 6 concurrent outbound connections per request, and firing N
+ * upstreams at once spends that budget on duplicates of the same request.
+ *
+ * An HTTP 5xx is a normal response and by default ends the walk; adding `'5xx'`
+ * to `failover.on` opts in, and only while the request can still be replayed.
+ * The latest 5xx seen is kept as a fallback, body included, so a walk that ends
+ * without any candidate answering still returns a real upstream verdict rather
+ * than inventing a 502 for one.
  */
 export const forward = async ({
   route,
-  target,
+  targets,
   request,
   requestUrl,
   fetchImpl,
   detached = false,
-}: ForwardOptions): Promise<Response> => {
+}: ForwardOptions): Promise<ForwardResult> => {
   const fetcher = fetchImpl ?? fetch;
-  const headers = buildUpstreamHeaders(request, route, target, requestUrl);
   const upgrade = route.websocket && isWebSocketUpgrade(request);
   // A body rules out replay whatever the method says. `OPTIONS` and `TRACE` are
   // idempotent yet may carry one, and the first attempt consumes the stream: the
@@ -144,16 +194,28 @@ export const forward = async ({
   // replaced the genuine network error with that TypeError, because the retry
   // loop rethrows whatever failed last.
   const replayable = isRetryable(request.method) && request.body === null;
-  const attempts = replayable && !upgrade ? route.retries + 1 : 1;
+  const walkable = replayable && !upgrade;
+  const plan = attemptPlan(route, targets, walkable);
+  const policy = route.failover?.on;
+  // The switch conditions only govern movement between distinct candidates. A
+  // single-upstream route has no `failover` policy at all, and its retries
+  // repeat the same upstream on any failure — the behaviour this file has
+  // always had.
+  const switching = walkable && targets.length > 1;
 
   const startedAt = Date.now();
   const remaining = (): number => route.totalTimeoutMs - (Date.now() - startedAt);
   let lastError: unknown;
+  let held: { response: Response; target: URL } | undefined;
 
-  for (let attempt = 0; attempt < attempts; attempt += 1) {
-    if (attempt > 0) {
-      // Exponential backoff. Retrying immediately was measured at a 0–1ms gap,
-      // which is long enough for nothing: whatever failed is still failing.
+  for (let attempt = 0; attempt < plan.length; attempt += 1) {
+    const target = plan[attempt]!;
+    if (attempt > 0 && target.host === plan[attempt - 1]!.host) {
+      // Exponential backoff, and only when the previous attempt hit the same
+      // origin: that is the case where "whatever failed is still failing" was
+      // measured at a 0–1ms retry gap. A different candidate is a different
+      // origin with a different failure — waiting before trying it only adds
+      // latency to the recovery.
       const delay = route.retryBackoffMs * 2 ** (attempt - 1);
       if (delay >= remaining()) {
         break;
@@ -172,12 +234,13 @@ export const forward = async ({
       break;
     }
 
+    const headers = buildUpstreamHeaders(request, route, target, requestUrl);
     try {
       // Attempts are deliberately sequential: running them in parallel would
       // fire N simultaneous upstream requests, which is both wasteful and
       // counter to the 6-connection-per-request cap.
       // oxlint-disable-next-line no-await-in-loop
-      return await attemptFetch({
+      const response = await attemptFetch({
         request,
         target,
         headers,
@@ -187,17 +250,46 @@ export const forward = async ({
         fetcher,
         detached,
       });
+      if (
+        switching &&
+        policy?.includes('5xx') === true &&
+        response.status >= 500 &&
+        response.status <= 599
+      ) {
+        // Keep only the latest 5xx: if every candidate fails this way, the last
+        // one is the real upstream verdict the client should see, body and all.
+        // At most one stream is held during the walk, which totalTimeoutMs
+        // bounds; the one it supersedes is released rather than leaked.
+        held?.response.body?.cancel();
+        held = { response, target };
+        continue;
+      }
+      // A candidate answered outside the held 5xx: the walk ends here, and the
+      // held stream — never going to be read — has to be released before its
+      // upstream connection sits idle until garbage collection.
+      held?.response.body?.cancel();
+      return { response, target };
     } catch (error) {
       lastError = error;
       // The client hanging up is not a fault to retry: nobody is waiting.
       if (error instanceof Error && error.name === 'AbortError') {
         break;
       }
+      if (!switching) {
+        // Same-upstream retries: every failure is worth another attempt, the
+        // behaviour this loop had before failover existed.
+        continue;
+      }
+      const condition =
+        error instanceof Error && error.name === 'TimeoutError' ? 'timeout' : 'unreachable';
+      if (!policy?.includes(condition)) {
+        break;
+      }
     }
   }
-  // Note: only network failures and timeouts throw. An HTTP 5xx from the
-  // upstream is a normal Response and is never retried — replaying it would
-  // pile load onto a struggling origin for no expected benefit.
+  if (held !== undefined) {
+    return held;
+  }
   throw lastError;
 };
 

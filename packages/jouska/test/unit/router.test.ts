@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { defineConfig } from '../../src/config';
-import { matchRoute, resolveUpstreamUrl } from '../../src/router';
+import { matchRoute, resolveUpstreamUrl, upstreamCandidates } from '../../src/router';
 
 const req = (url: string, init?: RequestInit) => new Request(url, init);
 
@@ -142,7 +142,13 @@ describe('resolveUpstreamUrl', () => {
   const resolve = (route: Parameters<typeof defineConfig>[0]['routes'][number], url: string) => {
     const config = defineConfig({ routes: [route] });
     const request = req(url);
-    return resolveUpstreamUrl(matchRoute(config, request)!, new URL(request.url)).toString();
+    // Single-upstream routes: the one candidate is the route's own upstream.
+    const [candidate] = upstreamCandidates(matchRoute(config, request)!.route);
+    return resolveUpstreamUrl(
+      matchRoute(config, request)!,
+      new URL(request.url),
+      candidate,
+    ).toString();
   };
 
   it('preserves the path by default', () => {

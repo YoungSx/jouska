@@ -1,11 +1,17 @@
 import { z } from 'zod';
 
 import { HOP_BY_HOP } from './internal/hop.js';
+// Runtime import from the router for `splitUpstream`; the router imports only
+// types back from here, so the cycle is type-only on that side and safe.
+import { splitUpstream } from './router.js';
 
 /**
- * Declarative route table. One request resolves to exactly one upstream:
- * Workers allows only 6 concurrent outbound connections per request, so
- * fan-out / racing upstreams is deliberately not expressible here.
+ * Declarative route table. A route names its upstreams in exactly one of three
+ * ways — a single `upstream`, an ordered `upstreams` list walked by failover, or
+ * a weighted `trafficSplit` — and each request still resolves to exactly one of
+ * them. Workers allows only 6 concurrent outbound connections per request, so
+ * fan-out / racing upstreams is deliberately not expressible here: failover
+ * attempts are strictly sequential and a split sends one request to one winner.
  *
  * Normalisation happens here rather than at match time. A config value that is
  * merely mis-cased must not silently stop working — `blockCountries: ['cu']`
@@ -187,6 +193,69 @@ const upstreamAllowingPrivate = z
     const base = slash === -1 ? '' : v.slice(slash);
     return `${authority.toLowerCase()}${base}`;
   });
+
+/**
+ * Sequential failover across multiple upstream candidates.
+ *
+ * Candidates are tried strictly in order: the next one only sees the request
+ * after the previous one failed with a condition listed in `on`. There is no
+ * racing — Workers allows 6 concurrent outbound connections per request, and
+ * racing N upstreams alongside retries would spend that budget on duplicates
+ * of the same request.
+ */
+const failover = z.object({
+  /**
+   * Conditions that move the request to the next candidate. The default is the
+   * network-layer pair: the attempt timed out, or the connection failed
+   * outright. An HTTP 5xx is deliberately not among them — it is a normal
+   * response, and replaying the request elsewhere piles the load of a
+   * struggling origin onto its sibling. Adding `'5xx'` is therefore the
+   * operator's explicit decision, and it only ever switches a request that
+   * could still be replayed (no body, no WebSocket handshake).
+   */
+  on: z
+    .array(z.enum(['timeout', 'unreachable', '5xx']))
+    .min(1)
+    .default(['timeout', 'unreachable']),
+  /**
+   * How many candidates may be tried. Defaults to every candidate the route
+   * declares. Capped at 6 to mirror the platform's per-request connection cap:
+   * the attempts are sequential so the cap is not a concurrency limit, but an
+   * unbounded walk would make one request's worst case hard to reason about.
+   */
+  maxAttempts: z.number().int().min(1).max(6).default(6),
+});
+
+/**
+ * The policy a candidate route carries when it states none. Written a list of
+ * upstreams means "this one first, the rest are backups" — the operator should
+ * not have to spell out a failover block to get the obvious behaviour. Parsed
+ * through the schema itself so this and the field defaults cannot drift apart.
+ */
+const DEFAULT_FAILOVER: z.output<typeof failover> = failover.parse({});
+
+/** One weighted candidate of a `trafficSplit`. */
+const trafficSplitEntry = z.object({
+  upstream,
+  /**
+   * Relative weight, not a percentage: 95/5 and 19/1 are the same split, and
+   * demanding a sum of 100 makes a three-way split like 50/30/20 arithmetic
+   * the operator should not have to do.
+   */
+  weight: z.number().int().min(1).max(1000),
+});
+
+/**
+ * Weighted traffic split across upstreams, for canary and version-migration
+ * routes. The winner is decided before the request is forwarded, so every
+ * downstream step — URL resolution, body rewriting, event reporting — sees the
+ * candidate that was actually hit. Bounded at 6 like `upstreams`, for the same
+ * legibility of a route's worst case.
+ */
+const trafficSplit = z.array(trafficSplitEntry).min(1).max(6);
+
+/** How a split request remembers which upstream it was assigned to. */
+const stickyBy = z.enum(['cookie']);
 
 /** HTTP methods, uppercased so matching is an exact comparison. */
 const methods = z
@@ -675,7 +744,23 @@ const route = z.object({
    */
   id: z.string().min(1).optional(),
   match,
-  upstream,
+  /** The single-upstream form. Exactly one of `upstream`/`upstreams`/`trafficSplit` may be set. */
+  upstream: upstream.optional(),
+  /**
+   * Ordered failover candidates. Tried in the order written, moving on only
+   * for the conditions `failover.on` names. See {@link failover}.
+   */
+  upstreams: z.array(upstream).min(1).max(6).optional(),
+  /** Weighted split across upstreams; the winner is chosen per request. See {@link trafficSplit}. */
+  trafficSplit: trafficSplit.optional(),
+  /**
+   * Policy for walking `upstreams`. Optional here because single-upstream
+   * routes have nothing to walk; a route with candidates is normalised to
+   * always carry one — see {@link normalizeFailover}.
+   */
+  failover: failover.optional(),
+  /** How a `trafficSplit` route keeps a caller on their assigned upstream. */
+  stickyBy: stickyBy.optional(),
   /**
    * Permit a loopback, private or metadata upstream. Off by default: the
    * upstream is runtime-editable through KV, so an unconstrained value turns a
@@ -686,12 +771,32 @@ const route = z.object({
 });
 
 /**
+ * A route that opted out of the private-upstream refusal, in list form. The
+ * per-value schema means every candidate is screened: an array that only
+ * checked its first entry would make the second one a route around the SSRF
+ * refusal, and that route would only ever be taken when the first origin was
+ * down — the moment nobody is watching.
+ */
+const privateUpstreams = z.array(upstreamAllowingPrivate).min(1).max(6);
+
+/**
+ * A route that opted out of the private-upstream refusal, as a weighted split.
+ * Every entry is screened for the same reason as `privateUpstreams`.
+ */
+const privateTrafficSplit = z
+  .array(trafficSplitEntry.extend({ upstream: upstreamAllowingPrivate }))
+  .min(1)
+  .max(6);
+
+/**
  * A route that has opted out of the private-upstream refusal. Parsed as a
  * separate branch because Zod cannot consult a sibling field from within the
  * refinement that would need it.
  */
 const privateRoute = route.extend({
-  upstream: upstreamAllowingPrivate,
+  upstream: upstreamAllowingPrivate.optional(),
+  upstreams: privateUpstreams.optional(),
+  trafficSplit: privateTrafficSplit.optional(),
   allowPrivateUpstream: z.literal(true),
 });
 
@@ -937,6 +1042,21 @@ const foldUpstreamHeaders = ({ upstreamHeaders: alias, ...rest }: ParsedRoute): 
   };
 };
 
+/**
+ * Gives every candidate route a failover policy when it states none.
+ *
+ * Single-upstream routes are left untouched: `failover` on one is a config
+ * error (caught in the cross-field checks), so inventing one there would paper
+ * over a mistake. The policy comes from {@link DEFAULT_FAILOVER}, parsed
+ * through the same schema the field uses.
+ */
+const normalizeFailover = (routes: readonly RouteOutput[]): RouteOutput[] =>
+  routes.map((entry) =>
+    entry.upstreams !== undefined || entry.trafficSplit !== undefined
+      ? { ...entry, failover: entry.failover ?? DEFAULT_FAILOVER }
+      : entry,
+  );
+
 export const configSchema = z
   .preprocess(captureStatedKeys, documentSchema)
   .transform((doc) => ({
@@ -1033,15 +1153,82 @@ export const configSchema = z
           });
         }
       }
+
+      /**
+       * The three ways of naming upstreams are alternative strategies, not
+       * layers: `trafficSplit` picks a winner before anything is sent, while
+       * `upstreams` orders attempts. A route carrying two would make "which
+       * upstream" depend on an ordering nobody wrote down, and one carrying
+       * none names no upstream at all — so both spellings are refused instead
+       * of interpreted. Checks run here rather than on the route schema only
+       * because that is where every cross-field rule lives.
+       */
+      const strategies = [entry.upstream, entry.upstreams, entry.trafficSplit].filter(
+        (v) => v !== undefined,
+      );
+      if (strategies.length !== 1) {
+        ctx.addIssue({
+          code: 'custom',
+          path: ['routes', index],
+          message:
+            `route must set exactly one of upstream, upstreams or trafficSplit ` +
+            `(found ${strategies.length})`,
+        });
+        return;
+      }
+
+      /**
+       * `failover` is meaningless without candidates to walk over, and
+       * `stickyBy` without a split has nothing to be sticky about. Both are
+       * refused rather than silently ignored: config that cannot take effect
+       * should say so.
+       */
+      const hasCandidates = entry.upstreams !== undefined || entry.trafficSplit !== undefined;
+      if (entry.failover !== undefined && !hasCandidates) {
+        ctx.addIssue({
+          code: 'custom',
+          path: ['routes', index, 'failover'],
+          message: 'failover requires upstreams or trafficSplit',
+        });
+      }
+      if (entry.stickyBy !== undefined && entry.trafficSplit === undefined) {
+        ctx.addIssue({
+          code: 'custom',
+          path: ['routes', index, 'stickyBy'],
+          message: 'stickyBy requires trafficSplit',
+        });
+      }
+      if (entry.trafficSplit !== undefined) {
+        const seen = new Set<string>();
+        entry.trafficSplit.forEach((item, position) => {
+          const authority = splitUpstream(item.upstream).authority;
+          if (seen.has(authority)) {
+            ctx.addIssue({
+              code: 'custom',
+              path: ['routes', index, 'trafficSplit', position],
+              message:
+                `trafficSplit names "${authority}" more than once; sticky ` +
+                'callers would all resolve to the first entry regardless of weights',
+            });
+          }
+          seen.add(authority);
+        });
+      }
     });
   })
   /**
-   * Folds the `upstreamHeaders` alias away, last, so every check above saw both
-   * fields as the document wrote them.
+   * Folds the `upstreamHeaders` alias away and hands every candidate route its
+   * default failover policy, last, so every check above saw the document as
+   * written. Normalization deliberately follows the fold: it invents a
+   * `failover` on every candidate route, which would blind the "failover
+   * requires upstreams or trafficSplit" check if it ran first.
    */
   .transform((config) => ({
     ...config,
-    routes: config.routes.map(foldUpstreamHeaders) as [RouteOutput, ...RouteOutput[]],
+    routes: normalizeFailover(config.routes.map(foldUpstreamHeaders)) as [
+      RouteOutput,
+      ...RouteOutput[],
+    ],
   }));
 
 export type Config = {

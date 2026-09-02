@@ -70,7 +70,11 @@ Routes are evaluated in order and the first match wins.
 | `match.host`           | —        | Host to match. `*.example.com` matches subdomains, not the apex.      |
 | `match.path`           | —        | Path prefix, matched on segment boundaries.                           |
 | `match.methods`        | all      | Restrict the route to specific methods.                               |
-| `upstream`             | required | `host`, `host:port` or `host/base/path`. No scheme.                   |
+| `upstream`             | —        | `host`, `host:port` or `host/base/path`. No scheme.                   |
+| `upstreams`            | —        | Ordered candidates for failover; see Failover and traffic splitting.  |
+| `trafficSplit`         | —        | Weighted split entries; see Failover and traffic splitting.           |
+| `failover`             | see text | Switch policy and attempt cap for the multi-candidate forms.          |
+| `stickyBy`             | —        | `'cookie'`: split-assigned callers keep their upstream via a cookie.  |
 | `scheme`               | `https`  | Scheme used to reach the upstream.                                    |
 | `allowPrivateUpstream` | off      | Permit a loopback, private or metadata upstream.                      |
 | `stripPrefix`          | `false`  | Remove the matched prefix before forwarding.                          |
@@ -241,6 +245,45 @@ than leaving it to run out its deadline.
 Attempts back off exponentially from `retryBackoffMs`, and `totalTimeoutMs`
 bounds them all together. Without that ceiling, `retries: 3` with
 `timeoutMs: 30000` could occupy the proxy for two minutes before returning 504.
+
+### Failover and traffic splitting
+
+A route names its upstreams in exactly one of three ways, and every request
+still resolves to exactly one of them:
+
+```ts
+{ match: { path: '/x' }, upstreams: ['a.example.com', 'b.example.com'] }
+{ match: { path: '/x' }, trafficSplit: [
+    { upstream: 'v2.example.com', weight: 1 },
+    { upstream: 'v1.example.com', weight: 9 },
+  ] }
+```
+
+`upstreams` is an ordered list: the first is primary, the rest are backups. The
+walk moves to the next candidate only after the previous one failed with a
+condition the route's `failover.on` names — `timeout`, `unreachable`, or the
+opt-in `'5xx'` — and only while the request is replayable, so an idempotent
+bodyless GET walks, and a POST with a body or a WebSocket handshake gets one
+attempt at the primary. `failover.maxAttempts` (default 6) caps the walk, and
+`totalTimeoutMs` bounds it in time. Each candidate is tried once; listing the
+same upstream twice is how a same-upstream retry is spelled in a failover list.
+
+A 5xx is a normal response and ends the walk unless `'5xx'` is in the policy.
+With it, the last 5xx seen is kept as the fallback: if every candidate fails
+this way, the client receives the final one, body and all, rather than an
+invented 502. Rewrites and the `onProxy` report follow the candidate that
+actually answered — a response reached through a backup carries the backup's
+host, and a failure report names the last candidate tried.
+
+`trafficSplit` is a distribution, not an order. Callers are assigned by hashing
+a stable per-client key (the sticky cookie value, else `cf-connecting-ip`) into
+the weight space — deterministic, no state, and reproducible from the request
+alone. With `stickyBy: 'cookie'`, a newly assigned caller receives a host-only
+`__jouska_upstream` cookie naming its upstream, and presents it back on later
+requests; a cookie naming an upstream the split no longer lists is re-assigned.
+The split winner is the walk's primary: failover from it continues into the
+other participants in declared order. `failover` and `stickyBy` are route-level
+only — they cannot be set in `defaults`.
 
 ### Body rewriting
 
@@ -737,17 +780,18 @@ app.use(
 );
 ```
 
-| Field        | Meaning                                                             |
-| ------------ | ------------------------------------------------------------------- |
-| `routeId`    | The matched route, labelled the way rate-limit buckets are.         |
-| `upstream`   | Authority the request was sent to.                                  |
-| `method`     | Request method.                                                     |
-| `path`       | Path as the client wrote it, before normalisation.                  |
-| `status`     | Status returned to the client, including jouska's own 4xx and 5xx.  |
-| `durationMs` | Wall-clock milliseconds from match to response.                     |
-| `attempts`   | Upstream attempts, including the first — so a retry is visible.     |
-| `outcome`    | `ok`, `refused`, `timeout`, `unreachable`, or `client_closed`.      |
-| `cache`      | `hit`, `stale`, `miss` or `bypass`; absent without a `cache` block. |
+| Field        | Meaning                                                                                                                                                                       |
+| ------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `routeId`    | The matched route, labelled the way rate-limit buckets are.                                                                                                                   |
+| `upstream`   | Authority the request was sent to.                                                                                                                                            |
+| `method`     | Request method.                                                                                                                                                               |
+| `path`       | Path as the client wrote it, before normalisation.                                                                                                                            |
+| `status`     | Status returned to the client, including jouska's own 4xx and 5xx.                                                                                                            |
+| `durationMs` | Wall-clock milliseconds from match to response.                                                                                                                               |
+| `attempts`   | Upstream attempts, including the first — so a retry is visible.                                                                                                               |
+| `outcome`    | `ok`, `refused`, `timeout`, `unreachable`, or `client_closed`.                                                                                                                |
+| `cache`      | `hit`, `stale`, `miss` or `bypass`; absent without a `cache` block.                                                                                                           |
+| `selection`  | How a split route picked its upstream — present only on `trafficSplit` routes, with the winning entry's `index` and whether a `sticky` cookie or the `weighted` hash decided. |
 
 Three more report what happened to the response body, which is what a mirrored
 site is judged by:
@@ -872,7 +916,9 @@ suppressing whatever identifies them.
 These are Workers limits, not choices, and they shape the architecture:
 
 - **6 outbound connections per request.** One request resolves to exactly one
-  upstream, so racing or fanning out across upstreams is not expressible.
+  upstream. Failover is strictly sequential and a weighted split sends each
+  request to one winner, so racing or fanning out across upstreams is not
+  expressible here.
 - **128MB memory, on every plan.** Body rewriting is streaming throughout;
   nothing calls `await response.text()` on a proxied body.
 - **CPU time limits.** `timeoutMs` is capped at 30s to stay inside them.

@@ -68,6 +68,14 @@ export interface CacheRules {
 export interface RouteDefinition {
   match?: RouteMatch;
   upstream?: string;
+  /** 与 `upstream`/`trafficSplit` 三选一；schema 的交叉检查在服务端执行。 */
+  upstreams?: string[];
+  /** 加权分流条目；权重 1–1000，条目至多 6 个。 */
+  trafficSplit?: { upstream: string; weight: number }[];
+  /** 故障转移策略，仅 `upstreams`/`trafficSplit` 路由可写，路由级、不能进 defaults。 */
+  failover?: { on: ('timeout' | 'unreachable' | '5xx')[]; maxAttempts: number };
+  /** 粘性分流：`'cookie'` 时新分配的调用方收到 `__jouska_upstream` cookie。 */
+  stickyBy?: 'cookie';
   scheme?: 'https' | 'http';
   allowPrivateUpstream?: true;
   stripPrefix?: boolean;
@@ -182,6 +190,10 @@ export const AUTH_POLICY = {
 export const FORM_COVERED_KEYS: readonly string[] = [
   'match',
   'upstream',
+  'upstreams',
+  'trafficSplit',
+  'failover',
+  'stickyBy',
   'scheme',
   'allowPrivateUpstream',
   'stripPrefix',

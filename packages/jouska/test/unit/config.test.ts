@@ -175,3 +175,149 @@ describe('guard config', () => {
     expect(route.rateLimit).toBeUndefined();
   });
 });
+
+describe('multiple upstream strategies', () => {
+  it('keeps the ordered list and the failover policy', () => {
+    const config = defineConfig({
+      routes: [
+        {
+          match: { path: '/a' },
+          upstreams: ['a.test', 'b.test'],
+          failover: { on: ['timeout', 'unreachable'], maxAttempts: 2 },
+        },
+      ],
+    });
+    expect(config.routes[0]!.upstreams).toEqual(['a.test', 'b.test']);
+    expect(config.routes[0]!.failover).toEqual({
+      on: ['timeout', 'unreachable'],
+      maxAttempts: 2,
+    });
+  });
+
+  it('defaults the failover policy', () => {
+    // timeout and unreachable are safe to switch on without an explicit opt-in;
+    // 5xx is not, so it must stay out of the default set.
+    const config = defineConfig({
+      routes: [{ match: { path: '/a' }, upstreams: ['a.test', 'b.test'] }],
+    });
+    expect(config.routes[0]!.failover).toEqual({
+      on: ['timeout', 'unreachable'],
+      maxAttempts: 6,
+    });
+  });
+
+  it('rejects two strategies on one route', () => {
+    expect(() =>
+      defineConfig({
+        routes: [{ match: { path: '/a' }, upstream: 'a.test', upstreams: ['a.test', 'b.test'] }],
+      }),
+    ).toThrow(/exactly one of upstream, upstreams or trafficSplit/);
+  });
+
+  it('rejects a route that names no upstream at all', () => {
+    // `upstream` became optional to admit the list and split forms; the
+    // exclusivity check has to catch the zero case or an empty route parses.
+    expect(() => defineConfig({ routes: [{ match: { path: '/a' } }] })).toThrow(
+      /exactly one of upstream, upstreams or trafficSplit/,
+    );
+  });
+
+  it('rejects failover without candidates', () => {
+    expect(() =>
+      defineConfig({
+        routes: [{ match: { path: '/a' }, upstream: 'a.test', failover: {} }],
+      }),
+    ).toThrow(/failover requires upstreams or trafficSplit/);
+  });
+
+  it('rejects stickyBy without a split', () => {
+    expect(() =>
+      defineConfig({
+        routes: [{ match: { path: '/a' }, upstreams: ['a.test', 'b.test'], stickyBy: 'cookie' }],
+      }),
+    ).toThrow(/stickyBy requires trafficSplit/);
+  });
+
+  it('accepts stickyBy on a split route', () => {
+    expect(() =>
+      defineConfig({
+        routes: [
+          {
+            match: { path: '/a' },
+            trafficSplit: [
+              { upstream: 'a.test', weight: 95 },
+              { upstream: 'b.test', weight: 5 },
+            ],
+            stickyBy: 'cookie',
+          },
+        ],
+      }),
+    ).not.toThrow();
+  });
+
+  it('rejects a split whose weights are not integers in range', () => {
+    expect(() =>
+      defineConfig({
+        routes: [
+          {
+            match: { path: '/a' },
+            trafficSplit: [
+              { upstream: 'a.test', weight: 0 },
+              { upstream: 'b.test', weight: 5 },
+            ],
+          },
+        ],
+      }),
+    ).toThrow();
+  });
+
+  it('rejects a private upstream hidden in the second candidate', () => {
+    // The array must be screened entry by entry: only checking the first would
+    // let the second become a route around the SSRF refusal.
+    expect(() =>
+      defineConfig({
+        routes: [{ match: { path: '/a' }, upstreams: ['a.test', '169.254.169.254'] }],
+      }),
+    ).toThrow();
+  });
+
+  it('rejects a private upstream hidden in a split entry', () => {
+    expect(() =>
+      defineConfig({
+        routes: [
+          {
+            match: { path: '/a' },
+            trafficSplit: [
+              { upstream: 'a.test', weight: 1 },
+              { upstream: '10.0.0.1', weight: 1 },
+            ],
+          },
+        ],
+      }),
+    ).toThrow();
+  });
+
+  it('accepts a private-upstream list behind the explicit flag', () => {
+    const config = defineConfig({
+      routes: [
+        {
+          match: { path: '/a' },
+          allowPrivateUpstream: true,
+          upstreams: ['10.0.0.1', '192.168.1.1'],
+        },
+      ],
+    });
+    expect(config.routes[0]!.upstreams).toEqual(['10.0.0.1', '192.168.1.1']);
+  });
+
+  it('keeps the exclusivity check valid after defaults folding', () => {
+    // The strategy checks run on the folded document, so folding must not leave
+    // a single-upstream route looking like two strategies.
+    expect(() =>
+      defineConfig({
+        routes: [{ match: { path: '/a' }, upstream: 'a.test' }],
+        defaults: { retries: 2 },
+      }),
+    ).not.toThrow();
+  });
+});
