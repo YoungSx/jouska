@@ -271,9 +271,9 @@ describe('dangerFlags', () => {
 
   it('leaks no classification internals into the reported risks', () => {
     const flags = dangerFlags({ match: { path: '/' }, upstream: 'a.com', scheme: 'http' });
-    expect(flags.every((f) => Object.keys(f).every((k) => k in ({ path: 1, level: 1, reason: 1 })))).toBe(
-      true,
-    );
+    expect(
+      flags.every((f) => Object.keys(f).every((k) => k in { path: 1, level: 1, reason: 1 })),
+    ).toBe(true);
   });
 
   it('flags upstreamHeaders at the top level only when present', () => {
