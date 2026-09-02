@@ -37,7 +37,9 @@ const auth401 = (): Response =>
   });
 
 /** Route that delegates to auth.test, plus a stub that handles it. */
-const forwardAuthRoute = (overrides: Record<string, unknown> = {}): ConfigInput['routes'][number] => ({
+const forwardAuthRoute = (
+  overrides: Record<string, unknown> = {},
+): ConfigInput['routes'][number] => ({
   match: { path: '/a' },
   upstream: 'o.test',
   forwardAuth: {
@@ -136,11 +138,7 @@ describe('forwardAuth', () => {
 
   it('answers 503 when the auth endpoint times out, failing closed', async () => {
     const events: ProxyEvent[] = [];
-    const app = appWith(
-      [forwardAuthRoute({ timeoutMs: 50 })],
-      neverResponds,
-      events,
-    );
+    const app = appWith([forwardAuthRoute({ timeoutMs: 50 })], neverResponds, events);
     const res = await app.request('https://p.dev/a');
     expect(res.status).toBe(503);
     expect(await res.json()).toEqual({ error: 'forward_auth_unavailable' });
@@ -151,7 +149,10 @@ describe('forwardAuth', () => {
   it('admits the request when the auth endpoint times out and the route opted into failOpen', async () => {
     const app = appWith(
       [forwardAuthRoute({ timeoutMs: 50, failOpen: true })],
-      stubFetch(() => Promise.reject(new Error('unreachable')), () => new Response('from upstream')),
+      stubFetch(
+        () => Promise.reject(new Error('unreachable')),
+        () => new Response('from upstream'),
+      ),
     );
     const res = await app.request('https://p.dev/a');
     expect(res.status).toBe(200);
@@ -161,10 +162,7 @@ describe('forwardAuth', () => {
   it('does not recurse when the auth url shares a host with another route', async () => {
     const requests: Request[] = [];
     const app = appWith(
-      [
-        forwardAuthRoute(),
-        { match: { path: '/b' }, upstream: 'auth.test' },
-      ],
+      [forwardAuthRoute(), { match: { path: '/b' }, upstream: 'auth.test' }],
       async (input, init) => {
         const req = input instanceof Request ? input : new Request(input, init);
         requests.push(req);
@@ -186,18 +184,23 @@ describe('access control and the guard chain', () => {
       fetchCalls += 1;
       return new Response('ok');
     };
-    const app = appWith([
-      {
-        match: { path: '/a' },
-        upstream: 'o.test',
-        cors: { allowMethods: ['POST'] },
-        forwardAuth: { url: 'https://auth.test/check' },
-      },
-    ], fetchImpl);
-    const res = await app.request(new Request('https://p.dev/a', {
-      method: 'OPTIONS',
-      headers: { origin: 'https://client.test', 'access-control-request-method': 'POST' },
-    }));
+    const app = appWith(
+      [
+        {
+          match: { path: '/a' },
+          upstream: 'o.test',
+          cors: { allowMethods: ['POST'] },
+          forwardAuth: { url: 'https://auth.test/check' },
+        },
+      ],
+      fetchImpl,
+    );
+    const res = await app.request(
+      new Request('https://p.dev/a', {
+        method: 'OPTIONS',
+        headers: { origin: 'https://client.test', 'access-control-request-method': 'POST' },
+      }),
+    );
     expect(res.status).toBe(204);
     expect(fetchCalls).toBe(0);
   });

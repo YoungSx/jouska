@@ -356,8 +356,7 @@ export const DANGER_REASONS: Record<string, string> = {
     '默认只缓存静态资源。把文档类型加进来，一个没带 cookie、也没标 private 的个性化页面就会被发给下一个访客。',
   'requestPolicy.allowedMethods':
     '列表写漏一个方法，用它的调用方全部收到 405 —— 拒绝是显式的，不会悄悄放行去别处。',
-  'forwardAuth.url':
-    '写 `http://` 意味着 cookie 和 authorization 以明文发往鉴权端点。',
+  'forwardAuth.url': '写 `http://` 意味着 cookie 和 authorization 以明文发往鉴权端点。',
   'forwardAuth.failOpen':
     '打开后鉴权端点挂了所有请求直接放行 —— 可用性高于准入，故障会变成全场免票。',
 };

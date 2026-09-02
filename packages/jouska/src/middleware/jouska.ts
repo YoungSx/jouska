@@ -457,10 +457,30 @@ export const jouska = ({
     // and the response carries the negotiated headers.
     if (route.cors !== undefined) {
       return corsMiddleware(route.cors)(c, async () => {
-        c.res = await proxyRequest(match, c, url, fetchImpl, cacheImpl, report, selection, authMs, authHeaders);
+        c.res = await proxyRequest(
+          match,
+          c,
+          url,
+          fetchImpl,
+          cacheImpl,
+          report,
+          selection,
+          authMs,
+          authHeaders,
+        );
       });
     }
-    return proxyRequest(match, c, url, fetchImpl, cacheImpl, report, selection, authMs, authHeaders);
+    return proxyRequest(
+      match,
+      c,
+      url,
+      fetchImpl,
+      cacheImpl,
+      report,
+      selection,
+      authMs,
+      authHeaders,
+    );
   };
 };
 
@@ -629,8 +649,7 @@ const proxyRequest = async (
   // still carries the pairing. Dropping the block reads as "not configured":
   // nothing is read, nothing is stored.
   const authenticates = routeAuthenticates(route);
-  const caching =
-    route.cache?.enabled === true && !authenticates ? route.cache : undefined;
+  const caching = route.cache?.enabled === true && !authenticates ? route.cache : undefined;
   const plan =
     caching === undefined
       ? undefined

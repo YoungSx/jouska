@@ -97,11 +97,19 @@ describe('compileConfig', () => {
     // 表单落盘的形状：failOpen 只有开着才写、copyResponseHeaders 只在有值时写。
     const result = compileConfig(
       [
-        row('auth', {
-          match: { path: '/private' },
-          upstream: 'app.example.com',
-          forwardAuth: { url: 'https://sso.example.com/check', copyResponseHeaders: ['x-user-id'] },
-        }, 0)],
+        row(
+          'auth',
+          {
+            match: { path: '/private' },
+            upstream: 'app.example.com',
+            forwardAuth: {
+              url: 'https://sso.example.com/check',
+              copyResponseHeaders: ['x-user-id'],
+            },
+          },
+          0,
+        ),
+      ],
       undefined,
     );
     expect(result.ok).toBe(true);
@@ -109,12 +117,18 @@ describe('compileConfig', () => {
 
   it('refuses auth routes that also configure cache', () => {
     const result = compileConfig(
-      [row('c', {
-        match: { path: '/private' },
-        upstream: 'app.example.com',
-        forwardAuth: { url: 'https://sso.example.com/check' },
-        cache: { ttlSeconds: 300 },
-      }, 0)],
+      [
+        row(
+          'c',
+          {
+            match: { path: '/private' },
+            upstream: 'app.example.com',
+            forwardAuth: { url: 'https://sso.example.com/check' },
+            cache: { ttlSeconds: 300 },
+          },
+          0,
+        ),
+      ],
       undefined,
     );
     expect(result.ok).toBe(false);

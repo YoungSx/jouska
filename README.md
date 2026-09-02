@@ -758,7 +758,7 @@ caller sent, which is what makes credentialed requests work — the spec forbids
 response when both appear. Preflights are answered without contacting the
 upstream.
 
-### Access control
+### Delegated auth (forwardAuth)
 
 Delegated auth answers "who are you" without a login flow in the library. It
 sits after rate limiting but before forwarding, so a refused caller costs no

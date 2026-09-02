@@ -146,8 +146,7 @@ export interface AuthResult {
  * middleware and the cache backstop must agree on, so this is shared rather
  * than restated and the two cannot drift.
  */
-export const routeAuthenticates = (route: Route): boolean =>
-  route.forwardAuth !== undefined;
+export const routeAuthenticates = (route: Route): boolean => route.forwardAuth !== undefined;
 
 /**
  * Runs the route's delegated-auth guard. Returns undefined when the route

@@ -976,7 +976,8 @@ const authUrl = z
     if (isForbiddenHost(host)) {
       ctx.addIssue({
         code: 'custom',
-        message: `forwardAuth url "${host}" resolves to a loopback, private or ` +
+        message:
+          `forwardAuth url "${host}" resolves to a loopback, private or ` +
           'metadata address; set allowPrivateUpstream on the route to permit it',
       });
     }
@@ -1054,9 +1055,7 @@ const forwardAuthSchema = z.object({
    * Auth-response headers written into the upstream request — how the caller's
    * identity reaches the upstream (`x-user-id` is the usual case).
    */
-  copyResponseHeaders: authHeaderNames('forwardAuth.copyResponseHeaders')
-    .nonempty()
-    .default([]),
+  copyResponseHeaders: authHeaderNames('forwardAuth.copyResponseHeaders').nonempty().default([]),
   /** Deadline for the auth exchange, shorter than any upstream attempt default. */
   timeoutMs: z.number().int().positive().max(5_000).default(2_000),
   /**
@@ -1882,7 +1881,7 @@ export const configSchema = z
           path: ['routes', index, 'cache'],
           message:
             'cache is refused on routes that authenticate: a cached entry is keyed by URL ' +
-            'and would serve one caller\'s authorised response to the next',
+            "and would serve one caller's authorised response to the next",
         });
       }
 

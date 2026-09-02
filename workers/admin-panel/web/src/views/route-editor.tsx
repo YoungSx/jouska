@@ -163,12 +163,7 @@ const BOOLEAN_FIELDS: Record<
 const SCHEME_UNSET = 'unset';
 
 /** 开关型子段：这一段存不存在，本身就是开关状态。 */
-type SectionKey =
-  | 'bodyRewrite'
-  | 'cors'
-  | 'ip'
-  | 'access'
-  | 'forwardAuth';
+type SectionKey = 'bodyRewrite' | 'cors' | 'ip' | 'access' | 'forwardAuth';
 
 /** 本地校验的错误集：键是字段，值是直接展示的文案。 */
 type FieldErrors = Partial<
