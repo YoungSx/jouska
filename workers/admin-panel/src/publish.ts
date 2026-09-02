@@ -9,6 +9,7 @@
  * sprayed. Rollback reaches the same function so it inherits every gate: a
  * restored snapshot is published like any other draft, as a new revision.
  */
+import type { CacheVaryWarning } from './cache-advisory.js';
 import { compileConfig, type CompileIssue, type RouteRow } from './compile.js';
 import { dangerFlags, type FieldRisk } from './danger.js';
 import { documentDigest, LIVE_KEY } from './fingerprint.js';
@@ -42,6 +43,8 @@ export type PublishOutcome =
       readonly shadowWarnings: readonly ShadowWarning[];
       /** Whole-site routes that will not rewrite their links. Advisory only. */
       readonly mirrorWarnings: readonly MirrorWarning[];
+      /** Caching routes that match on headers or cookies. Advisory only. */
+      readonly cacheVaryWarnings: readonly CacheVaryWarning[];
       readonly dangers: Record<string, readonly FieldRisk[]>;
       readonly routeCount: number;
     }
@@ -57,6 +60,7 @@ export type PublishOutcome =
       readonly dangers: Record<string, readonly FieldRisk[]>;
       readonly shadowWarnings: readonly ShadowWarning[];
       readonly mirrorWarnings: readonly MirrorWarning[];
+      readonly cacheVaryWarnings: readonly CacheVaryWarning[];
     }
   | {
       /** `revision` 是线上 meta 里记录的版本；KV 值没有可信 meta 时为 null。 */
@@ -177,6 +181,7 @@ export const publishDraft = async (
       dangers,
       shadowWarnings: compiled.shadowWarnings,
       mirrorWarnings: compiled.mirrorWarnings,
+      cacheVaryWarnings: compiled.cacheVaryWarnings,
     };
   }
 
@@ -209,6 +214,7 @@ export const publishDraft = async (
     routeCount: rows.length,
     shadowWarnings: compiled.shadowWarnings,
     mirrorWarnings: compiled.mirrorWarnings,
+    cacheVaryWarnings: compiled.cacheVaryWarnings,
     dangers,
     ...(args.rollbackOf === undefined ? {} : { rollbackOf: args.rollbackOf }),
     ...(args.note === undefined ? {} : { note: args.note }),
@@ -237,6 +243,7 @@ export const publishDraft = async (
     revision,
     shadowWarnings: compiled.shadowWarnings,
     mirrorWarnings: compiled.mirrorWarnings,
+    cacheVaryWarnings: compiled.cacheVaryWarnings,
     dangers,
     routeCount: rows.length,
   };

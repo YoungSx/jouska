@@ -33,6 +33,7 @@
 import type { CacheConfig, Route } from '../config.js';
 import { contentTypeAllowed, parseContentType } from './body.js';
 import { isWebSocketUpgrade } from './forward.js';
+import { readCookie } from './cookies.js';
 
 /**
  * The slice of the Cache API this module needs.
@@ -179,6 +180,43 @@ export const cacheKey = (url: URL, method: string, fingerprint: string): Request
   const key = new URL(url);
   key.searchParams.set(KEY_PARAM, `${fingerprint}.${method}`);
   return new Request(key.toString(), { method: 'GET' });
+};
+
+/**
+ * Part of the cache key contributed by the request's own header and cookie
+ * values, or `''` when the route matches on neither.
+ *
+ * The route fingerprint pins the route's *configuration*, but a route whose
+ * `match` branches on `x-internal` serves different bytes under one fingerprint
+ * — the cache key must say which branch produced an entry or bucket A's bytes
+ * get served to bucket B. Every name the match conditions read goes into the
+ * key with the value this request actually carried, which is safe even where it
+ * is redundant: an `equals` condition pins one value, and pinning it twice
+ * costs only a slightly longer key. Query conditions need nothing here — the
+ * query is already part of the URL.
+ *
+ * `''` for unconditioned routes keeps their keys identical to what they were
+ * before this field existed, so existing entries survive a deploy.
+ */
+export const cacheVaryPart = (match: Route['match'], headers: Headers): string => {
+  const headerConditions = match.headers ?? [];
+  const cookieConditions = match.cookies ?? [];
+  if (headerConditions.length === 0 && cookieConditions.length === 0) {
+    return '';
+  }
+  const parts: string[] = [];
+  for (const condition of headerConditions) {
+    parts.push(`${condition.name}=${headers.get(condition.name) ?? ''}`);
+  }
+  // A cookie name is not a header name, so the value comes out of the parsed
+  // `Cookie` header — the same parse route matching used to select this route.
+  if (cookieConditions.length > 0) {
+    const cookieHeader = headers.get('cookie') ?? '';
+    for (const condition of cookieConditions) {
+      parts.push(`${condition.name}=${readCookie(cookieHeader, condition.name) ?? ''}`);
+    }
+  }
+  return parts.join(';');
 };
 
 /**

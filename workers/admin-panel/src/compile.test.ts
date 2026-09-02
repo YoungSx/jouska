@@ -163,7 +163,12 @@ describe('shadowWarnings', () => {
     const warnings = shadowWarnings(config);
     expect(warnings.length).toBeGreaterThan(0);
     for (const warning of warnings) {
-      const match = matchUrl(config, new URL(warning.probe), 'GET');
+      const match = matchUrl(
+        config,
+        new URL(warning.probe),
+        'GET',
+        new Headers(warning.probeHeaders?.map(({ name, value }) => [name, value]) ?? []),
+      );
       expect(match).toBeDefined();
       expect(config.routes[match!.index]?.id).toBe(warning.byId);
     }
@@ -358,5 +363,133 @@ describe('dangerFlags', () => {
   it('does not flag anything on a plain safe route', () => {
     const flags = dangerFlags({ match: { host: 'a.com' }, upstream: 'b.com' });
     expect(flags).toEqual([]);
+  });
+});
+
+describe('shadowWarnings with match conditions', () => {
+  const configOf = (routes: unknown[]): Config => configSchema.parse({ routes }) as Config;
+
+  it('flags a header-conditional route fully shadowed by an earlier unconditional route (acceptance #3)', () => {
+    const config = configOf([
+      { id: 'wide', match: { host: 'a.com' }, upstream: 'u1.com' },
+      {
+        id: 'canary',
+        match: { host: 'a.com', headers: [{ name: 'x-canary', present: true }] },
+        upstream: 'u2.com',
+      },
+    ]);
+    const warnings = shadowWarnings(config);
+    expect(warnings).toContainEqual(
+      expect.objectContaining({ shadowedId: 'canary', byId: 'wide' }),
+    );
+    // The probe must carry the header the condition demands — a bare URL could
+    // not have proven this shadow.
+    const warning = warnings.find((w) => w.shadowedId === 'canary');
+    expect(warning?.probeHeaders).toContainEqual({ name: 'x-canary', value: 'shadow-probe' });
+  });
+
+  it('stays quiet when the conditional route is reachable through its probe', () => {
+    const config = configOf([
+      {
+        id: 'canary',
+        match: { host: 'a.com', headers: [{ name: 'x-canary', present: true }] },
+        upstream: 'u2.com',
+      },
+      { id: 'wide', match: { host: 'a.com' }, upstream: 'u1.com' },
+    ]);
+    expect(shadowWarnings(config)).toEqual([]);
+  });
+
+  it('probes with header conditions satisfy every family via matchUrl', () => {
+    const config = configOf([
+      { id: 'wide', match: { host: 'a.com' }, upstream: 'u1.com' },
+      {
+        id: 'narrow',
+        match: {
+          host: 'a.com',
+          headers: [{ name: 'x-canary', prefix: 'on' }],
+          cookies: [{ name: 'beta', present: true }],
+        },
+        upstream: 'u2.com',
+      },
+    ]);
+    const warnings = shadowWarnings(config);
+    expect(warnings.some((w) => w.shadowedId === 'narrow' && w.byId === 'wide')).toBe(true);
+    const warning = warnings.find((w) => w.shadowedId === 'narrow')!;
+    const match = matchUrl(
+      config,
+      new URL(warning.probe),
+      'GET',
+      new Headers(warning.probeHeaders?.map(({ name, value }) => [name, value]) ?? []),
+    );
+    // Production-same-code proof: the probe is the evidence, run through the
+    // matcher the proxy runs.
+    expect(config.routes[match!.index]?.id).toBe('wide');
+  });
+
+  it('skips the route whose header condition names cookie alongside cookie conditions', () => {
+    // No single probe can satisfy a header named `cookie` and a parsed cookie
+    // condition at once; the detector prefers a missed warning over a false one.
+    const config = configOf([
+      { id: 'wide', match: { host: 'a.com' }, upstream: 'u1.com' },
+      {
+        id: 'tangled',
+        match: {
+          host: 'a.com',
+          headers: [{ name: 'cookie', equals: 'beta=on' }],
+          cookies: [{ name: 'beta', present: true }],
+        },
+        upstream: 'u2.com',
+      },
+    ]);
+    expect(shadowWarnings(config)).toEqual([]);
+  });
+});
+
+describe('cacheVaryWarnings', () => {
+  const compile = (routes: unknown[]) =>
+    compileConfig(
+      routes.map((definition, index) => row(`r${index}`, definition, index)),
+      undefined,
+    );
+
+  it('advises a caching route that matches on headers or cookies (acceptance #4)', () => {
+    const result = compile([
+      {
+        match: { host: 'a.com', headers: [{ name: 'x-env', equals: 'prod' }] },
+        upstream: 'u1.com',
+        cache: { enabled: true },
+      },
+    ]);
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error('expected ok');
+    expect(result.cacheVaryWarnings).toEqual([{ routeId: 'r0', names: ['x-env'] }]);
+  });
+
+  it('stays silent for caching routes that branch on nothing finer than the URL', () => {
+    const result = compile([
+      { match: { host: 'a.com' }, upstream: 'u1.com', cache: { enabled: true } },
+      {
+        match: { host: 'b.com', query: [{ name: 'debug', present: true }] },
+        upstream: 'u2.com',
+        cache: { enabled: true },
+      },
+    ]);
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error('expected ok');
+    // Query parameters live in the URL, so they never need the advisory.
+    expect(result.cacheVaryWarnings).toEqual([]);
+  });
+
+  it('does not advise a conditional route that does not cache', () => {
+    const result = compile([
+      {
+        match: { host: 'a.com', headers: [{ name: 'x-env', present: true }] },
+        upstream: 'u1.com',
+      },
+    ]);
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error('expected ok');
+    expect(result.cacheVaryWarnings).toEqual([]);
   });
 });

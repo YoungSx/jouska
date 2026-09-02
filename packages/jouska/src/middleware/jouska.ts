@@ -27,6 +27,7 @@ import {
   responseCacheable,
   routeFingerprint,
   storeCachedResponse,
+  cacheVaryPart,
   type CacheState,
   type ResponseCacheStore,
 } from '../internal/response-cache.js';
@@ -196,7 +197,7 @@ export const jouska = ({
     // Parsed once and threaded through: the URL was previously re-parsed four
     // or five times per request, all to read the same three fields.
     const url = new URL(c.req.url);
-    const match = matchUrl(config, url, c.req.method);
+    const match = matchUrl(config, url, c.req.method, c.req.raw.headers);
     if (match === undefined) {
       return next();
     }
@@ -508,8 +509,15 @@ const proxyRequest = async (
           // The bucket belongs in the key: split upstreams may serve different
           // bytes, and one shared key would hand bucket A's cached entry to
           // bucket B's caller. The fingerprint already pins the route config;
-          // the index pins which slice of it produced the bytes.
-          `${routeFingerprint(route)}.${selection?.index ?? 0}`,
+          // the index pins which slice of it produced the bytes. Headers and
+          // cookies the route matched on belong in too — same argument, one
+          // level up: two branches of one route must not share an entry.
+          // `cacheVaryPart` returns '' for an unconditional route, keeping the
+          // key — and every entry already stored under it — exactly as before.
+          `${routeFingerprint(route)}.${selection?.index ?? 0}.${cacheVaryPart(
+            route.match,
+            c.req.raw.headers,
+          )}`,
           c.req.raw,
           url,
           c.req.method,

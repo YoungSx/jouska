@@ -1,4 +1,5 @@
 import { CONFIG_VERSION, configSchema, type ConfigInput, type RouteInput } from 'jouska';
+import { cacheVaryWarnings, type CacheVaryWarning } from './cache-advisory.js';
 import { mirrorWarnings, type MirrorWarning } from './mirror.js';
 import { shadowWarnings, type ShadowWarning } from './shadow.js';
 import { CORRUPT } from './validate.js';
@@ -41,6 +42,12 @@ export type CompileResult =
        * is legitimate, and the operator only has to know what it means.
        */
       readonly mirrorWarnings: readonly MirrorWarning[];
+      /**
+       * Caching routes that match on headers or cookies, so their cache key
+       * varies per value. Same advisory tier as `mirrorWarnings`: publishing
+       * one is legitimate, the operator only has to know what it costs.
+       */
+      readonly cacheVaryWarnings: readonly CacheVaryWarning[];
       /** Parsed output, for previews: defaults folded in, stated keys resolved. */
       readonly parsed: ReturnType<typeof configSchema.parse>;
     }
@@ -229,5 +236,6 @@ export const compileConfig = (rows: readonly RouteRow[], defaults: unknown): Com
     // sees what the proxy will see.
     shadowWarnings: shadowWarnings(result.data),
     mirrorWarnings: mirrorWarnings(result.data),
+    cacheVaryWarnings: cacheVaryWarnings(result.data),
   };
 };

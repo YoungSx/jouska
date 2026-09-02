@@ -8,7 +8,14 @@
  * `ApiError`，把 `error` 码原样带出来；调用方按码分派文案，而不是去匹配人类可读
  * 的句子（那种匹配会在后端改一个字时静默失效）。
  */
-import type { FieldRisk, Issue, MirrorWarning, RouteDefinition, ShadowWarning } from './types';
+import type {
+  CacheVaryWarning,
+  FieldRisk,
+  Issue,
+  MirrorWarning,
+  RouteDefinition,
+  ShadowWarning,
+} from './types';
 
 export class ApiError extends Error {
   /** 服务端的错误码，例如 invalid_credentials、confirmation_required。 */
@@ -315,6 +322,8 @@ export interface PreviewResult {
   readonly shadowWarnings?: readonly ShadowWarning[];
   /** 整站代理但没开正文改写的路由。提示性质，不影响能不能发布。 */
   readonly mirrorWarnings?: readonly MirrorWarning[];
+  /** 开了缓存、条件又用头或 cookie 的路由：键随值变，命中率会降。提示性质。 */
+  readonly cacheVaryWarnings?: readonly CacheVaryWarning[];
   readonly dangers?: Record<string, readonly FieldRisk[]>;
   readonly document?: unknown;
   readonly routeCount?: number;

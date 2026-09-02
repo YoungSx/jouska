@@ -10,18 +10,25 @@
 import { compileConfig, type RouteRow } from './compile.js';
 import { dangerFlags, type FieldRisk } from './danger.js';
 import { asLiveState, documentDigest, LIVE_KEY } from './fingerprint.js';
+import type { ShadowWarning } from './shadow.js';
 import { getSetting, listEnabledRoutes } from './store.js';
 import { isPlainObject } from './validate.js';
 
 export interface PreviewResult {
   readonly ok: boolean;
   readonly issues?: readonly { routeId: string | undefined; path: string; message: string }[];
-  readonly shadowWarnings?: readonly { shadowedId: string; byId: string; probe: string }[];
+  readonly shadowWarnings?: readonly ShadowWarning[];
   /**
    * Whole-site routes that will not rewrite their links. Advisory: publish is
    * never gated on it, unlike `dangers`.
    */
   readonly mirrorWarnings?: readonly { routeId: string; upstream: string }[];
+  /**
+   * Caching routes that match on headers or cookies, so their cache key varies
+   * per value. Advisory: correctness is guaranteed by the key folding, this is
+   * about hit rate.
+   */
+  readonly cacheVaryWarnings?: readonly { routeId: string; names: readonly string[] }[];
   readonly dangers?: Record<string, readonly FieldRisk[]>;
   readonly document?: unknown;
   readonly routeCount?: number;
@@ -77,6 +84,7 @@ export const previewDraft = async (db: D1Database): Promise<PreviewResult> => {
     document: compiled.document,
     shadowWarnings: compiled.shadowWarnings,
     mirrorWarnings: compiled.mirrorWarnings,
+    cacheVaryWarnings: compiled.cacheVaryWarnings,
     dangers,
     routeCount: rows.length,
     live: liveField,

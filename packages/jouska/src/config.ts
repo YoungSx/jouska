@@ -268,6 +268,126 @@ const methods = z
   )
   .nonempty();
 
+/**
+ * An HTTP header name, validated as an RFC 9110 token.
+ *
+ * Checked here rather than at forward time because `Headers.set` throws on an
+ * invalid name, and that throw surfaced as `502 upstream_unreachable` — a
+ * configuration mistake disguised as an upstream fault, which sends whoever is
+ * debugging it in entirely the wrong direction.
+ */
+const headerName = z
+  .string()
+  .min(1)
+  .regex(/^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/, 'expected a valid HTTP header name (RFC 9110 token)');
+
+/**
+ * Value operators for a `match` condition, shared by all three families.
+ *
+ * Deliberately three and not more. There is no regex: the route table is edited
+ * from a panel and stored in D1, so a catastrophic-backtracking pattern would be
+ * a CPU bomb any editor can plant, on a runtime that bills 10 ms of CPU per
+ * request. `equals` and `prefix` cover what canaries actually branch on; anything
+ * beyond that is a design conversation, not a schema field.
+ *
+ * Exactly one operator per condition. An empty `prefix` is refused — it reads as
+ * `present: true` spelled a second way, and two spellings of one meaning is how
+ * configs start disagreeing with themselves. An empty `equals` is allowed: it
+ * matches the empty value an `X-Foo:` header or a `?debug=` parameter carries,
+ * which is a real value, not the absence of one.
+ */
+const conditionOperators = {
+  /** Exact match against the value, compared case-sensitively. */
+  equals: z.string().optional(),
+  /** Value starts with this string, compared case-sensitively. */
+  prefix: z.string().min(1).optional(),
+  /**
+   * Presence of the name, independent of its value. `true` matches an empty
+   * value too — `X-Foo:` is a header that exists — so `present: false` means
+   * "the name is not there at all" and is not fooled by an empty one.
+   */
+  present: z.boolean().optional(),
+};
+
+const requireOneOperator = (condition: { equals?: string; prefix?: string; present?: boolean }) =>
+  Number(condition.equals !== undefined) +
+    Number(condition.prefix !== undefined) +
+    Number(condition.present !== undefined) ===
+  1;
+
+/**
+ * One `match` condition on a request header.
+ *
+ * The name is an RFC 9110 token, lowercased here so the matcher compares
+ * exactly — header names are case-insensitive, and normalising at parse time is
+ * the same law `blockCountries` already lives under. Values are *not* folded:
+ * `X-Env: Prod` and `X-Env: prod` are two values, and silently treating them as
+ * equal is more dangerous than treating them as different.
+ *
+ * This routes, it does not authenticate. `match.headers` selects a route; it
+ * never validates one, because any caller can send `X-Internal: 1` themselves.
+ */
+const headerCondition = z
+  .object({ name: headerName, ...conditionOperators })
+  .superRefine((condition, ctx) => {
+    if (!requireOneOperator(condition)) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['name'],
+        message: 'state exactly one of equals, prefix or present',
+      });
+    }
+  })
+  .transform((condition) => ({ ...condition, name: condition.name.toLowerCase() }));
+
+/** One `match` condition on a query parameter. Names are case-sensitive. */
+const queryCondition = z
+  .object({
+    name: z
+      .string()
+      .min(1)
+      .refine(
+        (name) => !/[\s&=#]/.test(name),
+        'expected a query parameter name without whitespace, "&", "=" or "#" — those characters cannot survive in a name',
+      ),
+    ...conditionOperators,
+  })
+  .superRefine((condition, ctx) => {
+    if (!requireOneOperator(condition)) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['name'],
+        message: 'state exactly one of equals, prefix or present',
+      });
+    }
+  });
+
+/** One `match` condition on a request cookie. Names are case-sensitive (RFC 6265 token). */
+const cookieCondition = z
+  .object({
+    name: z
+      .string()
+      .min(1)
+      .regex(/^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/, 'expected a valid cookie name (RFC 6265 token)'),
+    ...conditionOperators,
+  })
+  .superRefine((condition, ctx) => {
+    if (!requireOneOperator(condition)) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['name'],
+        message: 'state exactly one of equals, prefix or present',
+      });
+    }
+  });
+
+/**
+ * Bound on conditions per family. Matching runs per request per candidate
+ * route, and a route table edited from a panel must not be able to turn that
+ * walk into unbounded work on a runtime that bills 10 ms of CPU per request.
+ */
+const MAX_MATCH_CONDITIONS = 16;
+
 const match = z
   .object({
     /** Matches the request host. `*.example.com` matches subdomains, not the apex. */
@@ -275,6 +395,12 @@ const match = z
     /** Path prefix, e.g. `/openai`. Matched on segment boundaries. */
     path: z.string().startsWith('/').optional(),
     methods: methods.optional(),
+    /** Header conditions, all of which must hold. See {@link headerCondition}. */
+    headers: z.array(headerCondition).max(MAX_MATCH_CONDITIONS).optional(),
+    /** Query parameter conditions, all of which must hold. See {@link queryCondition}. */
+    query: z.array(queryCondition).max(MAX_MATCH_CONDITIONS).optional(),
+    /** Cookie conditions, all of which must hold. See {@link cookieCondition}. */
+    cookies: z.array(cookieCondition).max(MAX_MATCH_CONDITIONS).optional(),
   })
   .refine((m) => m.host !== undefined || m.path !== undefined, {
     message: 'a route must match on host, path, or both',
@@ -396,19 +522,6 @@ const countryCode = z
   .length(2)
   .regex(/^[a-z]{2}$/i, 'expected an ISO 3166-1 alpha-2 country code')
   .transform((v) => v.toUpperCase());
-
-/**
- * An HTTP header name, validated as an RFC 9110 token.
- *
- * Checked here rather than at forward time because `Headers.set` throws on an
- * invalid name, and that throw surfaced as `502 upstream_unreachable` — a
- * configuration mistake disguised as an upstream fault, which sends whoever is
- * debugging it in entirely the wrong direction.
- */
-const headerName = z
-  .string()
-  .min(1)
-  .regex(/^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/, 'expected a valid HTTP header name (RFC 9110 token)');
 
 /**
  * Request headers a route may neither write nor delete.

@@ -1,5 +1,6 @@
 import type { Route } from '../config.js';
 import { splitUpstream } from '../router.js';
+import { readCookie } from './cookies.js';
 
 /**
  * How a split route picked this request's upstream. Emitted on `ProxyEvent`
@@ -36,20 +37,6 @@ const hash = (input: string): number => {
     h = Math.imul(h, 0x01000193);
   }
   return h >>> 0;
-};
-
-/** Reads one cookie's value from a raw `Cookie` header. */
-const readCookie = (header: string, name: string): string | undefined => {
-  for (const pair of header.split(';')) {
-    const eq = pair.indexOf('=');
-    if (eq === -1) {
-      continue;
-    }
-    if (pair.slice(0, eq).trim() === name) {
-      return pair.slice(eq + 1).trim();
-    }
-  }
-  return undefined;
 };
 
 /**

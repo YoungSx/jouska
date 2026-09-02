@@ -70,6 +70,9 @@ Routes are evaluated in order and the first match wins.
 | `match.host`           | —        | Host to match. `*.example.com` matches subdomains, not the apex.      |
 | `match.path`           | —        | Path prefix, matched on segment boundaries.                           |
 | `match.methods`        | all      | Restrict the route to specific methods.                               |
+| `match.headers`        | `[]`     | Request-header conditions; see Match conditions below.                |
+| `match.query`          | `[]`     | Query-parameter conditions; see Match conditions below.               |
+| `match.cookies`        | `[]`     | Cookie conditions; see Match conditions below.                        |
 | `upstream`             | —        | `host`, `host:port` or `host/base/path`. No scheme.                   |
 | `upstreams`            | —        | Ordered candidates for failover; see Failover and traffic splitting.  |
 | `trafficSplit`         | —        | Weighted split entries; see Failover and traffic splitting.           |
@@ -234,6 +237,55 @@ gets forwarded: re-encoding a decoded path is not round-trip safe.
 
 Matching reads the host from the request URL rather than the `Host` header. On
 Workers the URL host is what the platform routed on and cannot be forged.
+
+### Match conditions
+
+Beyond host, path and method, a route can condition on request headers, query
+parameters and cookies. Three families, three operators:
+
+| Operator         | Holds when                                                                     |
+| ---------------- | ------------------------------------------------------------------------------ |
+| `equals: 'v'`    | the value is exactly `v`; an empty string matches `X-Foo:` — present but empty |
+| `prefix: 'p'`    | the value starts with `p`                                                      |
+| `present: true`  | the name is there at all, even with an empty value                             |
+| `present: false` | the name is absent — an empty value still counts as present                    |
+
+```ts
+{
+  match: {
+    path: '/',
+    headers: [{ name: 'x-canary', equals: 'on' }],
+    cookies: [{ name: 'beta', present: true }],
+  },
+  upstream: 'canary.example.com',
+}
+```
+
+Conditions AND within a family and across families. There is no OR inside a
+route: "either" is spelled as two routes — the table is ordered and first match
+wins, so ordering is the semantics, and an unconditional route above a
+conditional one will take its traffic (the publish preview warns about exactly
+that).
+
+Values are case-sensitive: `X-Env: Prod` and `prod` are two different values,
+and folding them would let a canary route quietly match production traffic.
+Header _names_ fold to lowercase, because header names are case-insensitive on
+the wire; query and cookie names do not fold, because those specs treat them as
+case-sensitive.
+
+A repeated name matches its first occurrence: `Headers.get` returns the
+combined value of repeated headers, and query parameters and cookies read the
+first value under the name.
+
+**This is routing, not authentication.** Anyone can send `x-canary: on`, so a
+condition selects traffic, it never restricts it — gate access at the upstream.
+
+When a route with header or cookie conditions also enables `cache`, the
+request's values for every named header and cookie are folded into the cache
+key, so the two branches of a split never share an entry. The cost is hit rate:
+each distinct value is a distinct key, and the publish preview says so. Query
+conditions need no folding — the query string is already part of the URL the
+key is built from.
 
 ### Retries and deadlines
 
