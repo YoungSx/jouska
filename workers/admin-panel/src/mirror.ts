@@ -1,4 +1,4 @@
-import { splitUpstream, type Config, type Route } from 'jouska';
+import { splitUpstream, upstreamCandidates, type Config, type Route } from 'jouska';
 
 /**
  * Whole-site mirror advisory.
@@ -55,6 +55,13 @@ const isWholeSite = (route: Route): boolean =>
 export const mirrorWarnings = (config: Config): MirrorWarning[] =>
   config.routes.flatMap((route, index) =>
     isWholeSite(route) && route.bodyRewrite === undefined
-      ? [{ routeId: route.id ?? `#${index}`, upstream: splitUpstream(route.upstream).authority }]
+      ? [
+          {
+            routeId: route.id ?? `#${index}`,
+            // Not `route.upstream` directly: a route may name its upstreams as a
+            // failover list or a split, and the advisory names the primary.
+            upstream: splitUpstream(upstreamCandidates(route)[0] ?? '').authority,
+          },
+        ]
       : [],
   );

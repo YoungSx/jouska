@@ -30,7 +30,15 @@ import {
   type CacheState,
   type ResponseCacheStore,
 } from '../internal/response-cache.js';
-import { matchUrl, resolveUpstreamUrl, routeId, splitUpstream, type Match } from '../router.js';
+import { stickyCookie, selectUpstream, type Selection } from '../internal/selection.js';
+import {
+  matchUrl,
+  resolveUpstreamUrl,
+  routeId,
+  splitUpstream,
+  upstreamCandidates,
+  type Match,
+} from '../router.js';
 
 /**
  * Why a response body was relayed instead of rewritten.
@@ -113,6 +121,11 @@ export interface ProxyEvent {
    * Absent on a route without caching, and on a refusal that never got that far.
    */
   cache?: CacheState | undefined;
+  /**
+   * How the request's upstream was picked, when the route splits traffic.
+   * Absent for routes with a fixed upstream, where there is nothing to explain.
+   */
+  selection?: Selection;
 }
 
 export interface JouskaOptions {
@@ -189,17 +202,34 @@ export const jouska = ({
     }
     const { route } = match;
 
+    // Split routes resolve their bucket up front. The pick is deterministic from
+    // the request alone, so it holds even when a guard refuses the request
+    // before any upstream sees it — the event can still say where it *would*
+    // have gone and why.
+    const selection =
+      route.trafficSplit !== undefined ? selectUpstream(route, c.req.raw) : undefined;
+    const primary = splitUpstream(
+      upstreamCandidates(route, selection?.index ?? 0)[0] ?? '',
+    ).authority;
+
     // Guards run cheapest-first, so a request that will be refused never
     // reaches the upstream. Geo and IP are local checks; rate limiting costs a
     // binding call; forwarding costs a network round trip.
-    const report: Report = (status, outcome, attempts, rewrite, cache): void => {
+    const report: Report = (
+      status,
+      outcome,
+      attempts,
+      upstream = primary,
+      rewrite,
+      cache,
+    ): void => {
       if (onProxy === undefined) {
         return;
       }
       try {
         onProxy({
           routeId: routeId(route, match.index),
-          upstream: splitUpstream(route.upstream).authority,
+          upstream,
           method: c.req.method,
           path: url.pathname,
           status,
@@ -217,6 +247,8 @@ export const jouska = ({
             : {}),
           redirectRewritten: rewrite?.redirectRewritten ?? false,
           cache,
+          // Spread like `rewriteSkipped` above: no split, no key.
+          ...(selection !== undefined ? { selection } : {}),
         });
       } catch {
         // Observability must not be able to fail a request.
@@ -264,10 +296,10 @@ export const jouska = ({
     // and the response carries the negotiated headers.
     if (route.cors !== undefined) {
       return corsMiddleware(route.cors)(c, async () => {
-        c.res = await proxyRequest(match, c, url, fetchImpl, cacheImpl, report);
+        c.res = await proxyRequest(match, c, url, fetchImpl, cacheImpl, report, selection);
       });
     }
-    return proxyRequest(match, c, url, fetchImpl, cacheImpl, report);
+    return proxyRequest(match, c, url, fetchImpl, cacheImpl, report, selection);
   };
 };
 
@@ -323,11 +355,16 @@ interface RewriteReport {
   readonly redirectRewritten: boolean;
 }
 
-/** Reports the outcome of one proxied request. */
+/**
+ * Reports the outcome of one proxied request. `upstream` is the authority that
+ * actually answered — or, on a failure, the last one tried; refusals before any
+ * forward use the caller's assigned bucket.
+ */
 type Report = (
   status: number,
   outcome: ProxyEvent['outcome'],
   attempts: number,
+  upstream?: string,
   rewrite?: RewriteReport,
   cache?: CacheState,
 ) => void;
@@ -355,7 +392,7 @@ interface CachePlan {
  */
 const buildCachePlan = (
   config: CacheConfig,
-  route: Route,
+  fingerprint: string,
   request: Request,
   url: URL,
   method: string,
@@ -365,7 +402,7 @@ const buildCachePlan = (
   if (store === undefined || !requestCacheable(request, method, config)) {
     return undefined;
   }
-  const key = cacheKey(url, method, routeFingerprint(route));
+  const key = cacheKey(url, method, fingerprint);
   return key === undefined ? undefined : { config, store, key };
 };
 
@@ -392,11 +429,17 @@ const inBackground = (c: Context, work: Promise<unknown> | undefined): void => {
 };
 
 /**
- * Serves one matched request, through the response cache when the route has one.
+ * Serves one matched request, through the response cache when the route has one,
+ * and otherwise from the upstream.
  *
  * The cache is consulted before the upstream and written after it. A stale entry
  * is served immediately and revalidated behind the response, so the visitor who
  * happened to arrive past the TTL does not pay for the refresh.
+ *
+ * Rewrites and reports follow the candidate that actually answered, not the one
+ * the walk started from: a response reached through failover carries the
+ * backup's host in `Location`/`Set-Cookie`, and crediting the primary would
+ * rewrite the visitor onto a server that never served them.
  */
 const proxyRequest = async (
   match: Match,
@@ -405,13 +448,31 @@ const proxyRequest = async (
   fetchImpl: typeof fetch | undefined,
   cacheImpl: ResponseCacheStore | undefined,
   report: Report,
+  selection?: Selection,
 ): Promise<Response> => {
   const { route } = match;
+  // The bucket this caller was assigned to, as an authority. The cache key
+  // cannot say which upstream produced its entry, so a hit reports this bucket —
+  // also what the sticky cookie below names.
+  const assigned = splitUpstream(
+    upstreamCandidates(route, selection?.index ?? 0)[0] ?? '',
+  ).authority;
   const caching = route.cache?.enabled === true ? route.cache : undefined;
   const plan =
     caching === undefined
       ? undefined
-      : buildCachePlan(caching, route, c.req.raw, url, c.req.method, cacheImpl);
+      : buildCachePlan(
+          caching,
+          // The bucket belongs in the key: split upstreams may serve different
+          // bytes, and one shared key would hand bucket A's cached entry to
+          // bucket B's caller. The fingerprint already pins the route config;
+          // the index pins which slice of it produced the bytes.
+          `${routeFingerprint(route)}.${selection?.index ?? 0}`,
+          c.req.raw,
+          url,
+          c.req.method,
+          cacheImpl,
+        );
 
   if (plan !== undefined) {
     const cached = await readCachedResponse({
@@ -430,6 +491,7 @@ const proxyRequest = async (
         cached.response.status,
         'ok',
         0,
+        undefined,
         {
           bodyRewritten: false,
           // A route with no rewrite configured keeps saying so, so "which routes
@@ -454,6 +516,7 @@ const proxyRequest = async (
               fetchImpl,
               detached: true,
               cacheState: undefined,
+              selection,
             });
             if (
               refreshed.fromUpstream &&
@@ -471,18 +534,36 @@ const proxyRequest = async (
           }),
         );
       }
-      return cached.response;
+      // A hit still hands a newly-assigned caller its cookie: the cache answered
+      // this request, but the next one goes upstream, and pinning it now keeps
+      // the bucket from drifting mid-session.
+      return withStickyCookie(cached.response, route, selection, assigned);
     }
   }
 
   const cacheState: CacheState | undefined =
     caching === undefined ? undefined : plan === undefined ? 'bypass' : 'miss';
-  const produced = await produceResponse({ match, c, url, fetchImpl, detached: false, cacheState });
+  const produced = await produceResponse({
+    match,
+    c,
+    url,
+    fetchImpl,
+    detached: false,
+    cacheState,
+    selection,
+  });
   // Reported before the body is read, deliberately. The rewrite is a stream
   // transform, so a report that waited for its result would hold the event — and
   // any `waitUntil` the host queued from it — until the client had finished
   // reading. Everything the event states is already known.
-  report(produced.status, produced.outcome, produced.attempts, produced.rewrite, cacheState);
+  report(
+    produced.status,
+    produced.outcome,
+    produced.attempts,
+    produced.authority,
+    produced.rewrite,
+    cacheState,
+  );
 
   if (
     plan !== undefined &&
@@ -503,7 +584,12 @@ const proxyRequest = async (
       }),
     );
   }
-  return produced.response;
+  // The cookie rides only on a response the upstream itself produced: a 101's
+  // headers are spent on the handshake, and jouska's own 5xx never reached the
+  // bucket it would name.
+  return produced.fromUpstream && produced.status !== 101
+    ? withStickyCookie(produced.response, route, selection, produced.authority)
+    : produced.response;
 };
 
 interface ProduceOptions {
@@ -515,6 +601,8 @@ interface ProduceOptions {
   detached: boolean;
   /** Recorded on the response, so a caching route's behaviour is visible from outside. */
   cacheState: CacheState | undefined;
+  /** The traffic-split pick, rotating the candidate order so it comes first. */
+  selection: Selection | undefined;
 }
 
 /** One trip to the upstream and the rewriting of what comes back. */
@@ -523,6 +611,12 @@ interface Produced {
   status: number;
   outcome: ProxyEvent['outcome'];
   attempts: number;
+  /**
+   * The candidate that answered, as an authority — or, on a failure, the last
+   * one tried. Rewrites and reports follow it: crediting the primary would
+   * point a failover-served visitor at a server that never served them.
+   */
+  authority: string;
   /**
    * False when the response is jouska's own error rather than the upstream's, so
    * a 502 for an unreachable origin is never mistaken for something to cache.
@@ -549,34 +643,42 @@ const produceResponse = async ({
   fetchImpl,
   detached,
   cacheState,
+  selection,
 }: ProduceOptions): Promise<Produced> => {
   const { route } = match;
-  const target = resolveUpstreamUrl(match, url);
+  const targets = upstreamCandidates(route, selection?.index ?? 0).map((upstream) =>
+    resolveUpstreamUrl(match, url, upstream),
+  );
   // Counted by forward itself, so a retry is visible to the caller rather than
   // hidden inside a single reported request.
   let attempts = 0;
+  let lastTarget = targets[0]!;
   const counting: typeof fetch = (input, init) => {
     attempts += 1;
+    lastTarget = input instanceof Request ? new URL(input.url) : lastTarget;
     return (fetchImpl ?? fetch)(input as RequestInfo, init);
   };
 
-  let upstream: Response;
+  let result: Awaited<ReturnType<typeof forward>>;
   try {
-    upstream = await forward({
+    result = await forward({
       route,
-      target,
+      targets,
       request: c.req.raw,
       requestUrl: url,
       fetchImpl: counting,
       detached,
     });
   } catch (error) {
-    const failure = upstreamFailure(error, c, target);
+    // Attributed to the last candidate actually tried: with no response there is
+    // no `result.target`, and the walk's stopping point is where the fault is.
+    const failure = upstreamFailure(error, c, lastTarget);
     return {
       response: failure,
       status: failure.status,
       outcome: failureOutcome(error),
       attempts,
+      authority: lastTarget.host,
       fromUpstream: false,
       upstreamHeaders: new Headers(),
     };
@@ -585,18 +687,21 @@ const produceResponse = async ({
   // A 101 carries the socket itself and cannot be reconstructed: `new Response`
   // refuses any status outside 200–599, and rewrapping would drop the
   // `webSocket` property even if it did not. Verified against workerd, both.
-  if (upstream.status === 101) {
+  if (result.response.status === 101) {
     return {
-      response: upstream,
+      response: result.response,
       status: 101,
       outcome: 'ok',
       attempts,
+      authority: result.target.host,
       fromUpstream: true,
-      upstreamHeaders: upstream.headers,
+      upstreamHeaders: result.response.headers,
     };
   }
 
-  const { authority } = splitUpstream(route.upstream);
+  const upstream = result.response;
+  const target = result.target;
+  const authority = target.host;
   const contentType = parseContentType(upstream.headers.get('content-type'));
   const decision = decideRewrite(route.bodyRewrite, upstream, contentType);
 
@@ -651,6 +756,7 @@ const produceResponse = async ({
     status: upstream.status,
     outcome: 'ok',
     attempts,
+    authority,
     fromUpstream: true,
     upstreamHeaders: upstream.headers,
     rewrite: {
@@ -660,6 +766,30 @@ const produceResponse = async ({
     },
   };
 };
+
+/**
+ * Tells a newly-assigned caller which upstream it landed on, so its next request
+ * resolves straight back to that bucket instead of being re-drawn.
+ *
+ * Only weighted assignments get the cookie — a caller that already presented a
+ * valid one is keeping it. Appended to the finished response, after header
+ * rewriting: the rewriter only touches the `Domain` attribute of upstream
+ * cookies, and this one carries none, so it can never be renamed or moved.
+ * The 101 handshake and jouska's own error responses return before this runs —
+ * see the caller for why.
+ */
+const withStickyCookie = (
+  response: Response,
+  route: Route,
+  selection: Selection | undefined,
+  authority: string,
+): Response => {
+  if (route.stickyBy === 'cookie' && selection?.reason === 'weighted') {
+    response.headers.append('set-cookie', stickyCookie(authority));
+  }
+  return response;
+};
+
 /**
  * Whether this response's body is rewritten, and if not, which of the five
  * reasons applies.

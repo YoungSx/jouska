@@ -241,16 +241,43 @@ export const matchRoute = (config: Config, request: Request): Match | undefined 
   matchUrl(config, new URL(request.url), request.method);
 
 /**
+ * The candidates a request may be sent to, preferred one first.
+ *
+ * `upstreams` is already an order. `trafficSplit` is not — its entries are a
+ * distribution — so the walk order is the declared order rotated to put the
+ * selected entry first: failover from the winner moves on to the other split
+ * participants in the order they were written. `primaryIndex` therefore only
+ * means something for a split; the other forms ignore it. The config's
+ * cross-field check guarantees exactly one of the three forms parsed.
+ */
+export const upstreamCandidates = (route: Route, primaryIndex = 0): string[] => {
+  if (route.upstreams !== undefined) {
+    return route.upstreams;
+  }
+  if (route.trafficSplit !== undefined) {
+    const split = route.trafficSplit.map((entry) => entry.upstream);
+    const start = Math.min(Math.max(primaryIndex, 0), split.length - 1);
+    return [...split.slice(start), ...split.slice(0, start)];
+  }
+  return [route.upstream!];
+};
+
+/**
  * Builds the absolute upstream URL, applying the base path and prefix strip.
+ *
+ * The candidate is passed explicitly rather than read from the route: with a
+ * failover list or a split there is no single `upstream` to read, and the
+ * caller — which picked the candidate — is the authority on which one is being
+ * resolved.
  *
  * The scheme comes from the route config (`http` or `https`), not a hardcoded
  * `https://` — local and in-network origins were unreachable before. The
  * client's path encoding is preserved: `/%61dmin` is forwarded as
  * `/%61dmin`, not re-encoded.
  */
-export const resolveUpstreamUrl = (match: Match, url: URL): URL => {
+export const resolveUpstreamUrl = (match: Match, url: URL, upstream: string): URL => {
   const { route } = match;
-  const { authority, basePath } = splitUpstream(route.upstream);
+  const { authority, basePath } = splitUpstream(upstream);
 
   const tail = route.stripPrefix
     ? stripMatchedPrefix(url.pathname, match.matchedPrefix)

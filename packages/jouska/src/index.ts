@@ -16,8 +16,9 @@ export type {
 export { resolveConfig } from './resolve.js';
 // Match diagnostics: an admin panel validates a route table with the same
 // matcher the proxy runs (shadow detection, probe checks), so the matcher must
-// be importable rather than reimplemented beside it.
-export { matchUrl, routeId, splitUpstream } from './router.js';
+// be importable rather than reimplemented beside it. `upstreamCandidates`
+// belongs with it: a panel that explains a route shows the walk order too.
+export { matchUrl, routeId, splitUpstream, upstreamCandidates } from './router.js';
 export type { Match } from './router.js';
 export { firstAvailable, fromEnvVar, fromKV } from './sources.js';
 export type { ConfigSource, KVReader, KVSourceOptions } from './sources.js';
@@ -29,3 +30,6 @@ export type { JouskaOptions, ProxyEvent, RewriteSkipReason } from './middleware/
 // a deployment that supplies its own cache rather than `caches.default`.
 export { CACHE_STATE_HEADER } from './internal/response-cache.js';
 export type { CacheState, ResponseCacheStore } from './internal/response-cache.js';
+// `ProxyEvent.selection` references it, so consumers typing their `onProxy`
+// need the shape even though the picker itself stays internal.
+export type { Selection } from './internal/selection.js';
