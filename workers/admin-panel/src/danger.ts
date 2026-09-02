@@ -108,6 +108,14 @@ const RULES: readonly Rule[] = [
     reason:
       'the default list is static assets only; adding a document type means a page personalised without a cookie or a private marker would be served to the next visitor',
   },
+  {
+    path: 'cache.key.headers',
+    level: 'medium',
+    // An empty list folds nothing and is the default spelled out.
+    guard: (node) => Array.isArray(node) && node.length > 0,
+    reason:
+      'every distinct value of these headers becomes its own cache entry — folding a high-cardinality header like user-agent or referer gives each visitor a private cache and the hit rate drops to zero',
+  },
 ];
 
 /**

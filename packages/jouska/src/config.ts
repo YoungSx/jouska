@@ -807,6 +807,90 @@ const upstreamHeaderMap = z
 const upstreamHeaders = upstreamHeaderMap.default({});
 
 /**
+ * Query parameters reach the key in exactly one of three shapes.
+ *
+ * `"all"` keeps everything — today's behaviour, and the default. `"none"`
+ * drops the search string entirely. The object form names parameters: `ignore`
+ * drops the named noise, `include` keeps only the named signal. The two must
+ * not co-occur (`{ ignore: ['a'], include: ['b'] }` says both "forget `a`" and
+ * "forget everything but `b`", whose combined meaning nobody should have to
+ * guess) and an empty object is refused, because `{} = all = none` reads three
+ * ways and a reader would have to trust the runtime to pick one.
+ *
+ * Parameter names are compared case-sensitively: the query is opaque bytes to
+ * HTTP, and an upstream is free to treat `Tab` and `tab` differently — merging
+ * them here would map two upstream-distinct requests onto one entry.
+ */
+const cacheKeyQuery = z.union([
+  z.literal('all'),
+  z.literal('none'),
+  z
+    .object({
+      ignore: z.array(z.string().min(1)).nonempty().optional(),
+      include: z.array(z.string().min(1)).nonempty().optional(),
+    })
+    .superRefine((value, ctx) => {
+      if (value.ignore !== undefined && value.include !== undefined) {
+        ctx.addIssue({
+          code: 'custom',
+          path: ['include'],
+          message: 'cache.key.query states one selection: name ignore or include, not both',
+        });
+      }
+      if (value.ignore === undefined && value.include === undefined) {
+        ctx.addIssue({
+          code: 'custom',
+          message:
+            'cache.key.query must name parameters — "all" and "none" are the spellings for keeping or dropping everything',
+        });
+      }
+    }),
+]);
+
+/**
+ * Request header names folded into the cache key.
+ *
+ * A header here makes the key distinguish requests by that header's value —
+ * which is both a hit-rate decision (fold a high-cardinality header and the
+ * cache becomes one entry per visitor) and a safety decision, because folding
+ * a header is what lets a matching `Vary` be honoured instead of refusing the
+ * response outright.
+ *
+ * `cookie` and `authorization` are refused rather than accepted-and-ignored:
+ * requests carrying either are never cached at all (see "What is never
+ * cached"), so folding them into the key changes nothing, and a configuration
+ * that names them is promising an effect it cannot have.
+ */
+const cacheKeyHeaders = z
+  .array(headerName)
+  .superRefine((names, ctx) => {
+    for (const name of names) {
+      if (['authorization', 'cookie'].includes(name.toLowerCase())) {
+        ctx.addIssue({
+          code: 'custom',
+          message:
+            `cache.key.headers may not name "${name}": a request carrying it is never ` +
+            `cached, so folding it into the key changes nothing — see the README's ` +
+            `"What is never cached"`,
+        });
+      }
+    }
+  })
+  // Lowercased and deduplicated so the runtime compares one spelling against
+  // the response's `Vary`, and a repeated name cannot double-count.
+  .transform((names) => [...new Set(names.map((name) => name.toLowerCase()))])
+  .default([]);
+
+/**
+ * What an entry's identity is built from, beyond the path. See the `key`
+ * field on the `cache` block.
+ */
+const cacheKey = z.object({
+  query: cacheKeyQuery.default('all'),
+  headers: cacheKeyHeaders,
+});
+
+/**
  * Upstream response caching, served from the Cloudflare Cache API.
  *
  * Off unless a route says otherwise, and the defaults cover static assets only —
@@ -953,6 +1037,27 @@ const cache = z.object({
       }
     })
     .optional(),
+  /**
+   * What an entry's identity is built from, beyond the path.
+   *
+   * Today the key is the whole request URL, so one tracking parameter
+   * (`utm_source`, `fbclid`) turns one resource into one entry per link it was
+   * shared in, and a response varying on `accept-language` cannot be cached at
+   * all — the key does not represent the one thing the upstream varies on.
+   * `query` controls which parameters reach the key; `headers` folds request
+   * header values into it. Folding a header into the key is also what makes a
+   * matching `Vary` cacheable — see `varyIsCovered` — which is why the two
+   * fields share this block.
+   *
+   * The block sits inside `cache`, so it is part of the route the fingerprint
+   * hashes: changing it produces different keys and the old entries expire
+   * unnoticed, the same mechanism every other route edit relies on.
+   *
+   * `prefault` rather than `default`: a `default` returns its value verbatim,
+   * unparsed, so the inner defaults (`query: 'all'`, `headers: []`) would never
+   * be applied and the key would run on `undefined`s.
+   */
+  key: cacheKey.prefault({}),
 });
 
 /** Fields shared by a route and the table-wide `defaults` block. */
