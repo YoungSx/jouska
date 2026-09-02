@@ -202,7 +202,11 @@ domainRoutes.get('/domains', async (c) => {
     return c.json<DomainsResponse>({ configured: false, reason: credentials.reason, script });
   }
 
-  const key = `${credentials.accountId} ${script} ${credentials.apiToken}`;
+  // NUL separates the parts because it cannot occur in an account id, a script
+  // name or a token, so no two distinct credentials can collide on one key.
+  // Spelled as an escape, not a literal byte: a raw NUL in the first 8KB makes
+  // git treat the file as binary, and the diff for this file disappears.
+  const key = `${credentials.accountId}\u0000${script}\u0000${credentials.apiToken}`;
   const now = Date.now();
   const fetchImpl = (c.env as Env & DiscoveryOverrides).CF_API_FETCH;
   let result: DiscoveryResult;
