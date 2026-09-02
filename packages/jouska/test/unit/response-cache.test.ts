@@ -418,34 +418,34 @@ describe('responseCacheable', () => {
   });
 
   it('admits a Vary the key headers list, case-insensitively', () => {
-    const cache = cacheWith({ key: { query: 'all', headers: ['accept-language'] } });
+    const varyCache = cacheWith({ key: { query: 'all', headers: ['accept-language'] } });
     expect(
       responseCacheable(
         cacheable({ vary: 'accept-language' }),
         cacheable({ vary: 'accept-language' }).headers,
-        cache,
+        varyCache,
       ),
     ).toBe(true);
     expect(
       responseCacheable(
         cacheable({ vary: 'Accept-Language, Accept-Encoding' }),
         cacheable({ vary: 'Accept-Language, Accept-Encoding' }).headers,
-        cache,
+        varyCache,
       ),
     ).toBe(true);
   });
 
   it('refuses a Vary only partly covered, star included', () => {
-    const cache = cacheWith({ key: { query: 'all', headers: ['accept-language'] } });
+    const varyCache = cacheWith({ key: { query: 'all', headers: ['accept-language'] } });
     expect(
       responseCacheable(
         cacheable({ vary: 'accept-language, user-agent' }),
         cacheable({ vary: 'accept-language, user-agent' }).headers,
-        cache,
+        varyCache,
       ),
     ).toBe(false);
     expect(
-      responseCacheable(cacheable({ vary: '*' }), cacheable({ vary: '*' }).headers, cache),
+      responseCacheable(cacheable({ vary: '*' }), cacheable({ vary: '*' }).headers, varyCache),
     ).toBe(false);
   });
 
