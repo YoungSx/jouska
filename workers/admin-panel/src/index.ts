@@ -28,6 +28,11 @@ app.get('/api/health', (c) => c.json({ ok: true }));
 app.use('/api/*', requireSameOrigin);
 
 app.route('/api/auth', authRoutes);
+
+// Everything below is authenticated; admin-only writes are gated next to
+// their handlers in api/config.ts, so viewers keep read access.
+app.use('/api/*', requireUser);
+
 app.route('/api', configRoutes);
 app.route('/api', domainRoutes);
 app.route('/api', userRoutes);
