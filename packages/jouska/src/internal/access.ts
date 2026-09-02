@@ -46,8 +46,7 @@ const JWKS_REFRESH_MIN_AGE_MS = 60 * 1000;
 export type AccessRefusal = 'missing' | 'too_long' | 'invalid' | 'forbidden' | 'jwks_unavailable';
 
 export type AccessVerdict =
-  | { ok: true }
-  | { ok: false; status: 401 | 403 | 503; reason: AccessRefusal };
+  { ok: true } | { ok: false; status: 401 | 403 | 503; reason: AccessRefusal };
 
 const refused = (status: 401 | 403 | 503, reason: AccessRefusal): AccessVerdict => ({
   ok: false,
@@ -197,9 +196,7 @@ const fetchJwks = async (team: string, fetchImpl: typeof fetch): Promise<JsonWeb
   // redirect elsewhere is the failure that check exists to prevent.
   let keys: JsonWebKeyWithKid[];
   try {
-    const response = await fetchImpl(
-      `https://${team}.cloudflareaccess.com/cdn-cgi/access/certs`,
-    );
+    const response = await fetchImpl(`https://${team}.cloudflareaccess.com/cdn-cgi/access/certs`);
     if (!response.ok) {
       throw new Error(`jwks request failed with ${response.status}`);
     }
@@ -283,8 +280,7 @@ const checkJwt = async (
   }
   const [headerPart, payloadPart, signaturePart] = parts as [string, string, string];
   const header = parseJson(base64UrlBytes(headerPart) ?? new Uint8Array()) as
-    | { alg?: string; kid?: string }
-    | undefined;
+    { alg?: string; kid?: string } | undefined;
   const signature = base64UrlBytes(signaturePart);
   if (header === undefined || signature === undefined) {
     return refused(401, 'invalid');
@@ -327,8 +323,7 @@ const checkJwt = async (
   // The signature vouches for this payload; now, and only now, its claims can
   // decide anything.
   const claims = parseJson(base64UrlBytes(payloadPart) ?? new Uint8Array()) as
-    | AccessClaims
-    | undefined;
+    AccessClaims | undefined;
   if (claims === undefined) {
     return refused(401, 'invalid');
   }

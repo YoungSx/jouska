@@ -1805,9 +1805,7 @@ export const RouteEditor = ({
                       }
                     />
                     <FieldContent>
-                      <FieldLabel htmlFor="route-editor-access">
-                        {t.fields.access.label}
-                      </FieldLabel>
+                      <FieldLabel htmlFor="route-editor-access">{t.fields.access.label}</FieldLabel>
                     </FieldContent>
                   </Field>
 
