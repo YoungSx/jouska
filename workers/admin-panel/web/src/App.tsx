@@ -51,13 +51,7 @@ import type { RouteDefinition } from '@/lib/types';
  * 正在服务哪一版」这个问题始终有答案。
  */
 
-type View =
-  | 'routes'
-  | 'domains'
-  | 'preview'
-  | 'audit'
-  | 'users'
-  | 'history';
+type View = 'routes' | 'domains' | 'preview' | 'audit' | 'users' | 'history';
 
 interface NavItem {
   readonly id: View;
