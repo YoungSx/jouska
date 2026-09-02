@@ -83,8 +83,10 @@ Routes are evaluated in order and the first match wins.
 | `scheme`               | `https`  | Scheme used to reach the upstream.                                         |
 | `allowPrivateUpstream` | off      | Permit a loopback, private or metadata upstream.                           |
 | `stripPrefix`          | `false`  | Remove the matched prefix before forwarding.                               |
-| `timeoutMs`            | `10000`  | Per-attempt upstream deadline.                                             |
-| `totalTimeoutMs`       | `30000`  | Ceiling on all attempts combined, including backoff.                       |
+| `timeoutMs`            | `10000`  | Per-attempt deadline for **response headers**. Max 120s.                   |
+| `totalTimeoutMs`       | `30000`  | Ceiling on all attempts to headers, including backoff. Max 300s.           |
+| `firstChunkTimeoutMs`  | `60000`  | Wait for the body's first byte after headers arrive.                       |
+| `streamIdleTimeoutMs`  | `60000`  | Longest silence between body bytes once it has started.                    |
 | `retries`              | `0`      | Extra attempts. Only idempotent methods retry.                             |
 | `retryBackoffMs`       | `100`    | Delay before the first retry, doubled for each subsequent one.             |
 | `rewriteHeaders`       | `true`   | Rewrite `Location`, `Refresh` and `Set-Cookie` onto the proxy.             |
@@ -302,6 +304,93 @@ Attempts back off exponentially from `retryBackoffMs`, and `totalTimeoutMs`
 bounds them all together. Without that ceiling, `retries: 3` with
 `timeoutMs: 30000` could occupy the proxy for two minutes before returning 504.
 
+Note that a request carrying a body is never retried, whatever `retries` says:
+the body is a stream, the first attempt consumes it, and a second attempt would
+have nothing to send. So on a route serving `POST` — an API proxy, most
+obviously — `retries` is inert. It is not a bug to be fixed; a stream cannot be
+replayed.
+
+### Streaming deadlines
+
+Four deadlines, not two, because a response has four phases worth bounding
+separately:
+
+| Phase                               | Field                 | Default |
+| ----------------------------------- | --------------------- | ------- |
+| One attempt, up to response headers | `timeoutMs`           | 10s     |
+| All attempts, up to headers         | `totalTimeoutMs`      | 30s     |
+| Headers → the body's first byte     | `firstChunkTimeoutMs` | 60s     |
+| Between two body bytes              | `streamIdleTimeoutMs` | 60s     |
+
+**There is deliberately no ceiling on the body's total duration.** As long as
+bytes keep arriving, the response keeps streaming — for minutes, if that is how
+long the upstream takes. This is the shape nginx has used throughout its history:
+`proxy_read_timeout` is "set only between two successive read operations, not for
+the transmission of the whole response", and nginx has no whole-response bound at
+all. A total-duration cap is what makes a long streamed answer fail for no reason
+the operator can act on.
+
+`timeoutMs` bounds headers **only**. It used to reach the last byte of the body,
+because the value was handed to `AbortSignal.timeout` and that signal governs the
+whole exchange. The consequence was silent: an 8-event SSE stream spanning 400ms
+under `timeoutMs: 150` reached the client as `200 OK`, two events, and then a
+dead socket — and `onProxy` reported a successful 200, because by then it was one.
+
+The first-byte and between-bytes deadlines are separate numbers because they
+catch different failures. An upstream that sends nothing for a minute before its
+first token is working; a minute of silence _between_ tokens is a dead
+connection. One number for both either kills the slow starter or waits out its
+budget before noticing the corpse. Keep-alive frames from the upstream reset the
+idle deadline, which is correct — those frames are the upstream saying it is
+still there. jouska never injects keep-alives of its own: feeding the deadline
+from inside the proxy would guarantee it never fires.
+
+A route proxying a streaming API therefore wants its own numbers:
+
+```ts
+{
+  match: { host: 'api.example.com' },
+  upstream: 'api.anthropic.com',
+  timeoutMs: 60_000,            // a cold-starting upstream can be slow to answer at all
+  totalTimeoutMs: 60_000,       // retries: 0, so the same figure
+  firstChunkTimeoutMs: 300_000, // five minutes for a reasoning model's first token
+  streamIdleTimeoutMs: 60_000,  // after that, a minute of silence means it died
+  // no bodyRewrite, no cache — see Streaming media below
+}
+```
+
+When a body deadline does expire, the headers are long gone, so the failure
+cannot be a status code: the client's stream errors instead, and
+`ProxyEvent.stream` resolves with `first_chunk_timeout` or `idle_timeout`. That
+promise is the only place a cut stream is visible — `status` will read `200` for
+it. The upstream connection is cut at the same moment, so a metered API stops
+generating into a stream nobody will read.
+
+### Streaming media
+
+`text/event-stream` and the line-delimited JSON types (`application/x-ndjson`,
+`application/jsonl`, `application/x-jsonlines`, `application/stream+json`) are
+never rewritten and never cached, whatever a route's `bodyRewrite.contentTypes`
+or `cache.contentTypes` say. Not a default to widen — a hard list, because
+neither operation has a correct form on a stream:
+
+- **Rewriting holds bytes back.** The literal-replacement pass withholds the tail
+  of every chunk, one byte short of the longest needle, so a match straddling a
+  chunk boundary is not split. On a framed stream that cuts inside the frame:
+  verified against a real SSE upstream, a route with one `replace` rule delivered
+  `"da"`, then `"ta: {"i":0}
+
+da"`, and so on — every chunk severed
+  mid-`data:`, which no `EventSource` can parse.
+
+- **Caching replays.** A stored answer served to the next caller is that caller
+  reading somebody else's stream, generated once, with none of their own tokens
+  produced. Verified: `cache.contentTypes: ['text/']` stored an SSE response and
+  reported `hit` on the following request.
+
+A skipped rewrite reports `rewriteSkipped: 'streaming_media'`, so the reason is
+visible rather than looking like a route that forgot to configure one.
+
 ### Failover and traffic splitting
 
 A route names its upstreams in exactly one of three ways, and every request
@@ -320,8 +409,8 @@ walk moves to the next candidate only after the previous one failed with a
 condition the route's `failover.on` names — `timeout`, `unreachable`, or the
 opt-in `'5xx'` — and only while the request is replayable, so an idempotent
 bodyless GET walks, and a POST with a body or a WebSocket handshake gets one
-attempt at the primary. `failover.maxAttempts` (default 6) caps the walk, and
-`totalTimeoutMs` bounds it in time. Each candidate is tried once; listing the
+attempt at the primary. `failover.maxAttempts` caps the walk — it defaults to
+every candidate the route declares — and `totalTimeoutMs` bounds it in time. Each candidate is tried once; listing the
 same upstream twice is how a same-upstream retry is spelled in a failover list.
 
 A 5xx is a normal response and ends the walk unless `'5xx'` is in the policy.
@@ -1063,6 +1152,7 @@ app.use(
 | `cache`      | `hit`, `stale`, `miss`, `bypass` or `stale_error`; absent without a `cache` block.                                                                                            |
 | `selection`  | How a split route picked its upstream — present only on `trafficSplit` routes, with the winning entry's `index` and whether a `sticky` cookie or the `weighted` hash decided. |
 | `ejected`    | Candidates the outlier memory removed from the walk before the first attempt. Absent when nothing was skipped, and on routes without an `outlier` policy.                     |
+| `stream`     | Promise of how the body stream ended, resolved once it has. Absent when nothing streamed from an upstream — a refusal, a 101, a bodyless response, a cache hit.               |
 
 Three more report what happened to the response body, which is what a mirrored
 site is judged by:
@@ -1073,7 +1163,7 @@ site is judged by:
 | `rewriteSkipped`    | Why it was not. Absent when it was, and when nothing was proxied.        |
 | `redirectRewritten` | True when the `Location` sent to the client differs from the upstream's. |
 
-`rewriteSkipped` names one of six causes. Every one of them used to be silent,
+`rewriteSkipped` names one of seven causes. Every one of them used to be silent,
 and that silence is the problem: a mirror whose links still point at the origin
 renders identically to one whose links were rewritten, until a visitor clicks one
 and leaves.
@@ -1084,11 +1174,24 @@ and leaves.
 | `bodyless_status`     | 204, 206 or 304 — the status forbids a body.                                     |
 | `no_body`             | The status permits a body and none arrived, as for the answer to a HEAD.         |
 | `content_type`        | The type is outside `bodyRewrite.contentTypes`.                                  |
+| `streaming_media`     | A stream, refused whatever `contentTypes` says; see Streaming media.             |
 | `charset_undecodable` | A declared charset this runtime cannot decode, with no usable `fallbackCharset`. |
 | `served_from_cache`   | The response came from the route's cache, so no rewrite ran on this request.     |
 
 `charset_undecodable` is the one worth alerting on: the config reads correctly,
 the page renders, and the links simply do not change.
+
+`stream` resolves to `{ outcome, bytes, durationMs }`, where `outcome` is
+`complete`, `first_chunk_timeout`, `idle_timeout`, `upstream_reset` or
+`client_closed`. It is a promise rather than a second callback so that the event
+itself is not delayed: waiting for the body would hold every `waitUntil` the host
+queued from `onProxy` until the client had finished reading, which on a streamed
+answer is minutes. A host that wants the outcome awaits it inside
+`ctx.waitUntil`; one that does not ignores it. It never rejects.
+
+The two deadline outcomes are the ones to alert on: they mean the proxy cut a
+response the client had already been told was `200 OK`, which is unrecoverable by
+construction — the headers are gone — and invisible in `status`.
 
 `served_from_cache` keeps a caching route's rewrite rate readable: without it every
 hit would report `bodyRewritten: false` with nothing to tell that apart from a
@@ -1173,11 +1276,16 @@ a receiver that does real async I/O is the one that needs `ctx.waitUntil`.
 | 499    | The client hung up before the upstream answered.                |
 | 500    | The `rateLimit` binding named in config is missing.             |
 | 502    | Upstream unreachable after all attempts.                        |
-| 504    | Upstream exceeded `timeoutMs` or `totalTimeoutMs`.              |
+| 504    | Upstream sent no headers within `timeoutMs` / `totalTimeoutMs`. |
 
 499 is nginx's non-standard "client closed request". Nothing is listening for it,
 but it keeps client aborts out of the upstream error rate, where they would look
 like the origin failing.
+
+A body deadline has no status. By the time `firstChunkTimeoutMs` or
+`streamIdleTimeoutMs` expires the headers have shipped, so the client's stream
+errors mid-flight and the status stays whatever the upstream sent — usually 200.
+`ProxyEvent.stream` is where that shows up; see Streaming deadlines.
 
 A missing rate-limit binding is a 500 rather than an open door, and a per-caller
 limit that cannot be keyed is a 403. One shared `unknown` bucket would either let
@@ -1194,7 +1302,15 @@ These are Workers limits, not choices, and they shape the architecture:
   expressible here.
 - **128MB memory, on every plan.** Body rewriting is streaming throughout;
   nothing calls `await response.text()` on a proxied body.
-- **CPU time limits.** `timeoutMs` is capped at 30s to stay inside them.
+- **Wall time is not bounded, CPU time is.** An HTTP-triggered Worker has no
+  duration limit — "as long as the client remains connected, the Worker can
+  continue processing, making subrequests, and streaming a response body" — and
+  "there is no set time limit on individual subrequests". Waiting on an upstream
+  spends no CPU, which is why the body deadlines above bound silence rather than
+  duration. What is bounded is CPU (10ms free, 30s–5min paid) and, during a
+  platform update, in-flight requests get a 30-second grace period — so a stream
+  running for many minutes may be terminated by a deploy, whatever this proxy
+  does.
 - **The Cache API keys on GET and does not honour `Vary`.** `put` throws on a
   non-GET key, on a 206 and on `Vary: *`; it accepts and then silently drops a
   304, a 5xx, a `Set-Cookie` response and anything marked `private`, `no-store`

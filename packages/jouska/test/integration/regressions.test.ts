@@ -1379,8 +1379,10 @@ describe('defaults are validated exactly as a route is', () => {
 
   it.each([
     ['blockCountries', { blockCountries: ['中国'] }],
-    ['timeoutMs', { timeoutMs: 99_999 }],
-    ['retries', { retries: 99 }],
+    // Past the 120s ceiling, so this exercises the bound itself rather than the
+    // cross-field check against `totalTimeoutMs`.
+    ['timeoutMs', { timeoutMs: 200_000 }],
+    ['retries', { retries: 101 }],
     ['ip', { ip: { allow: [], deny: [] } }],
   ])('refuses an invalid %s in either place', (_label, value) => {
     const asDefaults = () =>

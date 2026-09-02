@@ -30,6 +30,12 @@ export type { JouskaOptions, ProxyEvent, RewriteSkipReason } from './middleware/
 // a deployment that supplies its own cache rather than `caches.default`.
 export { CACHE_STATE_HEADER } from './internal/response-cache.js';
 export type { CacheState, ResponseCacheStore } from './internal/response-cache.js';
+// `ProxyEvent.stream` resolves to one of these, so a host that inspects how a
+// streamed response ended needs both the report shape and the outcome names.
+// `StreamDeadlineError` is what the client's stream errors with when a body
+// deadline expires, and is exported so a host can recognise it.
+export { StreamDeadlineError } from './internal/stream-watch.js';
+export type { StreamOutcome, StreamReport } from './internal/stream-watch.js';
 // `ProxyEvent.selection` references it, so consumers typing their `onProxy`
 // need the shape even though the picker itself stays internal.
 export type { Selection } from './internal/selection.js';

@@ -367,6 +367,45 @@ export const contentTypeAllowed = (
   contentType !== undefined && allowed.some((a) => contentType.type.startsWith(a.toLowerCase()));
 
 /**
+ * Media types whose value is the arrival of each byte, not the bytes.
+ *
+ * These are refused by the rewriter and by the response cache regardless of what
+ * a route configures, because neither operation has a correct form on them:
+ *
+ *  - **Rewriting** holds bytes back. The literal pass withholds the tail of every
+ *    chunk — one byte short of the longest needle — so a match straddling a chunk
+ *    boundary is not split. On a framed stream that cuts inside the frame:
+ *    verified against a real SSE upstream, a route with one `replace` rule
+ *    delivered `"da"`, then `"ta: {\"i\":0}\n\nda"`, and so on, every chunk severed
+ *    mid-`data:`. No `EventSource` can parse that. Link rewriting happens to
+ *    survive today — its hold-back only triggers on a URL touching the buffer's
+ *    end, and an SSE frame ends in `\n\n` so a URL never does — which is luck,
+ *    not design, and it does not hold for a line-delimited format.
+ *  - **Caching** replays. A stored answer served to the next caller is that
+ *    caller reading somebody else's stream, generated once, with none of their
+ *    own tokens produced. Verified: a route with `cache.contentTypes: ['text/']`
+ *    stored an SSE response and reported `hit` on the second request.
+ *
+ * A hard list rather than a default the operator may widen: "cache this stream"
+ * and "rewrite this stream" have no configuration under which they are right, and
+ * a default they can override is an invitation to find out the hard way.
+ *
+ * Matched on the bare media type, so a `charset` parameter does not evade it.
+ */
+const STREAMING_MEDIA_TYPES = new Set([
+  'text/event-stream',
+  'application/x-ndjson',
+  // The same line-delimited JSON under the labels various tools emit.
+  'application/jsonl',
+  'application/x-jsonlines',
+  'application/stream+json',
+]);
+
+/** Whether a parsed content type is one of {@link STREAMING_MEDIA_TYPES}. */
+export const isStreamingMedia = (contentType: ContentType | undefined): boolean =>
+  contentType !== undefined && STREAMING_MEDIA_TYPES.has(contentType.type);
+
+/**
  * Labels that this runtime decodes as UTF-8, so the bytes pass through unchanged.
  *
  * Only true UTF-8 aliases belong here. `us-ascii` and `ascii` look safe — every

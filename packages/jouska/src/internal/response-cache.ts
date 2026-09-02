@@ -31,7 +31,7 @@
  */
 
 import type { CacheConfig, Route } from '../config.js';
-import { contentTypeAllowed, parseContentType } from './body.js';
+import { contentTypeAllowed, isStreamingMedia, parseContentType } from './body.js';
 import { isWebSocketUpgrade } from './forward.js';
 import { readCookie } from './cookies.js';
 
@@ -444,13 +444,24 @@ export const responseCacheable = (
   response: Response,
   upstreamHeaders: Headers,
   cache: CacheConfig,
-): boolean =>
-  ttlForStatus(response.status, cache) > 0 &&
-  upstreamHeaders.getSetCookie().length === 0 &&
-  !forbidsSharedCaching(upstreamHeaders.get('cache-control')) &&
-  varyIsCovered(upstreamHeaders.get('vary'), cache) &&
-  (response.status !== 200 ||
-    contentTypeAllowed(parseContentType(response.headers.get('content-type')), cache.contentTypes));
+): boolean => {
+  const contentType = parseContentType(response.headers.get('content-type'));
+  // Ahead of every configurable condition, because this one is not configurable:
+  // storing a stream and replaying it hands the next caller somebody else's
+  // answer, generated once. See `isStreamingMedia`. Verified — a route with
+  // `contentTypes: ['text/']` stored an SSE response and reported `hit` on the
+  // following request.
+  if (isStreamingMedia(contentType)) {
+    return false;
+  }
+  return (
+    ttlForStatus(response.status, cache) > 0 &&
+    upstreamHeaders.getSetCookie().length === 0 &&
+    !forbidsSharedCaching(upstreamHeaders.get('cache-control')) &&
+    varyIsCovered(upstreamHeaders.get('vary'), cache) &&
+    (response.status !== 200 || contentTypeAllowed(contentType, cache.contentTypes))
+  );
+};
 
 export interface CachedResponse {
   /**

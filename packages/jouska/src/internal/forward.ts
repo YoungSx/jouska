@@ -176,11 +176,42 @@ export interface ForwardResult {
    * started the walk.
    */
   target: URL;
+  /**
+   * Cuts the connection this response is still streaming over.
+   *
+   * Handed out because the deadlines that apply to a body are the caller's to
+   * enforce — it is the one that knows whether a byte has arrived — while the
+   * socket belongs to the attempt that opened it. Without this the caller could
+   * stop reading but not stop the upstream, which for a metered API means it
+   * keeps generating, and paying, into a stream nobody will read.
+   *
+   * The reason's `name` reaches the body stream's error; its identity does not.
+   * Verified in workerd: `abort(new IdleError())` surfaced with the right `name`
+   * and `message` on the reader, but `instanceof` was false, because the runtime
+   * rebuilds the error crossing that boundary. So a caller distinguishing its own
+   * deadline from a client hang-up compares `name`, never `instanceof`.
+   *
+   * A no-op once the exchange is over, and safe to call twice.
+   */
+  abort: (reason: Error) => void;
 }
 
 /** Raised when the combined budget for all attempts is spent. */
 export class TotalTimeoutError extends Error {
   override readonly name = 'TotalTimeoutError';
+}
+
+/**
+ * Raised when an attempt did not produce response headers within `timeoutMs`.
+ *
+ * Named `TimeoutError` rather than after the class, because that name is what
+ * `failover.on: ['timeout']` matches and what `AbortSignal.timeout` used to
+ * produce here. The class exists so this file can raise the condition itself:
+ * `AbortSignal.timeout` cannot be cancelled once created, so the signal that
+ * bounded the headers went on to fire mid-body — see {@link attemptFetch}.
+ */
+class HeadTimeoutError extends Error {
+  override readonly name = 'TimeoutError';
 }
 
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
@@ -271,7 +302,7 @@ export const forward = async ({
   const startedAt = Date.now();
   const remaining = (): number => route.totalTimeoutMs - (Date.now() - startedAt);
   let lastError: unknown;
-  let held: { response: Response; target: URL } | undefined;
+  let held: ForwardResult | undefined;
 
   // The body-size ceiling, watched on the stream itself. A body rules out replay
   // whatever the method says, so the counting wrapper is built at most once and
@@ -327,7 +358,7 @@ export const forward = async ({
       // fire N simultaneous upstream requests, which is both wasteful and
       // counter to the 6-connection-per-request cap.
       // oxlint-disable-next-line no-await-in-loop
-      const response = await attemptFetch({
+      const { response, abort } = await attemptFetch({
         request,
         body: outboundBody,
         target,
@@ -362,7 +393,7 @@ export const forward = async ({
           outlier.onFailure(target.host);
         }
         held?.response.body?.cancel();
-        held = { response, target };
+        held = { response, target, abort };
         continue;
       }
       // A candidate answered outside the held 5xx: the walk ends here, and the
@@ -375,7 +406,7 @@ export const forward = async ({
         // decided to do about it this request.
         outlier.onSuccess(target.host);
       }
-      return { response, target };
+      return { response, target, abort };
     } catch (error) {
       lastError = error;
       // An aborted upload surfaces as AbortError, which is otherwise the client
@@ -445,14 +476,23 @@ interface AttemptOptions {
 }
 
 /**
- * One upstream attempt.
+ * One upstream attempt, returning the response and the handle that cuts its
+ * connection.
  *
- * The deadline is combined with the client's own signal via `AbortSignal.any`,
- * so a visitor closing the tab cancels the upstream request instead of leaving
- * it to run out its full timeout — verified against workerd, passing only
- * `AbortSignal.timeout` left the upstream oblivious to a client abort. The two
- * are distinguishable afterwards: the reason is `AbortError` for the client and
- * `TimeoutError` for the deadline.
+ * The deadline is ours to fire rather than `AbortSignal.timeout`'s, because that
+ * signal cannot be cancelled once created: it bounded the headers and then went
+ * on to fire mid-body, cutting a streaming response at a deadline documented as
+ * per-attempt. Verified — an 8-event SSE stream spanning 400ms under
+ * `timeoutMs: 150` reached the client as `200 OK`, two events and a dead socket,
+ * with the event reporting a successful 200. A timer we own is cleared the moment
+ * headers arrive, and the same controller then stays available for the body's own
+ * deadlines.
+ *
+ * The client's signal is combined in via `AbortSignal.any`, so a visitor closing
+ * the tab cancels the upstream request instead of leaving it to run out its full
+ * timeout — verified against workerd, passing only the deadline left the upstream
+ * oblivious to a client abort. The two remain distinguishable afterwards:
+ * `AbortError` for the client, `TimeoutError` for the deadline.
  */
 const attemptFetch = async ({
   request,
@@ -465,8 +505,25 @@ const attemptFetch = async ({
   fetcher,
   detached,
   overflowSignal,
-}: AttemptOptions): Promise<Response> => {
-  const signals: AbortSignal[] = [AbortSignal.timeout(budget)];
+}: AttemptOptions): Promise<{ response: Response; abort: (reason: Error) => void }> => {
+  const controller = new AbortController();
+  // Fires only while the headers are outstanding; cleared below the moment they
+  // arrive, which is what makes this cancellable where `AbortSignal.timeout` is
+  // not.
+  let headDeadline: ReturnType<typeof setTimeout> | undefined = setTimeout(() => {
+    headDeadline = undefined;
+    controller.abort(
+      new HeadTimeoutError(`upstream did not send response headers within timeoutMs=${budget}`),
+    );
+  }, budget);
+  const clearHeadDeadline = (): void => {
+    if (headDeadline !== undefined) {
+      clearTimeout(headDeadline);
+      headDeadline = undefined;
+    }
+  };
+
+  const signals: AbortSignal[] = [controller.signal];
   if (!detached && request.signal !== null && request.signal !== undefined) {
     signals.push(request.signal);
   }
@@ -491,5 +548,21 @@ const attemptFetch = async ({
     (init as { duplex?: string }).duplex = 'half';
   }
 
-  return fetcher(new Request(target.toString(), init));
+  try {
+    const response = await fetcher(new Request(target.toString(), init));
+    // Headers are in. The head deadline has done its job and must not be left
+    // armed: it would otherwise fire into the body that is still streaming.
+    clearHeadDeadline();
+    return {
+      response,
+      abort: (reason) => {
+        controller.abort(reason);
+      },
+    };
+  } catch (error) {
+    // A failed attempt is followed by a retry or a throw; either way this timer
+    // has nothing left to bound.
+    clearHeadDeadline();
+    throw error;
+  }
 };

@@ -50,10 +50,108 @@ describe('defineConfig', () => {
     ).toThrow();
   });
 
-  it('rejects an unbounded retry count', () => {
+  it('accepts a retry count the walk could plausibly use', () => {
+    // Bounded only because the plan is materialised as an array; `totalTimeoutMs`
+    // is what actually ends the walk. nginx leaves the equivalent unbounded.
     expect(() =>
-      defineConfig({ routes: [{ match: { path: '/a' }, upstream: 'o.test', retries: 99 }] }),
+      defineConfig({
+        routes: [{ match: { path: '/a' }, upstream: 'o.test', retries: 20, retryBackoffMs: 0 }],
+      }),
+    ).not.toThrow();
+  });
+
+  it('rejects a retry count past the size the plan is allocated at', () => {
+    expect(() =>
+      defineConfig({ routes: [{ match: { path: '/a' }, upstream: 'o.test', retries: 101 }] }),
     ).toThrow();
+  });
+
+  it('accepts the timeouts a streamed upstream needs', () => {
+    // A cold-starting upstream can take a minute to send headers; a reasoning
+    // model can take five to send its first token; the answer itself is bounded
+    // by silence between bytes, not by total duration.
+    const config = defineConfig({
+      routes: [
+        {
+          match: { path: '/v1' },
+          upstream: 'o.test',
+          timeoutMs: 60_000,
+          totalTimeoutMs: 60_000,
+          firstChunkTimeoutMs: 300_000,
+          streamIdleTimeoutMs: 60_000,
+        },
+      ],
+    });
+    expect(config.routes[0]!.firstChunkTimeoutMs).toBe(300_000);
+    expect(config.routes[0]!.streamIdleTimeoutMs).toBe(60_000);
+  });
+
+  it('defaults both body deadlines to a minute', () => {
+    const config = defineConfig({ routes: [{ match: { path: '/a' }, upstream: 'o.test' }] });
+    // The same figure nginx uses for `proxy_read_timeout`, measured the same way.
+    expect(config.routes[0]!.firstChunkTimeoutMs).toBe(60_000);
+    expect(config.routes[0]!.streamIdleTimeoutMs).toBe(60_000);
+  });
+
+  it('takes body deadlines from the defaults block', () => {
+    const config = defineConfig({
+      defaults: { firstChunkTimeoutMs: 120_000, streamIdleTimeoutMs: 30_000 },
+      routes: [
+        { match: { path: '/a' }, upstream: 'o.test' },
+        { match: { path: '/b' }, upstream: 'o.test', streamIdleTimeoutMs: 5_000 },
+      ],
+    });
+    expect(config.routes[0]!.firstChunkTimeoutMs).toBe(120_000);
+    expect(config.routes[0]!.streamIdleTimeoutMs).toBe(30_000);
+    expect(config.routes[1]!.streamIdleTimeoutMs).toBe(5_000);
+  });
+
+  it('accepts a traffic split wider than six buckets', () => {
+    // A split picks one candidate and never walks, so it has no multi-attempt
+    // worst case that a bound of six was protecting.
+    expect(() =>
+      defineConfig({
+        routes: [
+          {
+            match: { path: '/a' },
+            trafficSplit: Array.from({ length: 8 }, (_, i) => ({
+              upstream: `v${i}.test`,
+              weight: 1,
+            })),
+          },
+        ],
+      }),
+    ).not.toThrow();
+  });
+
+  it('accepts more failover candidates than the platform connection cap', () => {
+    // The walk is sequential, so the six-concurrent-connection limit never
+    // applied to it.
+    expect(() =>
+      defineConfig({
+        routes: [
+          {
+            match: { path: '/a' },
+            upstreams: Array.from({ length: 10 }, (_, i) => `u${i}.test`),
+          },
+        ],
+      }),
+    ).not.toThrow();
+  });
+
+  it('accepts a year-long cache lifetime', () => {
+    // The lifetime immutable assets already use. The route fingerprint is in the
+    // key, so no lifetime can serve another configuration's bytes.
+    const config = defineConfig({
+      routes: [
+        {
+          match: { path: '/static' },
+          upstream: 'o.test',
+          cache: { ttlSeconds: 31_536_000, staleWhileRevalidateSeconds: 604_800 },
+        },
+      ],
+    });
+    expect(config.routes[0]!.cache?.ttlSeconds).toBe(31_536_000);
   });
 
   it('accepts an upstream base path', () => {
@@ -242,7 +340,9 @@ describe('multiple upstream strategies', () => {
     });
     expect(config.routes[0]!.failover).toEqual({
       on: ['timeout', 'unreachable'],
-      maxAttempts: 6,
+      // Every candidate the route declares; clamped to the list's length at walk
+      // time, so the number is a ceiling rather than a count of attempts.
+      maxAttempts: 64,
     });
   });
 
@@ -505,13 +605,13 @@ describe('match conditions (headers / query / cookies)', () => {
     }
   });
 
-  it('caps conditions per family at 16', () => {
+  it('caps conditions per family at the shared list bound', () => {
     const header = { name: 'x-a', equals: '1' };
     expect(() =>
       defineConfig({
         routes: [
           {
-            match: { path: '/a', headers: Array.from({ length: 16 }, () => header) },
+            match: { path: '/a', headers: Array.from({ length: 64 }, () => header) },
             upstream: 'o.test',
           },
         ],
@@ -521,7 +621,7 @@ describe('match conditions (headers / query / cookies)', () => {
       defineConfig({
         routes: [
           {
-            match: { path: '/a', headers: Array.from({ length: 17 }, () => header) },
+            match: { path: '/a', headers: Array.from({ length: 65 }, () => header) },
             upstream: 'o.test',
           },
         ],
