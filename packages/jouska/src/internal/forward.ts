@@ -74,6 +74,7 @@ export const buildUpstreamHeaders = (
   route: Route,
   target: URL,
   requestUrl: URL,
+  authHeaders?: Headers,
 ): Headers => {
   const headers = new Headers(request.headers);
 
@@ -117,6 +118,14 @@ export const buildUpstreamHeaders = (
     }
   }
 
+  // Identity headers the delegated-auth pass designated, written after the
+  // route's own rules so the auth service's per-caller answer outranks a
+  // blanket one. The schema refuses reserved names in `copyResponseHeaders`,
+  // so these can never touch the forwarding headers written below.
+  authHeaders?.forEach((value, name) => {
+    headers.set(name, value);
+  });
+
   headers.set('host', target.host);
   headers.set('x-forwarded-host', requestUrl.host);
   headers.set('x-forwarded-proto', requestUrl.protocol.replace(':', ''));
@@ -150,6 +159,12 @@ export interface ForwardOptions {
   request: Request;
   /** Parsed request URL, so callers that already have one need not re-parse. */
   requestUrl: URL;
+  /**
+   * Identity headers from a passed forward-auth check, written into every
+   * upstream attempt after the route's own rules. Absent when the route does
+   * not delegate auth, or the pass designated nothing.
+   */
+  authHeaders?: Headers;
   /** Overridable for tests; defaults to the runtime `fetch`. */
   fetchImpl?: typeof fetch;
   /**
@@ -267,6 +282,7 @@ export const forward = async ({
   targets,
   request,
   requestUrl,
+  authHeaders,
   fetchImpl,
   detached = false,
   outlier,
@@ -352,7 +368,7 @@ export const forward = async ({
       break;
     }
 
-    const headers = buildUpstreamHeaders(request, route, target, requestUrl);
+    const headers = buildUpstreamHeaders(request, route, target, requestUrl, authHeaders);
     try {
       // Attempts are deliberately sequential: running them in parallel would
       // fire N simultaneous upstream requests, which is both wasteful and

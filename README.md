@@ -758,6 +758,53 @@ caller sent, which is what makes credentialed requests work — the spec forbids
 response when both appear. Preflights are answered without contacting the
 upstream.
 
+### Access control
+
+Three route-level guards answer "who are you". They are independent, compose
+with AND — every configured one must pass — and sit after rate limiting but
+before forwarding, so a refused caller costs no upstream round trip:
+
+```ts
+{
+  match: { path: '/admin' },
+  upstream: 'app.example.com',
+
+  // Delegated auth (nginx auth_request semantics): one subrequest per call,
+  // 2xx admits, any other status is relayed to the caller verbatim.
+  forwardAuth: {
+    url: 'https://sso.example.com/check',
+    // Headers copied to the auth endpoint; default `authorization, cookie`.
+    copyRequestHeaders: ['authorization', 'cookie'],
+    // Auth verdicts copied into the upstream request.
+    copyResponseHeaders: ['x-user-id'],
+    timeoutMs: 2000,      // timeout and other network failures fail closed (503)…
+    failOpen: true,       // …unless you opt out, which is flagged as high-risk.
+  },
+
+  // Cloudflare Access: the JWT is verified locally (ES256 against the team's
+  // JWKS, cached 60 minutes) plus aud, iss and exp — no login flow in the library.
+  accessJwt: { team: 'myteam.cloudflareaccess.com', audience: 'my-app' },
+
+  // API keys: config stores SHA-256 digests only, never plaintext.
+  apiKey: { keys: ['<64 hex chars>'] },   // header defaults to `x-api-key`
+}
+```
+
+The auth subrequest carries the original method, only the listed request
+headers, and no body — the body is a one-shot stream the upstream request still
+needs. It is issued with a direct `fetch`, never through the route table, so a
+`forwardAuth.url` pointing at a host another route also matches cannot recurse.
+Copied response headers go through the same reserved-name refusal as
+`requestHeaders`, so a verdict cannot inject the headers jouska derives itself.
+
+A route with any of the three refuses `cache` at config time: the response is
+about the caller, and a shared cache keyed by URL cannot be trusted to tell
+callers apart. A route whose auth endpoint is unreachable fails closed with 503
+(`{ error: 'forward_auth_unavailable' }`); `failOpen` inverts that, and the
+panel flags it as high risk because an outage then becomes open doors. JWT
+verification keeps its own failure shape: a JWKS fetch that fails with no cache
+is a 503, everything else about the token is a plain 401.
+
 `rateLimit` needs a `binding` name and an optional `by` strategy:
 
 | `by`           | Bucket                                                               |
@@ -985,6 +1032,9 @@ entries expire rather than alias.
 
 ### What is never cached
 
+- A route with any access-control guard (`forwardAuth`, `accessJwt`, `apiKey`).
+  This is refused at config time rather than filtered at runtime — the response
+  is about the caller, and no URL key can tell callers apart.
 - A method outside `methods`, or anything but GET and HEAD.
 - A request carrying `Authorization` or `Cookie` — its response is probably about
   the person who sent it, and this cache is keyed by URL alone.
@@ -1299,7 +1349,9 @@ These are Workers limits, not choices, and they shape the architecture:
 - **6 outbound connections per request.** One request resolves to exactly one
   upstream. Failover is strictly sequential and a weighted split sends each
   request to one winner, so racing or fanning out across upstreams is not
-  expressible here.
+  expressible here. A delegated-auth subrequest takes one of the six itself;
+  it runs before the upstream attempt, so a guarded route spends its budget on
+  the auth round trip first and the connection count still holds.
 - **128MB memory, on every plan.** Body rewriting is streaming throughout;
   nothing calls `await response.text()` on a proxied body.
 - **Wall time is not bounded, CPU time is.** An HTTP-triggered Worker has no

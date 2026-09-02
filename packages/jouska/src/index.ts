@@ -2,12 +2,15 @@ export { createConfigCache } from './cache.js';
 export type { CacheOptions, ConfigCache } from './cache.js';
 export { CONFIG_VERSION, configSchema, defineConfig } from './config.js';
 export type {
+  AccessJwtConfig,
+  ApiKeyConfig,
   BodyRewriteConfig,
   CacheConfig,
   Config,
   ConfigInput,
   ConfigMeta,
   CorsConfig,
+  ForwardAuthConfig,
   HeaderRulesConfig,
   RateLimitConfig,
   Route,

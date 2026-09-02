@@ -92,6 +92,35 @@ describe('compileConfig', () => {
     if (result.ok) throw new Error('expected failure');
     expect(result.issues.some((i) => i.path === 'defaults')).toBe(true);
   });
+
+  it('accepts the form-shaped auth trio as written by the editor', () => {
+    // 表单落盘的形状：failOpen 只有开着才写、header 空缺省、keys 是摘要。
+    const result = compileConfig(
+      [
+        row('auth', {
+          match: { path: '/private' },
+          upstream: 'app.example.com',
+          forwardAuth: { url: 'https://sso.example.com/check', copyResponseHeaders: ['x-user-id'] },
+          accessJwt: { team: 'myteam.cloudflareaccess.com', audience: 'my-app' },
+          apiKey: { keys: ['b'.repeat(64)] },
+        }, 0)],
+      undefined,
+    );
+    expect(result.ok).toBe(true);
+  });
+
+  it('refuses auth routes that also configure cache', () => {
+    const result = compileConfig(
+      [row('c', {
+        match: { path: '/private' },
+        upstream: 'app.example.com',
+        forwardAuth: { url: 'https://sso.example.com/check' },
+        cache: { ttlSeconds: 300 },
+      }, 0)],
+      undefined,
+    );
+    expect(result.ok).toBe(false);
+  });
 });
 
 describe('shadowWarnings', () => {
@@ -380,6 +409,28 @@ describe('dangerFlags', () => {
   it('does not flag anything on a plain safe route', () => {
     const flags = dangerFlags({ match: { host: 'a.com' }, upstream: 'b.com' });
     expect(flags).toEqual([]);
+  });
+
+  it('flags the auth trio on presence, with http forwardAuth url on value', () => {
+    const paths = dangerFlags({
+      match: { path: '/' },
+      upstream: 'a.com',
+      forwardAuth: { url: 'https://sso.example.com/check', failOpen: true },
+      accessJwt: { team: 'myteam.cloudflareaccess.com', audience: 'my-app' },
+      apiKey: { keys: ['a'.repeat(64)] },
+    }).map((f) => f.path);
+    expect(paths).toContain('forwardAuth.failOpen');
+    expect(paths).toContain('accessJwt');
+    expect(paths).toContain('apiKey.keys');
+    // https url 是慎重写出的默认，不是风险。
+    expect(paths).not.toContain('forwardAuth.url');
+
+    const plain = dangerFlags({
+      match: { path: '/' },
+      upstream: 'a.com',
+      forwardAuth: { url: 'http://sso.example.com/check' },
+    }).map((f) => f.path);
+    expect(plain).toContain('forwardAuth.url');
   });
 });
 
