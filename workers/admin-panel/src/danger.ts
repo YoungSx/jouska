@@ -71,6 +71,12 @@ const RULES: readonly Rule[] = [
     reason: 'a deny-list with a typo silently excludes legitimate callers',
   },
   {
+    path: 'access.keys',
+    level: 'medium',
+    reason:
+      'a pasted value that is not the SHA-256 digest of the real key permanently locks out the real key and admits whoever the pasted text names — verify the digest, not the key',
+  },
+  {
     path: 'upstreamHeaders',
     level: 'high',
     reason:

@@ -62,6 +62,7 @@ jouska 是 Hono 上的反向代理中间件，运行在 Cloudflare Workers。管
 已有能力：
 
 - 路由 CRUD、顺序调整（顺序即优先级，首个匹配胜出）、启用/停用。
+- 路由级访问控制（`access`）：校验 Cloudflare Access 的 JWT 或 API key 哈希，身份不过关的请求被拒且不转发上游。立场是平台优先——能整域挂 Cloudflare Access 就挂在那儿，路由级只做兜底；面板只负责把哈希而不是明文 key 收进配置。
 - 表级 `defaults` 块，逐字段填补空缺。
 - 发布预览：编译 + 校验 + 遮蔽检测 + 整站镜像提示 + 危险开关分类，不写 KV。
 - 发布：三重闸门（必须编译通过、危险开关需显式 `confirm`、全部进审计日志），一次发布恰好一次 KV 写，`meta` 带 revision/操作者/备注。
@@ -96,7 +97,7 @@ jouska 是 Hono 上的反向代理中间件，运行在 Cloudflare Workers。管
 
 - `README.md`：完整的路由选项表（20+ 字段及默认值）、guards、body rewrite 文档。
 - `packages/jouska/src/config.ts`：权威 zod schema，含归一化规则与安全注释。
-- `workers/admin-panel/src/danger.ts`：8 条危险字段分类，每条带 level 与人类可读的 reason。
+- `workers/admin-panel/src/danger.ts`：9 条危险字段分类，每条带 level 与人类可读的 reason。
 - `workers/admin-panel/src/shadow.ts`：遮蔽检测，产出 `shadowedId` / `byId` / `probe`。
 - `workers/admin-panel/src/mirror.ts`：整站镜像提示，产出 `routeId` / `upstream`；判据只覆盖整站路由，且是提示不是错误。
 - `workers/admin-panel/migrations/`：`0001_init.sql`、`0002_tables.sql`、`0003_revisions.sql` 的真实表结构。

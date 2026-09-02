@@ -148,7 +148,7 @@ const BOOLEAN_FIELDS: Record<
 const SCHEME_UNSET = 'unset';
 
 /** 开关型子段：这一段存不存在，本身就是开关状态。 */
-type SectionKey = 'bodyRewrite' | 'cors' | 'ip';
+type SectionKey = 'bodyRewrite' | 'cors' | 'ip' | 'access';
 
 /** 本地校验的错误集：键是字段，值是直接展示的文案。 */
 type FieldErrors = Partial<
@@ -1177,6 +1177,35 @@ export const RouteEditor = ({
   };
 
   /**
+   * access.cloudflare 子段里的键。子段删空就连键一起删掉 —— `cloudflare: {}` 过不了
+   * schema（audience 必填），而空段留在草稿里只会把错误推迟到发布前才被人看见。
+   */
+  const setAccessCloudflareKey = (key: 'team' | 'audience' | 'emails', value: unknown) =>
+    setDefinition((prev) => {
+      const current: Record<string, unknown> = {
+        ...((prev.access?.cloudflare ?? {}) as Record<string, unknown>),
+      };
+      if (value === undefined) {
+        delete current[key];
+      } else {
+        current[key] = value;
+      }
+      const access: Record<string, unknown> = { ...prev.access };
+      if (Object.keys(current).length === 0) {
+        delete access.cloudflare;
+      } else {
+        access.cloudflare = current;
+      }
+      const next = { ...prev };
+      if (Object.keys(access).length === 0) {
+        delete next.access;
+      } else {
+        next.access = access as RouteDefinition['access'];
+      }
+      return next;
+    });
+
+  /**
    * bodyRewrite 子段里的布尔。与 setBoolean 同样的「等于默认值不落键」语义，但
    * 不能复用它：段壳必须留下来，删到空对象就等于把整个改写关掉了。
    */
@@ -1764,6 +1793,104 @@ export const RouteEditor = ({
                         onChange={(value) => setSectionKey('ip', 'deny', value)}
                       />
                       {(definition.ip.deny?.length ?? 0) > 0 && <DangerNote path="ip.deny" />}
+                    </>
+                  )}
+
+                  <Field orientation="horizontal">
+                    <Switch
+                      id="route-editor-access"
+                      checked={definition.access !== undefined}
+                      onCheckedChange={(checked) =>
+                        checked ? setSectionOn('access') : setSectionOff('access')
+                      }
+                    />
+                    <FieldContent>
+                      <FieldLabel htmlFor="route-editor-access">
+                        {t.fields.access.label}
+                      </FieldLabel>
+                    </FieldContent>
+                  </Field>
+
+                  {definition.access !== undefined && (
+                    <>
+                      <p className="text-muted-foreground text-xs">{t.fields.access.hint}</p>
+
+                      <Field orientation="horizontal">
+                        <Switch
+                          id="route-editor-access-cf"
+                          checked={definition.access.cloudflare !== undefined}
+                          onCheckedChange={(checked) =>
+                            setSectionKey(
+                              'access',
+                              'cloudflare',
+                              // `cloudflare: {}` 与 ip: {} 一样是半成品草稿：audience
+                              // 必填这条由服务端在发布前指出。
+                              checked ? {} : undefined,
+                            )
+                          }
+                        />
+                        <FieldContent>
+                          <FieldLabel htmlFor="route-editor-access-cf">
+                            {t.fields.access.cfEnable}
+                          </FieldLabel>
+                        </FieldContent>
+                      </Field>
+
+                      {definition.access.cloudflare !== undefined && (
+                        <>
+                          <TextProperty
+                            id="route-editor-access-team"
+                            label={t.fields.access.team}
+                            hint={t.fields.access.teamHelp}
+                            value={definition.access.cloudflare.team ?? ''}
+                            mono
+                            onChange={(value) =>
+                              setAccessCloudflareKey('team', value === '' ? undefined : value)
+                            }
+                          />
+                          <TextProperty
+                            id="route-editor-access-audience"
+                            label={t.fields.access.audience}
+                            hint={t.fields.access.audienceHelp}
+                            value={definition.access.cloudflare.audience ?? ''}
+                            mono
+                            onChange={(value) =>
+                              setAccessCloudflareKey('audience', value === '' ? undefined : value)
+                            }
+                          />
+                          <ListProperty
+                            id="route-editor-access-emails"
+                            label={t.fields.access.emails}
+                            hint={t.fields.access.emailsHelp}
+                            placeholder={t.fields.access.emailsPlaceholder}
+                            value={definition.access.cloudflare.emails}
+                            onChange={(value) => setAccessCloudflareKey('emails', value)}
+                          />
+                        </>
+                      )}
+
+                      <ListProperty
+                        id="route-editor-access-keys"
+                        label={t.fields.access.keys}
+                        hint={t.fields.access.keysHelp}
+                        placeholder={t.fields.access.keysPlaceholder}
+                        value={definition.access.keys}
+                        onChange={(value) => setSectionKey('access', 'keys', value)}
+                      />
+                      {(definition.access.keys?.length ?? 0) > 0 && (
+                        <DangerNote path="access.keys" />
+                      )}
+
+                      <TextProperty
+                        id="route-editor-access-header"
+                        label={t.fields.access.header}
+                        hint={t.fields.access.headerHelp}
+                        value={definition.access.header ?? ''}
+                        mono
+                        onChange={(value) =>
+                          setSectionKey('access', 'header', value === '' ? undefined : value)
+                        }
+                      />
                     </>
                   )}
                 </FieldSet>
