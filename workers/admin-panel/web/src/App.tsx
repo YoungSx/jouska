@@ -1,5 +1,12 @@
 import * as React from 'react';
-import { KeyRoundIcon, LogOutIcon, MenuIcon, RefreshCwIcon, Trash2Icon } from 'lucide-react';
+import {
+  ChevronDownIcon,
+  KeyRoundIcon,
+  LogOutIcon,
+  MenuIcon,
+  RefreshCwIcon,
+  Trash2Icon,
+} from 'lucide-react';
 import { toast } from 'sonner';
 import { Toaster } from '@/components/ui/sonner';
 import { Badge } from '@/components/ui/badge';
@@ -17,6 +24,7 @@ import {
   DropdownMenu,
   DropdownMenuCheckboxItem,
   DropdownMenuContent,
+  DropdownMenuGroup,
   DropdownMenuItem,
   DropdownMenuLabel,
   DropdownMenuSeparator,
@@ -27,6 +35,7 @@ import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { PublishBar } from '@/components/publish-bar';
 import { PublishDialog } from '@/components/publish-dialog';
 import { ChangePasswordDialog } from '@/components/change-password-dialog';
+import { ViewErrorBoundary } from '@/components/error-boundary';
 import { ThemeToggle } from '@/components/theme-toggle';
 import { AuthView } from '@/views/auth-view';
 import { AuditView } from '@/views/audit-view';
@@ -379,26 +388,37 @@ const App = () => {
                     <Badge variant={isAdmin ? 'default' : 'secondary'}>
                       {isAdmin ? t.account.admin : t.account.viewer}
                     </Badge>
+                    {/* 名字 + 角色单独看不出这是个菜单。给一个会翻转的雪佛龙，
+                        「能点开」和「已经点开」都不用猜。 */}
+                    <ChevronDownIcon className="text-muted-foreground transition-transform group-aria-expanded/button:rotate-180" />
                   </Button>
                 }
               />
               <DropdownMenuContent align="end" className="min-w-44">
-                <DropdownMenuLabel className="font-mono text-xs">{user.subject}</DropdownMenuLabel>
-                <DropdownMenuSeparator />
-                <DropdownMenuItem onClick={() => setPasswordOpen(true)}>
-                  <KeyRoundIcon />
-                  {t.account.changePassword}
-                </DropdownMenuItem>
-                <DropdownMenuItem
-                  variant="destructive"
-                  onClick={() => {
-                    setView('routes');
-                    void session.signOut();
-                  }}
-                >
-                  <LogOutIcon />
-                  {t.account.logout}
-                </DropdownMenuItem>
+                {/* DropdownMenuGroup 不是装饰：Base UI 的 GroupLabel 会把自己的 id 注册
+                    进父 Group 的 aria-labelledby，脱离 Group 就直接抛异常，而渲染期抛出
+                    的异常会卸载整棵 React 树 —— 症状是点一下用户名，整个面板变黑屏。
+                    这里的分组也确实成立：下面两项操作的对象就是标签里这个账号。 */}
+                <DropdownMenuGroup>
+                  <DropdownMenuLabel className="font-mono text-xs">
+                    {user.subject}
+                  </DropdownMenuLabel>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem onClick={() => setPasswordOpen(true)}>
+                    <KeyRoundIcon />
+                    {t.account.changePassword}
+                  </DropdownMenuItem>
+                  <DropdownMenuItem
+                    variant="destructive"
+                    onClick={() => {
+                      setView('routes');
+                      void session.signOut();
+                    }}
+                  >
+                    <LogOutIcon />
+                    {t.account.logout}
+                  </DropdownMenuItem>
+                </DropdownMenuGroup>
               </DropdownMenuContent>
             </DropdownMenu>
           </div>
@@ -406,39 +426,47 @@ const App = () => {
       </header>
 
       <main id="main" className="mx-auto w-full max-w-6xl flex-1 px-4 pt-6 pb-8">
-        {view === 'routes' && (
-          <RoutesView
-            routes={draft.routes}
-            defaults={draft.defaults}
-            loading={draft.loading}
-            isAdmin={isAdmin}
-            dangersByRoute={dangersByRoute}
-            onCreate={onCreate}
-            onEdit={onEdit}
-            onDuplicate={onDuplicate}
-            onDelete={setDeleteTarget}
-            onMove={(index, direction) => void onMove(index, direction)}
-            onSaveDefaults={onSaveDefaults}
-          />
-        )}
-        {view === 'domains' && <DomainsView />}
-        {view === 'preview' && (
-          <PreviewView
-            preview={previewForPage}
-            liveRevision={draft.gate.kind === 'clean' ? draft.gate.live : null}
-            loading={draft.loading}
-            isAdmin={isAdmin}
-            onRefresh={() => void draft.recheck()}
-            onPublish={() => setPublishOpen(true)}
-            onGoRoutes={() => setView('routes')}
-          />
-        )}
-        {view === 'audit' && <AuditView />}
-        {view === 'history' && <HistoryView isAdmin={isAdmin} onConfigChanged={reloadQuietly} />}
-        {view === 'users' && (
-          <UsersView selfSubject={user.subject} onSelfRoleChanged={() => void session.refresh()} />
-        )}
-        {view === 'mcp-tokens' && <McpTokensView onUnauthenticated={session.onUnauthenticated} />}
+        {/* 视图级兜底。头部与发布栏留在 boundary 外面，所以「这一页崩了」不会
+            连带退出登录一起消失。key={view} 让换页时重建 boundary —— 它不会
+            自己复位，缺了 key 就会一直停在错误卡片上。 */}
+        <ViewErrorBoundary key={view}>
+          {view === 'routes' && (
+            <RoutesView
+              routes={draft.routes}
+              defaults={draft.defaults}
+              loading={draft.loading}
+              isAdmin={isAdmin}
+              dangersByRoute={dangersByRoute}
+              onCreate={onCreate}
+              onEdit={onEdit}
+              onDuplicate={onDuplicate}
+              onDelete={setDeleteTarget}
+              onMove={(index, direction) => void onMove(index, direction)}
+              onSaveDefaults={onSaveDefaults}
+            />
+          )}
+          {view === 'domains' && <DomainsView />}
+          {view === 'preview' && (
+            <PreviewView
+              preview={previewForPage}
+              liveRevision={draft.gate.kind === 'clean' ? draft.gate.live : null}
+              loading={draft.loading}
+              isAdmin={isAdmin}
+              onRefresh={() => void draft.recheck()}
+              onPublish={() => setPublishOpen(true)}
+              onGoRoutes={() => setView('routes')}
+            />
+          )}
+          {view === 'audit' && <AuditView />}
+          {view === 'history' && <HistoryView isAdmin={isAdmin} onConfigChanged={reloadQuietly} />}
+          {view === 'users' && (
+            <UsersView
+              selfSubject={user.subject}
+              onSelfRoleChanged={() => void session.refresh()}
+            />
+          )}
+          {view === 'mcp-tokens' && <McpTokensView onUnauthenticated={session.onUnauthenticated} />}
+        </ViewErrorBoundary>
       </main>
 
       {/* 闸门轨道：无论在哪一页，草稿与线上的差异都摆在这里。 */}
