@@ -1,5 +1,11 @@
 import * as React from 'react';
-import { CircleAlertIcon, CircleCheckIcon, CircleDashedIcon, UploadIcon } from 'lucide-react';
+import {
+  CircleAlertIcon,
+  CircleCheckIcon,
+  CircleDashedIcon,
+  Trash2Icon,
+  UploadIcon,
+} from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Spinner } from '@/components/ui/spinner';
@@ -24,6 +30,8 @@ interface PublishBarProps {
   readonly publishing: boolean;
   readonly onPublish: () => void;
   readonly onReview: () => void;
+  /** 只有 dirty / blocked 才出现；clean 没有草稿可弃，empty 从未发布过。 */
+  readonly onDiscard: () => void;
 }
 
 interface BarFace {
@@ -105,6 +113,7 @@ export const PublishBar = ({
   publishing,
   onPublish,
   onReview,
+  onDiscard,
 }: PublishBarProps) => {
   const face = faceFor(gate);
   const Icon = face.icon;
@@ -159,6 +168,16 @@ export const PublishBar = ({
         </div>
 
         <div className="flex shrink-0 items-center gap-2">
+          {/* 舍弃只在「有线上版本、草稿又改乱了」时才有意义：从未发布过没有可回的
+              快照（服务端会 409 nothing_published），观察者连草稿都写不了。 */}
+          {(gate.kind === 'dirty' || gate.kind === 'blocked') &&
+            canPublish &&
+            gate.live !== null && (
+              <Button variant="ghost" size="sm" className="text-destructive" onClick={onDiscard}>
+                <Trash2Icon aria-hidden />
+                {t.publishBar.discard}
+              </Button>
+            )}
           {(gate.kind === 'dirty' || gate.kind === 'blocked') && (
             <Button variant="ghost" size="sm" onClick={onReview}>
               {gate.kind === 'blocked' ? t.publishBar.seeIssues : t.publishBar.review}

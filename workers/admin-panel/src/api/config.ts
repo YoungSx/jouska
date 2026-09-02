@@ -1,26 +1,33 @@
 /**
- * Configuration endpoints: route CRUD, ordering, defaults, preview, publish.
+ * Configuration endpoints: route CRUD, ordering, defaults, preview, publish,
+ * discard.
  *
  * Publish is the only write to KV, and it is guarded three times: the document
  * must compile and validate (`configSchema`), dangerous switches require an
  * explicit `confirm`, and everything lands in the audit log. One publish is
  * exactly one KV write — the free tier's daily write allowance is not to be
- * sprayed.
+ * sprayed. Discard is its draft-only counterpart: it resets the draft to what
+ * is live without touching KV or the revision counter.
  */
 import { Hono } from 'hono';
 import { readJsonObject } from '../body.js';
 import { previewDraft, type PreviewResult } from '../preview.js';
+import { compileConfig, routesFromSnapshot, type RouteRow } from '../compile.js';
+import { asLiveState, documentDigest, LIVE_KEY } from '../fingerprint.js';
 import { publishDraft } from '../publish.js';
 import { requireAdmin } from '../middleware.js';
 import {
   audit,
   deleteRoute,
+  getRevision,
   getRoute,
   getSetting,
   listAllRoutes,
   listAudit,
+  listEnabledRoutes,
   putSetting,
   reorderRoutes,
+  restoreDraftFromSnapshot,
   upsertRoute,
 } from '../store.js';
 import type { AppEnv } from '../env.js';
@@ -29,6 +36,7 @@ import {
   boundedString,
   isPlainObject,
   jsonByteLength,
+  CORRUPT,
   MAX_DEFAULTS_BYTES,
   MAX_DEFINITION_BYTES,
   MAX_NOTE_LENGTH,
@@ -221,4 +229,60 @@ configRoutes.get('/audit', async (c) => {
   // `LIMIT -5` (silently unbounded, dumping the whole log); both fall back.
   const limit = boundedInteger(c.req.query('limit'), 50, 200);
   return c.json({ entries: await listAudit(c.env.DB, limit) });
+});
+
+/**
+ * POST /api/discard — reset the draft to what is live.
+ *
+ * The draft-only sibling of publish: no KV write, no revision, no publish
+ * gates. It exists so an abandoned or broken draft does not have to be undone
+ * by hand — or by a rollback, which would manufacture a publish (and burn a
+ * KV write) for the sake of an undo.
+ *
+ * The snapshot is deliberately NOT schema- or compile-gated, unlike rollback:
+ * rollback writes to KV, so it must prove the document; discard only puts what
+ * is already live back into the draft form. A snapshot that no longer passes
+ * today's schema re-enters the draft as a blocked state — which is the honest
+ * description of what the proxy is actually serving, and refusing it would
+ * close the very escape hatch this endpoint provides when a draft will not
+ * compile.
+ */
+configRoutes.post('/discard', requireAdmin, async (c) => {
+  const live = asLiveState(await getSetting(c.env.DB, LIVE_KEY));
+  if (live === undefined) {
+    // Nothing has ever been published, so there is no live version to restore.
+    // An empty, never-published draft is already at its baseline; a non-empty
+    // one can only be emptied by hand, route by route.
+    return c.json({ error: 'nothing_published' }, 409);
+  }
+
+  const source = await getRevision(c.env.DB, live.revision);
+  if (source === undefined || source.document === CORRUPT) {
+    return c.json({ error: 'snapshot_unavailable', detail: `revision ${live.revision}` }, 409);
+  }
+  const doc = source.document;
+  if (!isPlainObject(doc)) {
+    return c.json({ error: 'snapshot_unavailable', detail: `revision ${live.revision}` }, 409);
+  }
+  const routes = routesFromSnapshot(doc);
+  if (routes === undefined) {
+    return c.json({ error: 'snapshot_unavailable', detail: `revision ${live.revision}` }, 409);
+  }
+
+  // No-op guard, as a concurrency backstop: another tab may have discarded or
+  // republished since the caller's gate went stale. Compile can fail here —
+  // that is the escape-hatch case and the guard must not block it, so only a
+  // document that compiles is compared against the live digest.
+  const rows: RouteRow[] = await listEnabledRoutes(c.env.DB);
+  const defaults = await getSetting(c.env.DB, 'defaults');
+  const compiled = compileConfig(rows, defaults);
+  if (compiled.ok && (await documentDigest(compiled.document)) === live.digest) {
+    return c.json({ error: 'already_clean', detail: live.revision }, 409);
+  }
+
+  await restoreDraftFromSnapshot(c.env.DB, routes, doc['defaults'], c.get('user').subject);
+  await audit(c.env.DB, c.get('user').subject, 'config.discard', 'draft', {
+    sourceRevision: live.revision,
+  });
+  return c.json({ ok: true, sourceRevision: live.revision });
 });

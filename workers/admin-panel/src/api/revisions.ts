@@ -16,7 +16,7 @@
  */
 import { Hono } from 'hono';
 import { configSchema } from 'jouska';
-import { compileConfig, type RouteRow } from '../compile.js';
+import { compileConfig, routesFromSnapshot, type RouteRow } from '../compile.js';
 import { readJsonObject } from '../body.js';
 import { diffDocuments } from '../diff.js';
 import { LIVE_KEY, asLiveState } from '../fingerprint.js';
@@ -239,17 +239,12 @@ revisionRoutes.post('/revisions/rollback', requireAdmin, async (c) => {
   // the recovery path — when the KV key is wiped out of band, rolling back to
   // the live revision is exactly how the operator re-heals it.
 
-  const routesDoc = Array.isArray(doc['routes']) ? (doc['routes'] as readonly unknown[]) : [];
-  const routes: { readonly id: string; readonly definition: unknown }[] = [];
-  for (const route of routesDoc) {
-    if (!isRecord(route) || typeof route['id'] !== 'string') {
-      continue;
-    }
-    // The row id is the identity; a definition that carries `id` too is the
-    // snapshot's compiled shape, and the routes table stores the definition
-    // without it (compile re-injects the row id).
-    const { id: _rowId, ...rest } = route;
-    routes.push({ id: route['id'], definition: rest });
+  const routes = routesFromSnapshot(doc);
+  if (routes === undefined) {
+    return c.json(
+      { error: 'snapshot_corrupt', detail: `revision ${sourceRevision} has no routes array` },
+      409,
+    );
   }
 
   // The snapshot must also survive today's compile, not just today's schema —
