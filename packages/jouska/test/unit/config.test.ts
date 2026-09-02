@@ -270,6 +270,34 @@ describe('multiple upstream strategies', () => {
     ).toThrow(/failover requires upstreams or trafficSplit/);
   });
 
+  it('rejects outlier without candidates', () => {
+    expect(() =>
+      defineConfig({
+        routes: [{ match: { path: '/a' }, upstream: 'a.test', outlier: {} }],
+      }),
+    ).toThrow(/outlier requires upstreams or trafficSplit/);
+  });
+
+  it('defaults the outlier policy on a candidate route', () => {
+    const config = defineConfig({
+      routes: [{ match: { path: '/a' }, upstreams: ['a.test', 'b.test'] }],
+    });
+    expect(config.routes[0]!.outlier).toEqual({ consecutiveFailures: 3, ejectSeconds: 30 });
+  });
+
+  it('leaves outlier absent on a single-upstream route and out of defaults', () => {
+    const config = defineConfig({
+      routes: [
+        { match: { path: '/a' }, upstream: 'a.test' },
+        { match: { path: '/b' }, upstreams: ['a.test', 'b.test'], outlier: { ejectSeconds: 5 } },
+      ],
+    });
+    expect(config.routes[0]!.outlier).toBeUndefined();
+    // A partial policy keeps the caller's value and folds in the rest.
+    expect(config.routes[1]!.outlier).toEqual({ consecutiveFailures: 3, ejectSeconds: 5 });
+    expect(config.defaults?.outlier).toBeUndefined();
+  });
+
   it('rejects stickyBy without a split', () => {
     expect(() =>
       defineConfig({

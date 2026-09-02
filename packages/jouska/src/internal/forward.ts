@@ -1,5 +1,6 @@
 import type { Route } from '../config.js';
 import { HOP_BY_HOP, stripConnectionNamed } from './hop.js';
+import type { OutlierObserver } from './outlier.js';
 
 /** Methods safe to replay after a failure. */
 const IDEMPOTENT = new Set(['GET', 'HEAD', 'OPTIONS', 'TRACE']);
@@ -160,6 +161,11 @@ export interface ForwardOptions {
    * revalidation and leave the stale entry to be served again.
    */
   detached?: boolean;
+  /**
+   * Cross-request failure memory, when the route has one. Absent for
+   * single-upstream routes, where there is no backup to prefer.
+   */
+  outlier?: OutlierObserver;
 }
 
 export interface ForwardResult {
@@ -219,6 +225,11 @@ const attemptPlan = (route: Route, targets: readonly URL[], walkable: boolean): 
  * The latest 5xx seen is kept as a fallback, body included, so a walk that ends
  * without any candidate answering still returns a real upstream verdict rather
  * than inventing a 502 for one.
+ *
+ * When an `outlier` observer is supplied, candidates it reports as ejected are
+ * removed from the plan before the walk, and every counted failure and every
+ * healthy answer is reported back to it — the memory lives with the caller,
+ * this file stays stateless.
  */
 export const forward = async ({
   route,
@@ -227,6 +238,7 @@ export const forward = async ({
   requestUrl,
   fetchImpl,
   detached = false,
+  outlier,
 }: ForwardOptions): Promise<ForwardResult> => {
   const fetcher = fetchImpl ?? fetch;
   const upgrade = route.websocket && isWebSocketUpgrade(request);
@@ -239,7 +251,16 @@ export const forward = async ({
   // loop rethrows whatever failed last.
   const replayable = isRetryable(request.method) && request.body === null;
   const walkable = replayable && !upgrade;
-  const plan = attemptPlan(route, targets, walkable);
+  const proposed = attemptPlan(route, targets, walkable);
+  // Ejected candidates are removed from the walk, not merely deprioritised:
+  // the point is that the survivor moves up without a second pass. When every
+  // candidate is out, the filter alone would produce an empty walk, so the
+  // declared head is restored — ejection only reorders, it must never make a
+  // route unreachable. This is also why the removal happens here and not in
+  // the caller: the non-empty guarantee is written once.
+  const plan =
+    outlier === undefined ? proposed : proposed.filter((target) => !outlier.isEjected(target.host));
+  const live = plan.length > 0 ? plan : [proposed[0]!];
   const policy = route.failover?.on;
   // The switch conditions only govern movement between distinct candidates. A
   // single-upstream route has no `failover` policy at all, and its retries
@@ -274,9 +295,9 @@ export const forward = async ({
         })
       : request.body;
 
-  for (let attempt = 0; attempt < plan.length; attempt += 1) {
-    const target = plan[attempt]!;
-    if (attempt > 0 && target.host === plan[attempt - 1]!.host) {
+  for (let attempt = 0; attempt < live.length; attempt += 1) {
+    const target = live[attempt]!;
+    if (attempt > 0 && target.host === live[attempt - 1]!.host) {
       // Exponential backoff, and only when the previous attempt hit the same
       // origin: that is the case where "whatever failed is still failing" was
       // measured at a 0–1ms retry gap. A different candidate is a different
@@ -337,6 +358,9 @@ export const forward = async ({
         // one is the real upstream verdict the client should see, body and all.
         // At most one stream is held during the walk, which totalTimeoutMs
         // bounds; the one it supersedes is released rather than leaked.
+        if (outlier !== undefined) {
+          outlier.onFailure(target.host);
+        }
         held?.response.body?.cancel();
         held = { response, target };
         continue;
@@ -345,6 +369,12 @@ export const forward = async ({
       // held stream — never going to be read — has to be released before its
       // upstream connection sits idle until garbage collection.
       held?.response.body?.cancel();
+      if (outlier !== undefined && response.status < 500) {
+        // Only a sub-5xx answer is evidence of health: a 5xx is the same fault
+        // the ejection exists to remember, whatever the route's switch policy
+        // decided to do about it this request.
+        outlier.onSuccess(target.host);
+      }
       return { response, target };
     } catch (error) {
       lastError = error;
@@ -373,6 +403,14 @@ export const forward = async ({
         error instanceof Error && error.name === 'TimeoutError' ? 'timeout' : 'unreachable';
       if (!policy?.includes(condition)) {
         break;
+      }
+      // Counted only when the failure actually moves the walk: a condition the
+      // policy does not name stops this request anyway, so recording it would
+      // eject a candidate over a fault the operator's own policy dismisses.
+      // The client abort above broke out before this line — a visitor hanging
+      // up says nothing about the upstream.
+      if (outlier !== undefined) {
+        outlier.onFailure(target.host);
       }
     }
   }

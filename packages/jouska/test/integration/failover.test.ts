@@ -1,7 +1,14 @@
 import { Hono } from 'hono';
-import { describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it } from 'vitest';
 import { defineConfig, type ConfigInput } from '../../src/config';
 import { jouska, type ProxyEvent } from '../../src/middleware/jouska';
+import { resetOutlierLedgers } from '../../src/internal/outlier';
+
+// The ejection memory is module-scope state that outlives one app instance —
+// that is its whole point — so every test here starts from an empty ledger.
+beforeEach(() => {
+  resetOutlierLedgers();
+});
 
 /**
  * A scripted upstream: each handler receives the attempted request and answers
@@ -310,5 +317,172 @@ describe('onProxy attribution across candidates', () => {
     await app.request('https://p.dev/x', { headers: { cookie: '__jouska_upstream=b.test' } });
     expect(events[0]!.selection).toEqual({ index: 1, reason: 'sticky', scope: 'none' });
     expect(events[0]!.upstream).toBe('b.test');
+  });
+});
+
+describe('passive outlier ejection', () => {
+  const abort = (): Error => {
+    const e = new Error('client left');
+    e.name = 'AbortError';
+    return e;
+  };
+
+  it('stops paying the timeout after three consecutive failures', async () => {
+    const { app, requests } = appWith(
+      [{ match: { path: '/x' }, upstreams: ['a.test', 'b.test'] }],
+      (req) => (req.url.startsWith('https://a.test/') ? new Error('down') : ok('from b')),
+    );
+    // Three requests each pay for the dead primary before it is ejected.
+    for (let i = 0; i < 3; i += 1) {
+      const res = await app.request('https://p.dev/x');
+      expect(res.status).toBe(200);
+    }
+    // The fourth goes straight to the backup: one attempt, no dead upstream.
+    const res = await app.request('https://p.dev/x');
+    expect(res.status).toBe(200);
+    expect(await res.text()).toBe('from b');
+    expect(requests.map((r) => new URL(r.url).host)).toEqual([
+      'a.test',
+      'b.test',
+      'a.test',
+      'b.test',
+      'a.test',
+      'b.test',
+      'b.test',
+    ]);
+  });
+
+  it('reports the skipped candidates on the event', async () => {
+    const events: ProxyEvent[] = [];
+    const { app } = appWith(
+      [{ match: { path: '/x' }, upstreams: ['a.test', 'b.test'] }],
+      (req) => (req.url.startsWith('https://a.test/') ? new Error('down') : ok('b')),
+      events,
+    );
+    for (let i = 0; i < 4; i += 1) {
+      await app.request('https://p.dev/x');
+    }
+    // Nothing was skipped while the memory was still counting; the request
+    // after the threshold names the primary it declined to try.
+    expect(events[2]!.ejected).toBeUndefined();
+    expect(events[3]!.ejected).toEqual(['a.test']);
+    expect(events[3]!.attempts).toBe(1);
+    expect(events[3]!.upstream).toBe('b.test');
+  });
+
+  it('ejects on the first failure with consecutiveFailures: 1, but not by default', async () => {
+    const { app, requests } = appWith(
+      [
+        {
+          match: { path: '/x' },
+          upstreams: ['a.test', 'b.test'],
+          outlier: { consecutiveFailures: 1, ejectSeconds: 30 },
+        },
+      ],
+      (req) => (req.url.startsWith('https://a.test/') ? new Error('down') : ok('b')),
+    );
+    await app.request('https://p.dev/x');
+    await app.request('https://p.dev/x');
+    expect(requests.map((r) => new URL(r.url).host)).toEqual(['a.test', 'b.test', 'b.test']);
+  });
+
+  it('does not count a 5xx the policy does not name', async () => {
+    const { app, requests } = appWith(
+      [
+        {
+          match: { path: '/x' },
+          upstreams: ['a.test', 'b.test'],
+          failover: { on: ['timeout', 'unreachable'], maxAttempts: 2 },
+        },
+      ],
+      () => new Response('sick', { status: 503 }),
+    );
+    await app.request('https://p.dev/x');
+    await app.request('https://p.dev/x');
+    // The primary answered every time — 5xx outside the policy never moves the
+    // walk, so the ejection memory has nothing to record.
+    expect(requests.map((r) => new URL(r.url).host)).toEqual(['a.test', 'a.test']);
+  });
+
+  it('does not count a client abort', async () => {
+    const { app, requests } = appWith(
+      [{ match: { path: '/x' }, upstreams: ['a.test', 'b.test'] }],
+      () => abort(),
+    );
+    await app.request('https://p.dev/x');
+    await app.request('https://p.dev/x');
+    // A visitor hanging up says nothing about the upstream; the primary keeps
+    // its clean slate.
+    expect(requests.map((r) => new URL(r.url).host)).toEqual(['a.test', 'a.test']);
+  });
+
+  it('still tries the first declared candidate when every candidate is out', async () => {
+    const { app, requests } = appWith(
+      [
+        {
+          match: { path: '/x' },
+          upstreams: ['a.test', 'b.test'],
+          outlier: { consecutiveFailures: 1, ejectSeconds: 30 },
+        },
+      ],
+      () => new Error('down'),
+    );
+    const first = await app.request('https://p.dev/x');
+    expect(first.status).toBe(502);
+    // One failure each: both candidates are now out.
+    expect(requests.map((r) => new URL(r.url).host)).toEqual(['a.test', 'b.test']);
+    const second = await app.request('https://p.dev/x');
+    // The fallback restores the head of the declared order — ejection
+    // reorders, it never makes the route unreachable.
+    expect(second.status).toBe(502);
+    expect(new URL(requests[2]!.url).host).toBe('a.test');
+  });
+
+  it('brings a candidate back after ejectSeconds', async () => {
+    const { app, requests } = appWith(
+      [
+        {
+          match: { path: '/x' },
+          upstreams: ['a.test', 'b.test'],
+          outlier: { consecutiveFailures: 1, ejectSeconds: 1 },
+        },
+      ],
+      (req) => (req.url.startsWith('https://a.test/') ? new Error('down') : ok('b')),
+    );
+    await app.request('https://p.dev/x');
+    await app.request('https://p.dev/x');
+    expect(new URL(requests[1]!.url).host).toBe('b.test');
+    // A second short of wall clock, and the primary gets another look — no
+    // redeploy, no operator action.
+    await new Promise((resolve) => setTimeout(resolve, 1100));
+    await app.request('https://p.dev/x');
+    // Request two was already the backup; the third pays for the primary
+    // again, and its walk ends on the backup as before.
+    expect(new URL(requests[3]!.url).host).toBe('a.test');
+    expect(new URL(requests[4]!.url).host).toBe('b.test');
+  });
+
+  it('keeps one route from ejecting an upstream another route still trusts', async () => {
+    const { app, requests } = appWith(
+      [
+        { match: { path: '/x' }, upstreams: ['a.test', 'b.test'] },
+        { match: { path: '/y' }, upstreams: ['a.test', 'c.test'] },
+      ],
+      (req) => (req.url.startsWith('https://a.test/') ? new Error('down') : ok('backup')),
+    );
+    // /x learns a.test is dead.
+    for (let i = 0; i < 3; i += 1) {
+      await app.request('https://p.dev/x');
+    }
+    const res = await app.request('https://p.dev/x');
+    expect(new URL(requests[requests.length - 1]!.url).host).toBe('b.test');
+    // /y shares the upstream, not the memory: it gives a.test its own chance.
+    const other = await app.request('https://p.dev/y');
+    expect(other.status).toBe(200);
+    const otherHosts = requests
+      .slice(requests.findIndex((r) => new URL(r.url).pathname === '/y'))
+      .map((r) => new URL(r.url).host);
+    expect(otherHosts).toEqual(['a.test', 'c.test']);
+    expect(res.status).toBe(200);
   });
 });

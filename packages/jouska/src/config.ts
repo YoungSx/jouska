@@ -234,6 +234,25 @@ const failover = z.object({
  */
 const DEFAULT_FAILOVER: z.output<typeof failover> = failover.parse({});
 
+/**
+ * Passive outlier ejection across multiple upstream candidates.
+ *
+ * Failure is remembered between requests, so the walk does not start from a
+ * candidate the previous requests already proved dead: without this, every
+ * visitor pays the primary's full `timeoutMs` before the backup is reached,
+ * for as long as the primary stays down. Failures are counted per isolate —
+ * the same approximation the native rate limit binding makes — and a candidate
+ * that crosses the threshold is skipped for `ejectSeconds`.
+ */
+const outlier = z.object({
+  /** Consecutive counted failures before the candidate is skipped. */
+  consecutiveFailures: z.number().int().min(1).max(10).default(3),
+  /** How long a skipped candidate stays out of the walk. */
+  ejectSeconds: z.number().int().min(1).max(300).default(30),
+});
+
+const DEFAULT_OUTLIER: z.output<typeof outlier> = outlier.parse({});
+
 /** One weighted candidate of a `trafficSplit`. */
 const trafficSplitEntry = z.object({
   upstream,
@@ -1155,6 +1174,12 @@ const route = z.object({
    * always carry one — see {@link normalizeFailover}.
    */
   failover: failover.optional(),
+  /**
+   * Policy for remembering failures across requests and skipping a candidate
+   * that keeps failing. Optional here because single-upstream routes have
+   * nothing to skip; candidate routes are normalised to always carry one.
+   */
+  outlier: outlier.optional(),
   /** How a `trafficSplit` route keeps a caller on their assigned upstream. */
   stickyBy: stickyBy.optional(),
   /**
@@ -1441,17 +1466,23 @@ const foldUpstreamHeaders = ({ upstreamHeaders: alias, ...rest }: ParsedRoute): 
 };
 
 /**
- * Gives every candidate route a failover policy when it states none.
+ * Gives every candidate route its failover policy and outlier policy when it
+ * states none.
  *
  * Single-upstream routes are left untouched: `failover` on one is a config
  * error (caught in the cross-field checks), so inventing one there would paper
- * over a mistake. The policy comes from {@link DEFAULT_FAILOVER}, parsed
- * through the same schema the field uses.
+ * over a mistake — and an outlier policy has nothing to skip. Both policies
+ * come parsed through their own schemas, so these defaults and the field
+ * defaults cannot drift apart.
  */
-const normalizeFailover = (routes: readonly RouteOutput[]): RouteOutput[] =>
+const normalizeMultiCandidate = (routes: readonly RouteOutput[]): RouteOutput[] =>
   routes.map((entry) =>
     entry.upstreams !== undefined || entry.trafficSplit !== undefined
-      ? { ...entry, failover: entry.failover ?? DEFAULT_FAILOVER }
+      ? {
+          ...entry,
+          failover: entry.failover ?? DEFAULT_FAILOVER,
+          outlier: entry.outlier ?? DEFAULT_OUTLIER,
+        }
       : entry,
   );
 
@@ -1595,10 +1626,10 @@ export const configSchema = z
       }
 
       /**
-       * `failover` is meaningless without candidates to walk over, and
-       * `stickyBy` without a split has nothing to be sticky about. Both are
-       * refused rather than silently ignored: config that cannot take effect
-       * should say so.
+       * `failover` is meaningless without candidates to walk over, `outlier`
+       * has nothing to remember failures about, and `stickyBy` without a
+       * split has nothing to be sticky about. All are refused rather than
+       * silently ignored: config that cannot take effect should say so.
        */
       const hasCandidates = entry.upstreams !== undefined || entry.trafficSplit !== undefined;
       if (entry.failover !== undefined && !hasCandidates) {
@@ -1606,6 +1637,13 @@ export const configSchema = z
           code: 'custom',
           path: ['routes', index, 'failover'],
           message: 'failover requires upstreams or trafficSplit',
+        });
+      }
+      if (entry.outlier !== undefined && !hasCandidates) {
+        ctx.addIssue({
+          code: 'custom',
+          path: ['routes', index, 'outlier'],
+          message: 'outlier requires upstreams or trafficSplit',
         });
       }
       if (entry.stickyBy !== undefined && entry.trafficSplit === undefined) {
@@ -1642,7 +1680,7 @@ export const configSchema = z
    */
   .transform((config) => ({
     ...config,
-    routes: normalizeFailover(config.routes.map(foldUpstreamHeaders)) as [
+    routes: normalizeMultiCandidate(config.routes.map(foldUpstreamHeaders)) as [
       RouteOutput,
       ...RouteOutput[],
     ],
