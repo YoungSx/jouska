@@ -51,6 +51,16 @@ export const boundedString = (value: unknown, maxLength: number): string | undef
 };
 
 /**
+ * A route id, or undefined.
+ *
+ * Shared by every writer — the panel API and the MCP tools — because two copies
+ * of this pattern is two answers to "what is a route id", and the looser one
+ * wins by accident.
+ */
+export const routeIdFrom = (raw: unknown): string | undefined =>
+  typeof raw === 'string' && /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(raw) ? raw : undefined;
+
+/**
  * Serialized size of a JSON value, in UTF-8 bytes, or undefined when it cannot
  * be serialized at all (a cycle, or a BigInt) — both of which are rejections.
  */

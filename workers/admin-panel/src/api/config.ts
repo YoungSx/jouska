@@ -9,9 +9,7 @@
  */
 import { Hono } from 'hono';
 import { readJsonObject } from '../body.js';
-import { compileConfig, type RouteRow } from '../compile.js';
-import { dangerFlags, type FieldRisk } from '../danger.js';
-import { asLiveState, documentDigest, LIVE_KEY } from '../fingerprint.js';
+import { previewDraft, type PreviewResult } from '../preview.js';
 import { publishDraft } from '../publish.js';
 import { requireAdmin } from '../middleware.js';
 import {
@@ -21,7 +19,6 @@ import {
   getSetting,
   listAllRoutes,
   listAudit,
-  listEnabledRoutes,
   putSetting,
   reorderRoutes,
   upsertRoute,
@@ -35,40 +32,9 @@ import {
   MAX_DEFAULTS_BYTES,
   MAX_DEFINITION_BYTES,
   MAX_NOTE_LENGTH,
+  routeIdFrom,
   strictBoolean,
 } from '../validate.js';
-
-export interface PreviewResult {
-  readonly ok: boolean;
-  readonly issues?: readonly { routeId: string | undefined; path: string; message: string }[];
-  readonly shadowWarnings?: readonly { shadowedId: string; byId: string; probe: string }[];
-  /**
-   * Whole-site routes that will not rewrite their links. Advisory: publish is
-   * never gated on it, unlike `dangers`.
-   */
-  readonly mirrorWarnings?: readonly { routeId: string; upstream: string }[];
-  readonly dangers?: Record<string, readonly FieldRisk[]>;
-  readonly document?: unknown;
-  readonly routeCount?: number;
-  readonly error?: string;
-  /**
-   * Nothing to publish yet, as opposed to something wrong. A fresh deployment
-   * is `ok: false, empty: true` — the UI guides instead of alarming.
-   */
-  readonly empty?: true;
-  /**
-   * What the proxy is serving right now, and whether the draft differs from it.
-   *
-   * Present on every preview, including a failing one: an operator looking at a
-   * broken draft still needs to know that the previous revision is live and
-   * unaffected. `undefined` live means nothing has ever been published.
-   */
-  readonly live?: { readonly revision: number } | null;
-  readonly dirty?: boolean;
-}
-
-const routeIdFrom = (raw: string | undefined): string | undefined =>
-  raw !== undefined && /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(raw) ? raw : undefined;
 
 export const configRoutes = new Hono<AppEnv>();
 
@@ -99,13 +65,16 @@ configRoutes.put('/routes/:id', requireAdmin, async (c) => {
       400,
     );
   }
+  const existing = await getRoute(c.env.DB, id);
   // Strict boolean: `enabled: 'yes'` reads as false to `=== true`, which would
   // silently park the route out of production on a typo. Reject instead.
-  const enabled = body.enabled === undefined ? true : strictBoolean(body.enabled);
+  // Omitted keeps the route's current state — defaulting to `true` would let an
+  // edit to a disabled route push it into production traffic as a side effect.
+  const enabled =
+    body.enabled === undefined ? (existing?.enabled ?? true) : strictBoolean(body.enabled);
   if (enabled === undefined) {
     return c.json({ error: 'invalid_input', detail: 'enabled must be a boolean' }, 400);
   }
-  const existing = await getRoute(c.env.DB, id);
   // New routes append at the end; position is managed, not authored.
   const position =
     existing === undefined ? (await listAllRoutes(c.env.DB)).length : existing.position;
@@ -193,45 +162,7 @@ configRoutes.put('/defaults', requireAdmin, async (c) => {
 
 /** Dry-run: compile, validate, shadow- and mirror-check — no KV write. */
 configRoutes.get('/preview', async (c) => {
-  const rows: RouteRow[] = await listEnabledRoutes(c.env.DB);
-  const defaults = await getSetting(c.env.DB, 'defaults');
-  const live = asLiveState(await getSetting(c.env.DB, LIVE_KEY));
-  const liveField = live === undefined ? null : { revision: live.revision };
-  const compiled = compileConfig(rows, defaults);
-  if (!compiled.ok) {
-    return c.json<PreviewResult>({
-      ok: false,
-      issues: compiled.issues,
-      ...(compiled.empty === true ? { empty: true } : {}),
-      live: liveField,
-      // A draft that will not compile can never equal what is live, so it is
-      // dirty by definition — unless nothing was ever published and the draft
-      // is empty, which is the untouched first-run state, not a pending change.
-      dirty: !(compiled.empty === true && live === undefined),
-    });
-  }
-  const dangers: Record<string, readonly FieldRisk[]> = {};
-  for (const row of rows) {
-    if (typeof row.definition === 'object' && row.definition !== null) {
-      const flags = dangerFlags(row.definition as Record<string, unknown>);
-      if (flags.length > 0) {
-        dangers[row.id] = flags;
-      }
-    }
-  }
-  // Digest the same document publish would write, minus `meta` — see
-  // fingerprint.ts for why `meta` is excluded.
-  const digest = await documentDigest(compiled.document);
-  return c.json<PreviewResult>({
-    ok: true,
-    document: compiled.document,
-    shadowWarnings: compiled.shadowWarnings,
-    mirrorWarnings: compiled.mirrorWarnings,
-    dangers,
-    routeCount: rows.length,
-    live: liveField,
-    dirty: live === undefined || live.digest !== digest,
-  });
+  return c.json<PreviewResult>(await previewDraft(c.env.DB));
 });
 
 /**

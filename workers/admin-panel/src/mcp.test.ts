@@ -173,8 +173,13 @@ describe('MCP token lifecycle', () => {
     };
     // Refused at the scope gate, not merely told the arguments were wrong: a
     // tool-level `isError` would mean the write was attempted and declined
-    // downstream, which is a different — and weaker — guarantee.
-    expect(denied.status).toBe(200);
+    // downstream, which is a different — and weaker — guarantee. The status is
+    // the part a client can act on: 403 with the missing scope named is what
+    // RFC 6750 asks for, and what lets a caller ask for more permission.
+    expect(denied.status).toBe(403);
+    expect(denied.headers.get('www-authenticate')).toBe(
+      'Bearer error="insufficient_scope", scope="config:write"',
+    );
     expect(deniedBody.result).toBeUndefined();
     expect(deniedBody.error?.code).toBe(-32803);
     expect(deniedBody.error?.data?.required).toBe('config:write');
@@ -248,5 +253,313 @@ describe('MCP token lifecycle', () => {
       .bind('app')
       .first<{ updated_by: string }>();
     expect(row?.updated_by).toBe(actor);
+  });
+});
+
+/**
+ * The transport half of MCP: what the endpoint owes a client before any tool
+ * runs. These are the rules an intermediary also reads, which is why a
+ * disagreement between header and body is refused rather than resolved.
+ */
+describe('MCP transport conformance', () => {
+  const readToken = async (): Promise<string> => {
+    const cookie = await loginCookie();
+    const created = await request(
+      'POST',
+      '/api/mcp-tokens',
+      { name: 'transport', scopes: ['config:read'] },
+      { cookie },
+    );
+    return ((await created.json()) as { token: string }).token;
+  };
+
+  const bare = async (path: string, init: RequestInit): Promise<Response> =>
+    worker.fetch(
+      new Request(`${base}${path}`, init) as unknown as Parameters<typeof worker.fetch>[0],
+      appEnv,
+      {} as ExecutionContext,
+    );
+
+  it('answers 405 to the methods this revision removed, not 404', async () => {
+    // A 404 reads as "no MCP endpoint here" and sends a dual-era client off to
+    // probe the deprecated HTTP+SSE transport. 405 says the endpoint exists.
+    for (const method of ['GET', 'DELETE', 'PUT', 'OPTIONS']) {
+      const res = await bare('/mcp', { method });
+      expect(res.status).toBe(405);
+      expect(res.headers.get('allow')).toBe('POST');
+    }
+  });
+
+  it('refuses a body that is not application/json before parsing it', async () => {
+    const token = await readToken();
+    const res = await bare('/mcp', {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${token}`,
+        'content-type': 'text/plain',
+        'MCP-Protocol-Version': '2026-07-28',
+        'Mcp-Method': 'ping',
+      },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'ping', params: modernMeta }),
+    });
+    expect(res.status).toBe(415);
+  });
+
+  it('enforces the body cap by counting bytes, not by trusting content-length', async () => {
+    // A chunked upload declares no length at all, so a limit that reads the
+    // header and then buffers the stream stops nothing.
+    const token = await readToken();
+    const oversize = JSON.stringify({
+      jsonrpc: '2.0',
+      id: 1,
+      method: 'tools/call',
+      params: { ...modernMeta, name: 'get_config', arguments: { pad: 'x'.repeat(512 * 1024) } },
+    });
+    const res = await bare('/mcp', {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${token}`,
+        'content-type': 'application/json',
+        'MCP-Protocol-Version': '2026-07-28',
+        'Mcp-Method': 'tools/call',
+        'Mcp-Name': 'get_config',
+      },
+      body: new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode(oversize));
+          controller.close();
+        },
+      }),
+      // @ts-expect-error streaming upload is a workerd extension to RequestInit
+      duplex: 'half',
+    });
+    expect(res.status).toBe(413);
+  });
+});
+
+describe('MCP envelope and result shape', () => {
+  const writeToken = async (): Promise<string> => {
+    const cookie = await loginCookie();
+    const created = await request(
+      'POST',
+      '/api/mcp-tokens',
+      { name: 'shape', scopes: ['config:read', 'config:write'] },
+      { cookie },
+    );
+    return ((await created.json()) as { token: string }).token;
+  };
+
+  const errorOf = async (res: Response): Promise<{ code?: number; data?: unknown }> =>
+    ((await res.json()) as { error?: { code?: number; data?: unknown } }).error ?? {};
+
+  it('rejects a missing version header as a header mismatch, not as a bad version', async () => {
+    // The spec files a missing standard header under header validation (-32020).
+    // -32022 is for a version the server does not implement, which is a
+    // different thing to tell a client. Blank counts as missing.
+    const token = await writeToken();
+    const absent = await worker.fetch(
+      new Request(`${base}/mcp`, {
+        method: 'POST',
+        headers: {
+          authorization: `Bearer ${token}`,
+          'content-type': 'application/json',
+          'Mcp-Method': 'ping',
+        },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'ping', params: modernMeta }),
+      }),
+      appEnv,
+      {} as ExecutionContext,
+    );
+    expect(absent.status).toBe(400);
+    expect((await errorOf(absent)).code).toBe(-32020);
+
+    const blank = await mcp(
+      token,
+      { jsonrpc: '2.0', id: 1, method: 'ping', params: modernMeta },
+      { 'MCP-Protocol-Version': '' },
+    );
+    expect(blank.status).toBe(400);
+    expect((await errorOf(blank)).code).toBe(-32020);
+  });
+
+  it('names what it speaks when asked for a version it does not implement', async () => {
+    const token = await writeToken();
+    const res = await mcp(
+      token,
+      { jsonrpc: '2.0', id: 1, method: 'ping', params: modernMeta },
+      { 'MCP-Protocol-Version': '1900-01-01' },
+    );
+    expect(res.status).toBe(400);
+    const error = await errorOf(res);
+    expect(error.code).toBe(-32022);
+    expect(error.data).toEqual({ supported: ['2026-07-28'], requested: '1900-01-01' });
+  });
+
+  it('answers a handshake-era initialize with the version it speaks', async () => {
+    // A 2025-era client cannot send the version header on its opening request,
+    // so it must not be met with a complaint about the header: the version list
+    // is the only diagnostic it can put in front of a human.
+    const token = await writeToken();
+    const res = await worker.fetch(
+      new Request(`${base}/mcp`, {
+        method: 'POST',
+        headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+        body: JSON.stringify({
+          jsonrpc: '2.0',
+          id: 1,
+          method: 'initialize',
+          params: { protocolVersion: '2025-11-25', capabilities: {} },
+        }),
+      }),
+      appEnv,
+      {} as ExecutionContext,
+    );
+    expect(res.status).toBe(400);
+    const error = await errorOf(res);
+    expect(error.code).toBe(-32022);
+    expect(error.data).toEqual({ supported: ['2026-07-28'], requested: '2025-11-25' });
+  });
+
+  it('treats a missing required _meta field as invalid params', async () => {
+    const token = await writeToken();
+    const res = await mcp(token, { jsonrpc: '2.0', id: 1, method: 'ping', params: {} });
+    expect(res.status).toBe(400);
+    expect((await errorOf(res)).code).toBe(-32602);
+  });
+
+  it('decodes a base64-sentinel Mcp-Name before comparing it to the body', async () => {
+    // Encoding is how a client carries a name that is not header-safe. Comparing
+    // the encoded form byte-for-byte would reject a conforming request.
+    const token = await writeToken();
+    const res = await mcp(
+      token,
+      {
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'tools/call',
+        params: { ...modernMeta, name: 'get_config', arguments: {} },
+      },
+      { 'Mcp-Name': '=?base64?Z2V0X2NvbmZpZw==?=' },
+    );
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as { result: { isError: boolean } }).result.isError).toBe(false);
+  });
+
+  it('carries resultType, server identity and caching hints on every result', async () => {
+    const token = await writeToken();
+    const discover = await mcp(token, {
+      jsonrpc: '2.0',
+      id: 1,
+      method: 'server/discover',
+      params: modernMeta,
+    });
+    const discoverResult = ((await discover.json()) as { result: Record<string, unknown> }).result;
+    expect(discoverResult.resultType).toBe('complete');
+    // Cacheable results must carry both hints; discover is the same answer for
+    // everyone, tools/list is filtered by the token's scopes and must not be
+    // shared between callers.
+    expect(discoverResult.ttlMs).toBe(3_600_000);
+    expect(discoverResult.cacheScope).toBe('public');
+    expect(discoverResult._meta).toEqual({
+      'io.modelcontextprotocol/serverInfo': { name: 'jouska', version: '0.2.2' },
+    });
+
+    const list = await mcp(token, {
+      jsonrpc: '2.0',
+      id: 2,
+      method: 'tools/list',
+      params: modernMeta,
+    });
+    const listResult = ((await list.json()) as { result: Record<string, unknown> }).result;
+    expect(listResult.ttlMs).toBe(300_000);
+    expect(listResult.cacheScope).toBe('private');
+
+    const ping = await mcp(token, { jsonrpc: '2.0', id: 3, method: 'ping', params: modernMeta });
+    const pingResult = ((await ping.json()) as { result: Record<string, unknown> }).result;
+    expect(pingResult.resultType).toBe('complete');
+    expect(pingResult.ttlMs).toBeUndefined();
+  });
+
+  it('reports an unknown tool as a protocol error, not as a tool failure', async () => {
+    // A model cannot recover from this by trying different arguments, which is
+    // what `isError` is for, so it belongs in the JSON-RPC error channel.
+    const token = await writeToken();
+    const res = await mcp(
+      token,
+      {
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'tools/call',
+        params: { ...modernMeta, name: 'publish_config', arguments: {} },
+      },
+      { 'Mcp-Name': 'publish_config' },
+    );
+    const body = (await res.json()) as { result?: unknown; error?: { code?: number } };
+    expect(body.result).toBeUndefined();
+    expect(body.error?.code).toBe(-32602);
+  });
+});
+
+describe('MCP draft tools', () => {
+  const writeToken = async (): Promise<string> => {
+    const cookie = await loginCookie();
+    const created = await request(
+      'POST',
+      '/api/mcp-tokens',
+      { name: 'draft', scopes: ['config:read', 'config:write'] },
+      { cookie },
+    );
+    return ((await created.json()) as { token: string }).token;
+  };
+
+  const callTool = async (
+    token: string,
+    name: string,
+    args: Record<string, unknown> = {},
+  ): Promise<Record<string, unknown>> => {
+    const res = await mcp(
+      token,
+      {
+        jsonrpc: '2.0',
+        id: 7,
+        method: 'tools/call',
+        params: { ...modernMeta, name, arguments: args },
+      },
+      { 'Mcp-Name': name },
+    );
+    expect(res.status).toBe(200);
+    return ((await res.json()) as { result: { structuredContent: Record<string, unknown> } }).result
+      .structuredContent;
+  };
+
+  it('shows an agent the same preview the panel shows, mirror advisory included', async () => {
+    // The MCP preview used to be a hand-written copy of the panel's and had
+    // already lost `mirrorWarnings`, so an agent reviewing its own draft could
+    // not see that a whole-site route would ship without link rewriting — the
+    // one warning it is best placed to report.
+    const token = await writeToken();
+    await callTool(token, 'update_route', { id: 'app', definition: theRoute });
+    const preview = await callTool(token, 'preview_config');
+    expect(preview.ok).toBe(true);
+    expect(preview.mirrorWarnings).toEqual([
+      { routeId: 'app', upstream: 'app.internal.example.com' },
+    ]);
+    expect(preview.dirty).toBe(true);
+  });
+
+  it('keeps a disabled route disabled when enabled is omitted', async () => {
+    // Defaulting to `true` would put a route into production traffic as a side
+    // effect of editing an unrelated field.
+    const token = await writeToken();
+    await callTool(token, 'update_route', { id: 'app', definition: theRoute, enabled: false });
+    const edited = await callTool(token, 'update_route', {
+      id: 'app',
+      definition: { ...theRoute, timeoutMs: 9000 },
+    });
+    expect(edited.enabled).toBe(false);
+    const row = await testEnv.DB.prepare('SELECT enabled FROM routes WHERE id = ?')
+      .bind('app')
+      .first<{ enabled: number }>();
+    expect(row?.enabled).toBe(0);
   });
 });
