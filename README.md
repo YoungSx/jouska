@@ -642,6 +642,32 @@ becomes the initial admin, further users are created by an admin — and stays
 inside the free tier (D1 for sessions, users and the audit log; one KV key for
 the published document).
 
+### MCP access
+
+An admin issues machine tokens on the 「MCP 令牌」screen — admin-only, because a
+token is a standing grant rather than a session. Tokens look like `jska_mcp_…`
+and the database keeps only their SHA-256 digest, so the secret appears exactly
+once, in the response that creates it; a lost token is revoked and reissued,
+never recovered. Every token carries a fixed expiry, 365 days at most, and can
+be revoked at any time.
+
+MCP answers on `/mcp`, same origin as the panel, authenticated by
+`Authorization: Bearer <token>` and nothing else — the Cookie session and its
+same-origin rules do not apply there, and a browser cookie cannot stand in for a
+token. Scopes are granted per token:
+
+- **`config:read`** — the draft, the defaults, and preview output.
+- **`config:write`** — edits the draft. It does not publish.
+- **`domains:read`** — hostnames bound to the proxy.
+- **`audit:read`** — the audit log.
+
+There is no publish scope, by construction. An agent can rewrite the draft, run
+the preview and report the dangerous switches it found, but moving that draft
+into production traffic still goes through an admin at the existing publish
+confirmation. And what an agent did stays attributable: writes are recorded
+against `mcp:<token-id>:<user>`, so revoking a token does not erase the trail of
+what it touched.
+
 ### Deploy
 
 The committed `wrangler.jsonc` files are account-agnostic templates — D1 and

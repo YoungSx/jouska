@@ -32,6 +32,7 @@ import { AuthView } from '@/views/auth-view';
 import { AuditView } from '@/views/audit-view';
 import { DomainsView } from '@/views/domains-view';
 import { HistoryView } from '@/views/history-view';
+import { McpTokensView } from '@/views/mcp-tokens-view';
 import { PreviewView } from '@/views/preview-view';
 import { RouteEditor } from '@/views/route-editor';
 import { RoutesView } from '@/views/routes-view';
@@ -51,7 +52,7 @@ import type { RouteDefinition } from '@/lib/types';
  * 正在服务哪一版」这个问题始终有答案。
  */
 
-type View = 'routes' | 'domains' | 'preview' | 'audit' | 'users' | 'history';
+type View = 'routes' | 'domains' | 'preview' | 'audit' | 'users' | 'history' | 'mcp-tokens';
 
 interface NavItem {
   readonly id: View;
@@ -68,6 +69,7 @@ const NAV_ITEMS: readonly NavItem[] = [
   { id: 'audit', label: t.nav.audit },
   { id: 'history', label: t.nav.history },
   { id: 'users', label: t.nav.users, adminOnly: true },
+  { id: 'mcp-tokens', label: t.nav.mcp, adminOnly: true },
 ];
 
 const App = () => {
@@ -435,6 +437,7 @@ const App = () => {
         {view === 'users' && (
           <UsersView selfSubject={user.subject} onSelfRoleChanged={() => void session.refresh()} />
         )}
+        {view === 'mcp-tokens' && <McpTokensView onUnauthenticated={session.onUnauthenticated} />}
       </main>
 
       {/* 闸门轨道：无论在哪一页，草稿与线上的差异都摆在这里。 */}
