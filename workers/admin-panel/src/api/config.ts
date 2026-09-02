@@ -251,6 +251,11 @@ configRoutes.post('/publish', requireAdmin, async (c) => {
     action: 'config.publish',
   });
   if (!result.ok) {
+    if (result.reason === 'already_live') {
+      // 客户端的 gate 可能是陈旧的（另一标签页刚发布过），所以 409 不只是给
+      // 双击兜底——它是唯一靠得住的 no-op 拦截点。
+      return c.json({ ok: false, error: 'already_live' }, 409);
+    }
     return result.reason === 'compile_failed'
       ? c.json<PreviewResult>(
           {

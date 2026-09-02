@@ -1,9 +1,10 @@
 /**
  * The publish pipeline, shared by `POST /api/publish` and rollback.
  *
- * Publish is the only write to KV, and it is guarded three times: the document
- * must compile and validate (`configSchema`), dangerous switches require an
- * explicit `confirm`, and everything lands in the audit log. One publish is
+ * Publish is the only write to KV, and it is guarded four times: the document
+ * must compile and validate (`configSchema`), a no-op (KV already serves the
+ * exact same content) is refused before anything is spent, dangerous switches
+ * require an explicit `confirm`, and everything lands in the audit log. One publish is
  * exactly one KV write — the free tier's daily write allowance is not to be
  * sprayed. Rollback reaches the same function so it inherits every gate: a
  * restored snapshot is published like any other draft, as a new revision.
@@ -56,6 +57,12 @@ export type PublishOutcome =
       readonly dangers: Record<string, readonly FieldRisk[]>;
       readonly shadowWarnings: readonly ShadowWarning[];
       readonly mirrorWarnings: readonly MirrorWarning[];
+    }
+  | {
+      /** `revision` 是线上 meta 里记录的版本；KV 值没有可信 meta 时为 null。 */
+      readonly ok: false;
+      readonly reason: 'already_live';
+      readonly revision: number | null;
     };
 
 interface PublishEnv {
@@ -74,6 +81,40 @@ const dangersOf = (rows: readonly RouteRow[]): Record<string, readonly FieldRisk
     }
   }
   return dangers;
+};
+
+/**
+ * Reports the revision a stored KV document is serving when its content — meta
+ * excluded, since updatedAt and note change on every publish — digests the same
+ * as the draft. Malformed values return undefined so the publish proceeds and
+ * repairs the key instead of being blocked by garbage it is about to overwrite.
+ */
+const liveRevisionIfSame = async (
+  served: string,
+  digest: string,
+): Promise<number | null | undefined> => {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(served);
+  } catch {
+    return undefined;
+  }
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+    return undefined;
+  }
+  const content = { ...(parsed as Record<string, unknown>) };
+  delete content.meta;
+  if ((await documentDigest(content)) !== digest) {
+    return undefined;
+  }
+  const meta = (parsed as { meta?: unknown }).meta;
+  const revision =
+    typeof meta === 'object' && meta !== null
+      ? (meta as { revision?: unknown }).revision
+      : undefined;
+  return typeof revision === 'number' && Number.isInteger(revision) && revision >= 0
+    ? revision
+    : null;
 };
 
 /**
@@ -111,6 +152,23 @@ export const publishDraft = async (
     };
   }
 
+  // No-op guard, before the confirm gate: a refused no-op must not demand a
+  // danger confirmation first. The comparison reads KV itself rather than the
+  // D1 live fingerprint on purpose — KV is the ground truth the proxy serves,
+  // and publishing identical content is the recovery tool when the key was
+  // wiped out of band; a D1-fingerprint block would deadlock that repair. The
+  // guard fails open: an unparsable value or an eventual-consistency read that
+  // still returns the previous document costs one redundant write — exactly the
+  // behaviour of having no guard at all.
+  const digest = await documentDigest(compiled.document);
+  const served = await env.CONFIG_KV.get(KV_KEY);
+  if (served !== null) {
+    const live = await liveRevisionIfSame(served, digest);
+    if (live !== undefined) {
+      return { ok: false, reason: 'already_live', revision: live };
+    }
+  }
+
   const dangers = dangersOf(rows);
   if (Object.keys(dangers).length > 0 && args.confirm !== true) {
     return {
@@ -142,7 +200,6 @@ export const publishDraft = async (
     ...(args.note === undefined ? {} : { note: args.note }),
   };
   const document = { ...compiled.document, meta };
-  const digest = await documentDigest(compiled.document);
 
   // The one and only KV write in this worker.
   await env.CONFIG_KV.put(KV_KEY, JSON.stringify(document));

@@ -119,7 +119,18 @@ describe('admin panel end-to-end', () => {
     await applyD1Migrations(testEnv.DB, TEST_MIGRATIONS);
     // Fresh slate for every case: remove what earlier cases (or earlier
     // migrations applied to a live database) may have left behind.
-    for (const table of ['audit_log', 'sessions', 'routes', 'settings', 'mcp_tokens', 'users']) {
+    // `revisions` belongs here too: publish writes a row per revision, and a
+    // leftover row makes the next test's counter start one higher — the
+    // "revision 2" assertion below would red on the whole-file run only.
+    for (const table of [
+      'audit_log',
+      'sessions',
+      'routes',
+      'settings',
+      'mcp_tokens',
+      'users',
+      'revisions',
+    ]) {
       await testEnv.DB.prepare(`DELETE FROM ${table}`).run();
     }
     // D1 is not the only durable state: publish writes KV, and a leftover
@@ -319,6 +330,45 @@ describe('admin panel end-to-end', () => {
     const actions = auditBody.entries.map((e) => e.action);
     expect(actions).toContain('route.create');
     expect(actions).toContain('config.publish');
+  });
+
+  it('refuses a no-op publish, still publishes real changes, and self-heals a wiped KV', async () => {
+    await bootstrapAdmin();
+    adminCookie = cookieFrom(await login('root', 'correct-horse-battery'));
+    const auth = { cookie: adminCookie };
+    expect((await call('PUT', '/api/routes/app', { definition: theRoute }, auth)).status).toBe(200);
+    const first = await call('POST', '/api/publish', { note: 'first' }, auth);
+    expect(first.status).toBe(200);
+
+    // Republishing identical content is a no-op: 409 already_live, no new
+    // revision, no audit row — one publish stays exactly one KV write. A
+    // different note alone does not make the content different.
+    const noop = await call('POST', '/api/publish', { note: 'same content' }, auth);
+    expect(noop.status).toBe(409);
+    expect(((await noop.json()) as { error?: string }).error).toBe('already_live');
+    const audit = (await (await get('/api/audit?limit=50', auth)).json()) as {
+      entries: { action: string }[];
+    };
+    expect(audit.entries.filter((e) => e.action === 'config.publish')).toHaveLength(1);
+
+    // A real change is not blocked by the guard.
+    expect(
+      (await call('PUT', '/api/routes/app', { definition: { ...theRoute, timeoutMs: 8000 } }, auth))
+        .status,
+    ).toBe(200);
+    const second = await call('POST', '/api/publish', { note: 'timeout bump' }, auth);
+    expect(second.status).toBe(200);
+    expect(((await second.json()) as { revision?: number }).revision).toBe(2);
+
+    // A key wiped out of band is the disaster this guard must not deadlock:
+    // publishing identical content is the repair, so it goes through and the
+    // revision counter keeps walking forward.
+    await testEnv.CONFIG_KV.delete('routes');
+    const heal = await call('POST', '/api/publish', { note: 'repair after wipe' }, auth);
+    expect(heal.status).toBe(200);
+    expect(((await heal.json()) as { revision?: number }).revision).toBe(3);
+    const served = await testEnv.CONFIG_KV.get('routes', { type: 'json' });
+    expect(served).not.toBeNull();
   });
 
   it('viewers may read but not write', async () => {

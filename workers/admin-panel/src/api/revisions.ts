@@ -19,7 +19,7 @@ import { configSchema } from 'jouska';
 import { compileConfig, type RouteRow } from '../compile.js';
 import { readJsonObject } from '../body.js';
 import { diffDocuments } from '../diff.js';
-import { documentDigest, LIVE_KEY, asLiveState } from '../fingerprint.js';
+import { LIVE_KEY, asLiveState } from '../fingerprint.js';
 import { publishDraft } from '../publish.js';
 import { dangerFlags, type FieldRisk } from '../danger.js';
 import { requireAdmin } from '../middleware.js';
@@ -234,16 +234,10 @@ revisionRoutes.post('/revisions/rollback', requireAdmin, async (c) => {
     );
   }
 
-  // Rolling back to what is already being served would write a no-op revision
-  // into history. The digests are on hand, so refuse instead.
-  const live = asLiveState(await getSetting(c.env.DB, LIVE_KEY));
-  const sourceDigest = await documentDigest(doc);
-  if (live !== undefined && live.digest === sourceDigest) {
-    return c.json(
-      { error: 'already_live', detail: `revision ${sourceRevision} is identical to what is live` },
-      409,
-    );
-  }
+  // No dedicated already-live check here: publishDraft refuses a no-op against
+  // KV itself (see publish.ts). Comparing digests in D1 instead would deadlock
+  // the recovery path — when the KV key is wiped out of band, rolling back to
+  // the live revision is exactly how the operator re-heals it.
 
   const routesDoc = Array.isArray(doc['routes']) ? (doc['routes'] as readonly unknown[]) : [];
   const routes: { readonly id: string; readonly definition: unknown }[] = [];
@@ -310,9 +304,13 @@ revisionRoutes.post('/revisions/rollback', requireAdmin, async (c) => {
     action: 'config.rollback',
   });
   if (!result.ok) {
-    // Only reachable if the restored draft somehow fails to compile, e.g. a
-    // schema tightening between snapshot and rollback — the parse above
-    // already ruled out the normal path.
+    // already_live：快照内容和线上完全一致（最常见于陈旧列表里再点一次 live
+    // 那版的回滚）。此时草稿已被重置为快照——草稿与线上一致，恰好是回滚想达
+    // 成的状态，无需补救。compile_failed 只在 schema 于快照之后收紧时可达，
+    // 上面的 parse 已排除正常路径。
+    if (result.reason === 'already_live') {
+      return c.json({ error: 'already_live' }, 409);
+    }
     return c.json(
       {
         error: 'revision_not_compatible',
