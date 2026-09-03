@@ -23,6 +23,7 @@ import {
   settingStmt,
 } from './store.js';
 import type { MirrorWarning } from './mirror.js';
+import type { SignedLinkCacheWarning } from './signed-link-advisory.js';
 import type { ShadowWarning } from './shadow.js';
 
 /**
@@ -45,6 +46,8 @@ export type PublishOutcome =
       readonly mirrorWarnings: readonly MirrorWarning[];
       /** Caching routes that match on headers or cookies. Advisory only. */
       readonly cacheVaryWarnings: readonly CacheVaryWarning[];
+      /** Caching routes whose key keeps the signed link's parameters. Advisory only. */
+      readonly signedLinkCacheWarnings: readonly SignedLinkCacheWarning[];
       readonly dangers: Record<string, readonly FieldRisk[]>;
       readonly routeCount: number;
     }
@@ -61,6 +64,7 @@ export type PublishOutcome =
       readonly shadowWarnings: readonly ShadowWarning[];
       readonly mirrorWarnings: readonly MirrorWarning[];
       readonly cacheVaryWarnings: readonly CacheVaryWarning[];
+      readonly signedLinkCacheWarnings: readonly SignedLinkCacheWarning[];
     }
   | {
       /** `revision` 是线上 meta 里记录的版本；KV 值没有可信 meta 时为 null。 */
@@ -182,6 +186,7 @@ export const publishDraft = async (
       shadowWarnings: compiled.shadowWarnings,
       mirrorWarnings: compiled.mirrorWarnings,
       cacheVaryWarnings: compiled.cacheVaryWarnings,
+      signedLinkCacheWarnings: compiled.signedLinkCacheWarnings,
     };
   }
 
@@ -215,6 +220,7 @@ export const publishDraft = async (
     shadowWarnings: compiled.shadowWarnings,
     mirrorWarnings: compiled.mirrorWarnings,
     cacheVaryWarnings: compiled.cacheVaryWarnings,
+    signedLinkCacheWarnings: compiled.signedLinkCacheWarnings,
     dangers,
     ...(args.rollbackOf === undefined ? {} : { rollbackOf: args.rollbackOf }),
     ...(args.note === undefined ? {} : { note: args.note }),
@@ -244,6 +250,7 @@ export const publishDraft = async (
     shadowWarnings: compiled.shadowWarnings,
     mirrorWarnings: compiled.mirrorWarnings,
     cacheVaryWarnings: compiled.cacheVaryWarnings,
+    signedLinkCacheWarnings: compiled.signedLinkCacheWarnings,
     dangers,
     routeCount: rows.length,
   };

@@ -560,3 +560,312 @@ describe('access control', () => {
     expect(certsCalls).toBe(0);
   });
 });
+
+describe('referer guard', () => {
+  it('admits a request whose referer is on the allow-list', async () => {
+    const app = appWith([
+      { match: { path: '/x' }, upstream: 'o.test', referer: { allow: ['c.test'] } },
+    ]);
+    const res = await app.request(from('203.0.113.1'), {
+      headers: { referer: 'https://c.test/page' },
+    });
+    expect(res.status).toBe(200);
+    expect(await res.text()).toBe('upstream reached');
+  });
+
+  it('admits a wildcard match on a subdomain', async () => {
+    const app = appWith([
+      { match: { path: '/x' }, upstream: 'o.test', referer: { allow: ['*.c.test'] } },
+    ]);
+    const res = await app.request(from('203.0.113.1'), {
+      headers: { referer: 'https://img.c.test/page' },
+    });
+    expect(res.status).toBe(200);
+  });
+
+  it('refuses a lookalike domain the wildcard never covered', async () => {
+    const app = appWith([
+      { match: { path: '/x' }, upstream: 'o.test', referer: { allow: ['*.c.test'] } },
+    ]);
+    const res = await app.request(from('203.0.113.1'), {
+      headers: { referer: 'https://evilec.test/page' },
+    });
+    expect(res.status).toBe(403);
+    expect(((await res.json()) as Record<string, string>).error).toBe('referer_forbidden');
+  });
+
+  it('refuses a subdomain-of-subdomain trick against a bare-suffix rule', async () => {
+    const app = appWith([
+      { match: { path: '/x' }, upstream: 'o.test', referer: { allow: ['c.test'] } },
+    ]);
+    // 'c.test.evil.test' ends with 'c.test' as a string but is a different
+    // registrant; the exact comparison is what keeps it out.
+    const res = await app.request(from('203.0.113.1'), {
+      headers: { referer: 'https://c.test.evil.test/page' },
+    });
+    expect(res.status).toBe(403);
+  });
+
+  it('admits a missing referer by default', async () => {
+    const app = appWith([
+      { match: { path: '/x' }, upstream: 'o.test', referer: { allow: ['c.test'] } },
+    ]);
+    const res = await app.request(from('203.0.113.1'));
+    expect(res.status).toBe(200);
+  });
+
+  it('refuses a missing referer when allowEmpty is false', async () => {
+    const app = appWith([
+      {
+        match: { path: '/x' },
+        upstream: 'o.test',
+        referer: { allow: ['c.test'], allowEmpty: false },
+      },
+    ]);
+    const res = await app.request(from('203.0.113.1'));
+    expect(res.status).toBe(403);
+  });
+
+  it('honours onRefuse 404 so the block is invisible', async () => {
+    const app = appWith([
+      {
+        match: { path: '/x' },
+        upstream: 'o.test',
+        referer: { allow: ['c.test'], onRefuse: 404 },
+      },
+    ]);
+    const res = await app.request(from('203.0.113.1'), {
+      headers: { referer: 'https://evil.test/page' },
+    });
+    expect(res.status).toBe(404);
+  });
+
+  it('stamps its refusal with the request id', async () => {
+    const app = appWith([
+      { match: { path: '/x' }, upstream: 'o.test', referer: { allow: ['c.test'] } },
+    ]);
+    const res = await app.request(from('203.0.113.1'), {
+      headers: { referer: 'https://evil.test/page' },
+    });
+    expect(res.headers.get('x-request-id')).not.toBeNull();
+  });
+
+  it('never reaches the upstream on a refusal', async () => {
+    let calls = 0;
+    const counting: typeof fetch = async () => {
+      calls += 1;
+      return new Response('nope');
+    };
+    const app = new Hono();
+    app.use(
+      '*',
+      jouska({
+        config: defineConfig({
+          routes: [{ match: { path: '/x' }, upstream: 'o.test', referer: { allow: ['c.test'] } }],
+        }),
+        fetchImpl: counting,
+      }),
+    );
+    await app.request(from('203.0.113.1'), { headers: { referer: 'https://evil.test/' } });
+    expect(calls).toBe(0);
+  });
+
+  it('exempts a preflight on a route with cors', async () => {
+    const app = appWith([
+      {
+        match: { path: '/x' },
+        upstream: 'o.test',
+        referer: { allow: ['c.test'], allowEmpty: false },
+        cors: { allowMethods: ['POST'] },
+      },
+    ]);
+    const res = await app.request(
+      new Request('https://p.dev/x', {
+        method: 'OPTIONS',
+        headers: { origin: 'https://app.test', 'access-control-request-method': 'POST' },
+      }),
+    );
+    expect(res.status).toBe(204);
+  });
+});
+
+describe('signed links', () => {
+  const secret = 'link-secret-0123456789abcdef';
+  const sign = async (path: string, expires: number): Promise<string> => {
+    const message = new Uint8Array([
+      ...new TextEncoder().encode(path),
+      ...new TextEncoder().encode('\n'),
+      ...new TextEncoder().encode(String(expires)),
+    ]);
+    const key = await crypto.subtle.importKey(
+      'raw',
+      new TextEncoder().encode(secret),
+      { name: 'HMAC', hash: 'SHA-256' },
+      false,
+      ['sign'],
+    );
+    const raw = await crypto.subtle.sign('HMAC', key, message);
+    return btoa(String.fromCharCode(...new Uint8Array(raw)))
+      .replaceAll('+', '-')
+      .replaceAll('/', '_')
+      .replace(/=+$/, '');
+  };
+  const farFuture = Math.floor(Date.now() / 1000) + 3600;
+
+  it('admits a link signed over the path and expiry', async () => {
+    const sig = await sign('/x', farFuture);
+    const app = appWith([
+      { match: { path: '/x' }, upstream: 'o.test', signedLink: { secretBinding: 'KEY' } },
+    ]);
+    const res = await app.fetch(new Request(`https://p.dev/x?sig=${sig}&exp=${farFuture}`), {
+      KEY: secret,
+    });
+    expect(res.status).toBe(200);
+    expect(await res.text()).toBe('upstream reached');
+  });
+
+  it('refuses a tampered signature', async () => {
+    const sig = await sign('/x', farFuture);
+    const app = appWith([
+      { match: { path: '/x' }, upstream: 'o.test', signedLink: { secretBinding: 'KEY' } },
+    ]);
+    // The signature is base64url, so both ends of the alphabet are real
+    // characters; flipping either must fail the verify, not crash on decode.
+    for (const tampered of [`A${sig.slice(1)}`, `${sig.slice(0, -1)}A`]) {
+      const res = await app.fetch(new Request(`https://p.dev/x?sig=${tampered}&exp=${farFuture}`), {
+        KEY: secret,
+      });
+      expect(res.status).toBe(403);
+      expect(((await res.json()) as Record<string, string>).error).toBe('signed_link_invalid');
+    }
+  });
+
+  it('refuses a signature minted for a different path', async () => {
+    const sig = await sign('/other', farFuture);
+    const app = appWith([
+      { match: { path: '/x' }, upstream: 'o.test', signedLink: { secretBinding: 'KEY' } },
+    ]);
+    const res = await app.fetch(new Request(`https://p.dev/x?sig=${sig}&exp=${farFuture}`), {
+      KEY: secret,
+    });
+    expect(res.status).toBe(403);
+  });
+
+  it('refuses an expired link', async () => {
+    const past = Math.floor(Date.now() / 1000) - 3600;
+    const sig = await sign('/x', past);
+    const app = appWith([
+      { match: { path: '/x' }, upstream: 'o.test', signedLink: { secretBinding: 'KEY' } },
+    ]);
+    const res = await app.fetch(new Request(`https://p.dev/x?sig=${sig}&exp=${past}`), {
+      KEY: secret,
+    });
+    expect(res.status).toBe(403);
+  });
+
+  it('honours the one-minute tolerance past expiry', async () => {
+    const recent = Math.floor(Date.now() / 1000) - 30;
+    const sig = await sign('/x', recent);
+    const app = appWith([
+      { match: { path: '/x' }, upstream: 'o.test', signedLink: { secretBinding: 'KEY' } },
+    ]);
+    const res = await app.fetch(new Request(`https://p.dev/x?sig=${sig}&exp=${recent}`), {
+      KEY: secret,
+    });
+    expect(res.status).toBe(200);
+  });
+
+  it('refuses beyond the tolerance', async () => {
+    const stale = Math.floor(Date.now() / 1000) - 120;
+    const sig = await sign('/x', stale);
+    const app = appWith([
+      { match: { path: '/x' }, upstream: 'o.test', signedLink: { secretBinding: 'KEY' } },
+    ]);
+    const res = await app.fetch(new Request(`https://p.dev/x?sig=${sig}&exp=${stale}`), {
+      KEY: secret,
+    });
+    expect(res.status).toBe(403);
+  });
+
+  it('signs nothing but the path and expiry, so other parameters ride along', async () => {
+    const sig = await sign('/x', farFuture);
+    const app = appWith([
+      { match: { path: '/x' }, upstream: 'o.test', signedLink: { secretBinding: 'KEY' } },
+    ]);
+    const res = await app.fetch(
+      new Request(`https://p.dev/x?download=1&sig=${sig}&exp=${farFuture}`),
+      { KEY: secret },
+    );
+    expect(res.status).toBe(200);
+  });
+
+  it('refuses a link with the parameters missing', async () => {
+    const app = appWith([
+      { match: { path: '/x' }, upstream: 'o.test', signedLink: { secretBinding: 'KEY' } },
+    ]);
+    const res = await app.fetch(new Request('https://p.dev/x'), { KEY: secret });
+    expect(res.status).toBe(403);
+  });
+
+  it('refuses an expiry that is not bare digits', async () => {
+    const app = appWith([
+      { match: { path: '/x' }, upstream: 'o.test', signedLink: { secretBinding: 'KEY' } },
+    ]);
+    const res = await app.fetch(new Request('https://p.dev/x?sig=AAAA&exp=1e9'), { KEY: secret });
+    expect(res.status).toBe(403);
+  });
+
+  it('reports a missing secret binding as a server error rather than admitting traffic', async () => {
+    const app = appWith([
+      { match: { path: '/x' }, upstream: 'o.test', signedLink: { secretBinding: 'ABSENT' } },
+    ]);
+    const res = await app.fetch(new Request('https://p.dev/x?sig=AAAA&exp=1'), {});
+    expect(res.status).toBe(500);
+    const body = (await res.json()) as Record<string, string>;
+    expect(body.error).toBe('signed_link_misconfigured');
+    expect(body.binding).toBe('ABSENT');
+  });
+
+  it('exempts a preflight on a route with cors', async () => {
+    const app = appWith([
+      {
+        match: { path: '/x' },
+        upstream: 'o.test',
+        signedLink: { secretBinding: 'KEY' },
+        cors: { allowMethods: ['POST'] },
+      },
+    ]);
+    const res = await app.request(
+      new Request('https://p.dev/x', {
+        method: 'OPTIONS',
+        headers: { origin: 'https://app.test', 'access-control-request-method': 'POST' },
+      }),
+    );
+    expect(res.status).toBe(204);
+  });
+
+  it('reports the guard name on a refusal event', async () => {
+    const events: unknown[] = [];
+    const app = new Hono();
+    app.use(
+      '*',
+      jouska({
+        config: defineConfig({
+          routes: [
+            { match: { path: '/x' }, upstream: 'o.test', signedLink: { secretBinding: 'KEY' } },
+          ],
+        }),
+        fetchImpl: reached,
+        onProxy: (event) => {
+          events.push(event);
+        },
+      }),
+    );
+    await app.fetch(new Request('https://p.dev/x?sig=AAAA&exp=1'), { KEY: secret });
+    expect(events[0]).toMatchObject({
+      outcome: 'refused',
+      attempts: 0,
+      guardReason: 'signed_link',
+    });
+  });
+});

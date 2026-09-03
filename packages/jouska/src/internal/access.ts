@@ -1,4 +1,5 @@
 import type { AccessConfig } from '../config.js';
+import { base64UrlBytes } from './base64url.js';
 
 /**
  * Route-level identity checks: the CF Access JWT and the API key.
@@ -149,24 +150,6 @@ const checkKey = async (config: AccessConfig, request: Request): Promise<AccessV
     }
   }
   return refused(401, 'invalid');
-};
-
-/** Decodes one base64url JWT segment into bytes. */
-const base64UrlBytes = (segment: string): Uint8Array | undefined => {
-  // Translate to the alphabet `atob` accepts, then restore the padding it
-  // expects. Malformed input fails here and the caller refuses the request.
-  const base64 = segment.replaceAll('-', '+').replaceAll('_', '/');
-  const padded = base64 + '='.repeat((4 - (base64.length % 4)) % 4);
-  try {
-    const binary = atob(padded);
-    const bytes = new Uint8Array(binary.length);
-    for (let i = 0; i < binary.length; i += 1) {
-      bytes[i] = binary.charCodeAt(i);
-    }
-    return bytes;
-  } catch {
-    return undefined;
-  }
 };
 
 const parseJson = (bytes: Uint8Array): unknown => {

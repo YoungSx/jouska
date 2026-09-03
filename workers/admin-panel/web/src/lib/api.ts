@@ -15,6 +15,7 @@ import type {
   MirrorWarning,
   RouteDefinition,
   ShadowWarning,
+  SignedLinkCacheWarning,
 } from './types';
 
 export class ApiError extends Error {
@@ -349,6 +350,8 @@ export interface PreviewResult {
   readonly mirrorWarnings?: readonly MirrorWarning[];
   /** 开了缓存、条件又用头或 cookie 的路由：键随值变，命中率会降。提示性质。 */
   readonly cacheVaryWarnings?: readonly CacheVaryWarning[];
+  /** 开了缓存又验签名链接、键没折出 sig/exp 的路由：每个 exp 一个键。提示性质。 */
+  readonly signedLinkCacheWarnings?: readonly SignedLinkCacheWarning[];
   readonly dangers?: Record<string, readonly FieldRisk[]>;
   readonly document?: unknown;
   readonly routeCount?: number;

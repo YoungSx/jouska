@@ -29,6 +29,16 @@ export interface PreviewResult {
    * about hit rate.
    */
   readonly cacheVaryWarnings?: readonly { routeId: string; names: readonly string[] }[];
+  /**
+   * Caching routes that verify signed links without folding the link's own
+   * parameters out of the cache key. Same advisory tier as `cacheVaryWarnings`:
+   * the key folding guarantees correctness, this is about hit rate.
+   */
+  readonly signedLinkCacheWarnings?: readonly {
+    routeId: string;
+    param: string;
+    expiresParam: string;
+  }[];
   readonly dangers?: Record<string, readonly FieldRisk[]>;
   readonly document?: unknown;
   readonly routeCount?: number;
@@ -85,6 +95,7 @@ export const previewDraft = async (db: D1Database): Promise<PreviewResult> => {
     shadowWarnings: compiled.shadowWarnings,
     mirrorWarnings: compiled.mirrorWarnings,
     cacheVaryWarnings: compiled.cacheVaryWarnings,
+    signedLinkCacheWarnings: compiled.signedLinkCacheWarnings,
     dangers,
     routeCount: rows.length,
     live: liveField,

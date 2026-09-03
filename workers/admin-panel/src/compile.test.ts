@@ -671,3 +671,63 @@ describe('cacheVaryWarnings', () => {
     expect(result.cacheVaryWarnings).toEqual([]);
   });
 });
+
+describe('signedLinkCacheWarnings', () => {
+  const compile = (routes: unknown[]) =>
+    compileConfig(
+      routes.map((definition, index) => row(`r${index}`, definition, index)),
+      undefined,
+    );
+
+  const signedRoute = (cache: unknown) => ({
+    match: { host: 'a.com' },
+    upstream: 'u1.com',
+    signedLink: { secretBinding: 'KEY' },
+    cache,
+  });
+
+  it('advises a caching signed-link route whose key keeps the link parameters', () => {
+    const result = compile([signedRoute({ enabled: true })]);
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error('expected ok');
+    // The defaults fold nothing out, so sig and exp both land in the key.
+    expect(result.signedLinkCacheWarnings).toEqual([
+      { routeId: 'r0', param: 'sig', expiresParam: 'exp' },
+    ]);
+  });
+
+  it('stays silent when the key ignores both the signature and expiry parameters', () => {
+    const result = compile([
+      signedRoute({ enabled: true, key: { query: { ignore: ['sig', 'exp'] } } }),
+    ]);
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error('expected ok');
+    expect(result.signedLinkCacheWarnings).toEqual([]);
+  });
+
+  it('still advises when only one of the two parameters is folded out', () => {
+    const result = compile([signedRoute({ enabled: true, key: { query: { ignore: ['sig'] } } })]);
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error('expected ok');
+    // A key that still varies with `exp` is still one entry per link.
+    expect(result.signedLinkCacheWarnings).toEqual([
+      { routeId: 'r0', param: 'sig', expiresParam: 'exp' },
+    ]);
+  });
+
+  it('says nothing about a signed route that does not cache', () => {
+    const result = compile([signedRoute(undefined)]);
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error('expected ok');
+    expect(result.signedLinkCacheWarnings).toEqual([]);
+  });
+
+  it('says nothing about a caching route with no signedLink block', () => {
+    const result = compile([
+      { match: { host: 'a.com' }, upstream: 'u1.com', cache: { enabled: true } },
+    ]);
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error('expected ok');
+    expect(result.signedLinkCacheWarnings).toEqual([]);
+  });
+});

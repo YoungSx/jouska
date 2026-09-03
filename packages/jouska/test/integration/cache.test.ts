@@ -372,6 +372,74 @@ describe('the configurable key', () => {
   });
 });
 
+describe('caching a signed-link route', () => {
+  const secret = 'link-secret-0123456789abcdef';
+  const sign = async (path: string, expires: number): Promise<string> => {
+    const message = new Uint8Array([
+      ...new TextEncoder().encode(path),
+      ...new TextEncoder().encode('\n'),
+      ...new TextEncoder().encode(String(expires)),
+    ]);
+    const key = await crypto.subtle.importKey(
+      'raw',
+      new TextEncoder().encode(secret),
+      { name: 'HMAC', hash: 'SHA-256' },
+      false,
+      ['sign'],
+    );
+    const raw = await crypto.subtle.sign('HMAC', key, message);
+    return btoa(String.fromCharCode(...new Uint8Array(raw)))
+      .replaceAll('+', '-')
+      .replaceAll('/', '_')
+      .replace(/=+$/, '');
+  };
+
+  /** A signed route with the cache on and both link parameters folded out. */
+  const signedCachedRoute = () => [
+    {
+      match: { path: '/' },
+      upstream: 'origin.test',
+      signedLink: { secretBinding: 'KEY' },
+      cache: { ttlSeconds: 300, key: { query: { ignore: ['sig', 'exp'] } } },
+    },
+  ];
+
+  const fetchWithSigned = async (app: Hono, path: string): Promise<Response> => {
+    const scheduled: Promise<unknown>[] = [];
+    const ctx = {
+      waitUntil: (work: Promise<unknown>) => scheduled.push(work),
+      passThroughOnException: () => undefined,
+    } as unknown as ExecutionContext;
+    const response = await app.fetch(new Request(`https://p.dev${path}`), { KEY: secret }, ctx);
+    const buffered = new Response(await response.arrayBuffer(), {
+      status: response.status,
+      statusText: response.statusText,
+      headers: response.headers,
+    });
+    await Promise.all(scheduled);
+    return buffered;
+  };
+
+  it('serves a fresh expiry from the same entry once the key folds sig and exp out', async () => {
+    const app = appWith(signedCachedRoute(), memoryStore());
+    const farFuture = Math.floor(Date.now() / 1000) + 3600;
+    const later = farFuture + 600;
+    const first = await fetchWithSigned(
+      app,
+      `/a.css?sig=${await sign('/a.css', farFuture)}&exp=${farFuture}`,
+    );
+    expect(first.headers.get(CACHE_STATE_HEADER)).toBe('miss');
+    // A different expiry is a different link; with the two parameters out of
+    // the key it is still one cache entry, which is the point of folding them.
+    const second = await fetchWithSigned(
+      app,
+      `/a.css?sig=${await sign('/a.css', later)}&exp=${later}`,
+    );
+    expect(second.headers.get(CACHE_STATE_HEADER)).toBe('hit');
+    expect(trips).toBe(1);
+  });
+});
+
 describe('caching a rewritten document', () => {
   it('survives cloning the HTMLRewriter output', async () => {
     // Not the default — HTML is deliberately absent from `contentTypes` — but an
