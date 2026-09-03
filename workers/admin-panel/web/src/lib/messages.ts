@@ -341,6 +341,20 @@ export const t = {
       upstreamHint: '请求转发到哪里。',
       timing: '超时与重试',
       timingHint: '每次尝试的时限，以及失败后要不要再试。',
+      /**
+       * 预设是一次性模板：点按钮把数字填进下面的输入框，之后它们就是普通的
+       * 路由数字，随便改。预设不进配置 —— 配置里永远是具体的数，没有指向
+       * 预设的引用，所以库这边改数字永远不会悄悄改了已发布的路由。
+       */
+      presetLabel: '套预设',
+      presetHint:
+        '把一组挑好的数字填进下面的框，之后随便改。预设不跟随配置，改了库里的预设也不会动已发布的路由。',
+      presetLlm: 'LLM 上游',
+      presetLlmDesc: '上游要想很久才回话：OpenAI 类 API、冷启动的 HF Space。',
+      presetStreaming: '长流式响应',
+      presetStreamingDesc: '正文一次流好几分钟：reasoning 模型的 token 流。',
+      presetClear: '不套预设',
+      presetClearDesc: '把这六个框全清空，回到各自的默认值。',
       rewrite: '响应改写',
       rewriteHint: '让访客感觉自己没有离开代理。',
       guards: '访问控制',

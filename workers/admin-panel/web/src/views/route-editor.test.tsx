@@ -582,3 +582,72 @@ describe('RouteEditor 委托鉴权段（#53）', () => {
     });
   });
 });
+
+describe('RouteEditor 超时预设', () => {
+  beforeEach(() => {
+    vi.spyOn(api, 'domains').mockResolvedValue(configured([]));
+    vi.spyOn(api, 'putRoute').mockResolvedValue(undefined);
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('点 LLM 上游：三个框填上库里的数字，其余框不动', async () => {
+    const user = userEvent.setup();
+    renderEditor(true, { upstream: 'origin.example.com' });
+
+    await user.click(screen.getByRole('button', { name: 'LLM 上游' }));
+
+    expect(screen.getByLabelText('单次尝试等响应头（毫秒）')).toHaveValue(90000);
+    expect(screen.getByLabelText('重试总时限（毫秒）')).toHaveValue(120000);
+    expect(screen.getByLabelText('额外重试次数')).toHaveValue(1);
+    // 预设不覆盖的框保持未设置。
+    expect(screen.getByLabelText('等正文第一个字节（毫秒）')).toHaveValue(null);
+
+    expect(await saveDraft(user)).toMatchObject({
+      timeoutMs: 90000,
+      totalTimeoutMs: 120000,
+      retries: 1,
+    });
+  });
+
+  it('点长流式响应：只动正文两个框，响应头时限留在默认', async () => {
+    const user = userEvent.setup();
+    renderEditor(true, { upstream: 'origin.example.com' });
+
+    await user.click(screen.getByRole('button', { name: '长流式响应' }));
+
+    expect(screen.getByLabelText('等正文第一个字节（毫秒）')).toHaveValue(180000);
+    expect(screen.getByLabelText('正文空闲时限（毫秒）')).toHaveValue(180000);
+    expect(screen.getByLabelText('单次尝试等响应头（毫秒）')).toHaveValue(null);
+  });
+
+  it('预设是一锤子买卖：填完之后手改数字照常生效', async () => {
+    const user = userEvent.setup();
+    renderEditor(true, { upstream: 'origin.example.com' });
+
+    await user.click(screen.getByRole('button', { name: 'LLM 上游' }));
+    const total = screen.getByLabelText('重试总时限（毫秒）');
+    await user.clear(total);
+    await user.type(total, '60000');
+
+    expect(await saveDraft(user)).toMatchObject({ totalTimeoutMs: 60000 });
+  });
+
+  it('不套预设：六个框全清空，definition 里一个都不剩', async () => {
+    const user = userEvent.setup();
+    renderEditor(true, {
+      upstream: 'origin.example.com',
+      timeoutMs: 90000,
+      retries: 1,
+      streamIdleTimeoutMs: 180000,
+    });
+
+    await user.click(screen.getByRole('button', { name: '不套预设' }));
+
+    expect(await saveDraft(user)).not.toHaveProperty('timeoutMs');
+    expect(await saveDraft(user)).not.toHaveProperty('retries');
+    expect(await saveDraft(user)).not.toHaveProperty('streamIdleTimeoutMs');
+  });
+});

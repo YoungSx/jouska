@@ -3,7 +3,8 @@
   "references": [{ "path": "./tsconfig.app.json" }, { "path": "./tsconfig.node.json" }],
   "compilerOptions": {
     "paths": {
-      "@/*": ["./src/*"]
+      "@/*": ["./src/*"],
+      "@jouska/timing-presets": ["../../../packages/jouska/src/presets.ts"]
     }
   }
 }

@@ -10,6 +10,10 @@
  * 在 code review 时看得见。
  */
 
+// 只借预设名做键集约束；type-only import 不进 bundle，目标文件零依赖，
+// 不把库的 workers-types 类型拖进面板的 tsc。
+import type { TimingPresetName } from '@jouska/timing-presets';
+
 /**
  * 一条 `match` 条件：名 + 三选一的算子。三个族（headers/query/cookies）共用这个
  * 形状，与 `packages/jouska/src/config.ts` 的 schema 一致 —— 算子互斥由服务端
@@ -246,6 +250,22 @@ export const NUMERIC_BOUNDS = {
   /** 委托鉴权子请求的时限；schema 上限 5000，默认 2000。 */
   authTimeoutMs: { min: 1, max: 5_000, default: 2_000 },
 } as const;
+
+/**
+ * 预设按钮填哪些数字，与 jouska 库的 TIMING_PRESETS 一一对应。
+ *
+ * 数字本体不在这里抄第二份 —— 面板经 vite 别名直接 import 库的
+ * `@jouska/timing-presets`（见 vite.config.ts），这里只声明每个预设覆盖的键。
+ * 键集用 Record<TimingPresetName, …> 锁死：库加一个预设而这里没认领，编译当场
+ * 报错，逼人决定新预设要不要出现在表单上，而不是静默漏掉。
+ */
+export const PRESET_NUMERIC_KEYS: Record<
+  TimingPresetName,
+  readonly (keyof typeof NUMERIC_BOUNDS)[]
+> = {
+  llm: ['timeoutMs', 'totalTimeoutMs', 'retries'],
+  streaming: ['firstChunkTimeoutMs', 'streamIdleTimeoutMs'],
+};
 
 /** boolean 字段的 schema 默认值，用来在表单上显示"默认 X"。 */
 export const BOOLEAN_DEFAULTS = {
