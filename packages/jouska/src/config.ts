@@ -1333,17 +1333,6 @@ const respondRedirect = z
       });
       return;
     }
-    if (to.startsWith('//') || to.startsWith('/\\')) {
-      ctx.addIssue({
-        code: 'custom',
-        path: ['to'],
-        message:
-          `respond.redirect.to "${to}" is protocol-relative and browsers read it as ` +
-          'another host; write the path with a single leading slash, or the absolute ' +
-          'URL with respond.redirect.allowExternal: true',
-      });
-      return;
-    }
     // Not a relative path, so the only remaining reading is an absolute URL —
     // and that reading needs the switch, plus a value the parser agrees is one.
     if (redirect.allowExternal !== true) {
