@@ -423,6 +423,149 @@ describe('multiple upstream strategies', () => {
     ).not.toThrow();
   });
 
+  it('carries hashBy and hashType through to the parsed route', () => {
+    const config = defineConfig({
+      routes: [
+        {
+          match: { path: '/a' },
+          trafficSplit: [
+            { upstream: 'a.test', weight: 1 },
+            { upstream: 'b.test', weight: 1 },
+          ],
+          hashBy: { source: 'path' },
+          hashType: 'consistent',
+        },
+      ],
+    });
+    expect(config.routes[0]!.hashBy).toEqual({ source: 'path' });
+    expect(config.routes[0]!.hashType).toBe('consistent');
+  });
+
+  it('leaves hashBy and hashType absent when not written, so defaults stay implicit', () => {
+    const config = defineConfig({
+      routes: [
+        {
+          match: { path: '/a' },
+          trafficSplit: [
+            { upstream: 'a.test', weight: 1 },
+            { upstream: 'b.test', weight: 1 },
+          ],
+        },
+      ],
+    });
+    expect(config.routes[0]!.hashBy).toBeUndefined();
+    expect(config.routes[0]!.hashType).toBeUndefined();
+  });
+
+  it('rejects hashBy without a split', () => {
+    expect(() =>
+      defineConfig({
+        routes: [
+          { match: { path: '/a' }, upstreams: ['a.test', 'b.test'], hashBy: { source: 'path' } },
+        ],
+      }),
+    ).toThrow(/hashBy requires trafficSplit/);
+  });
+
+  it('rejects hashType without a split', () => {
+    expect(() =>
+      defineConfig({
+        routes: [
+          { match: { path: '/a' }, upstreams: ['a.test', 'b.test'], hashType: 'consistent' },
+        ],
+      }),
+    ).toThrow(/hashType requires trafficSplit/);
+  });
+
+  it('rejects stickyBy on a split that hashes on content', () => {
+    // Pinning callers and pinning resources are contradictory intents; the
+    // parse refuses rather than letting one silently override the other.
+    expect(() =>
+      defineConfig({
+        routes: [
+          {
+            match: { path: '/a' },
+            trafficSplit: [
+              { upstream: 'a.test', weight: 1 },
+              { upstream: 'b.test', weight: 1 },
+            ],
+            hashBy: { source: 'path' },
+            stickyBy: 'cookie',
+          },
+        ],
+      }),
+    ).toThrow(/content hash key contradicts/);
+  });
+
+  it('accepts stickyBy alongside an address hash, which agree on who is pinned', () => {
+    expect(() =>
+      defineConfig({
+        routes: [
+          {
+            match: { path: '/a' },
+            trafficSplit: [
+              { upstream: 'a.test', weight: 1 },
+              { upstream: 'b.test', weight: 1 },
+            ],
+            hashBy: { source: 'ip' },
+            stickyBy: 'cookie',
+          },
+        ],
+      }),
+    ).not.toThrow();
+  });
+
+  it('rejects a header key that is not an RFC 9110 token', () => {
+    expect(() =>
+      defineConfig({
+        routes: [
+          {
+            match: { path: '/a' },
+            trafficSplit: [
+              { upstream: 'a.test', weight: 1 },
+              { upstream: 'b.test', weight: 1 },
+            ],
+            hashBy: { source: 'header', header: 'not a header' },
+          },
+        ],
+      }),
+    ).toThrow(/valid HTTP header name/);
+  });
+
+  it('rejects a cookie key that is not an RFC 6265 token', () => {
+    expect(() =>
+      defineConfig({
+        routes: [
+          {
+            match: { path: '/a' },
+            trafficSplit: [
+              { upstream: 'a.test', weight: 1 },
+              { upstream: 'b.test', weight: 1 },
+            ],
+            hashBy: { source: 'cookie', cookie: 'a;b' },
+          },
+        ],
+      }),
+    ).toThrow(/valid cookie name/);
+  });
+
+  it('rejects a query key that cannot survive in a parameter name', () => {
+    expect(() =>
+      defineConfig({
+        routes: [
+          {
+            match: { path: '/a' },
+            trafficSplit: [
+              { upstream: 'a.test', weight: 1 },
+              { upstream: 'b.test', weight: 1 },
+            ],
+            hashBy: { source: 'query', query: 'a=b' },
+          },
+        ],
+      }),
+    ).toThrow(/query parameter name/);
+  });
+
   it('rejects a split whose weights are not integers in range', () => {
     expect(() =>
       defineConfig({

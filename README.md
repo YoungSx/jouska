@@ -65,47 +65,49 @@ Routes are evaluated in order and the first match wins.
 
 ## Route options
 
-| Option                 | Default  | Meaning                                                                    |
-| ---------------------- | -------- | -------------------------------------------------------------------------- |
-| `id`                   | —        | Stable handle. Used for `byId` merges and rate-limit buckets.              |
-| `match.host`           | —        | Host to match. `*.example.com` matches subdomains, not the apex.           |
-| `match.path`           | —        | Path prefix, matched on segment boundaries.                                |
-| `match.methods`        | all      | Restrict the route to specific methods.                                    |
-| `match.headers`        | `[]`     | Request-header conditions; see Match conditions below.                     |
-| `match.query`          | `[]`     | Query-parameter conditions; see Match conditions below.                    |
-| `match.cookies`        | `[]`     | Cookie conditions; see Match conditions below.                             |
-| `upstream`             | —        | `host`, `host:port` or `host/base/path`. No scheme.                        |
-| `upstreams`            | —        | Ordered candidates for failover; see Failover and traffic splitting.       |
-| `trafficSplit`         | —        | Weighted split entries; see Failover and traffic splitting.                |
-| `respond`              | —        | Answer at the edge instead of forwarding; see Edge answers.                |
-| `errorPages`           | —        | Replace the payload of an upstream failure; see Edge answers.              |
-| `failover`             | see text | Switch policy and attempt cap for the multi-candidate forms.               |
-| `outlier`              | see text | Passive ejection of failing candidates; see Outlier ejection.              |
-| `stickyBy`             | —        | `'cookie'`: split-assigned callers keep their upstream via a cookie.       |
-| `scheme`               | `https`  | Scheme used to reach the upstream.                                         |
-| `allowPrivateUpstream` | off      | Permit a loopback, private or metadata upstream.                           |
-| `stripPrefix`          | `false`  | Remove the matched prefix before forwarding.                               |
-| `timeoutMs`            | `10000`  | Per-attempt deadline for **response headers**. Max 120s.                   |
-| `totalTimeoutMs`       | `30000`  | Ceiling on all attempts to headers, including backoff. Max 300s.           |
-| `firstChunkTimeoutMs`  | `60000`  | Wait for the body's first byte after headers arrive.                       |
-| `streamIdleTimeoutMs`  | `60000`  | Longest silence between body bytes once it has started.                    |
-| `retries`              | `0`      | Extra attempts. Only idempotent methods retry.                             |
-| `retryBackoffMs`       | `100`    | Delay before the first retry, doubled for each subsequent one.             |
-| `rewriteHeaders`       | `true`   | Rewrite `Location`, `Refresh` and `Set-Cookie` onto the proxy.             |
-| `manualRedirect`       | `true`   | Ask for the redirect instead of following it upstream.                     |
-| `websocket`            | `true`   | Forward WebSocket upgrades.                                                |
-| `bodyRewrite`          | off      | Streaming body rewriting; see below.                                       |
-| `blockCountries`       | `[]`     | ISO 3166-1 alpha-2 codes refused with 403.                                 |
-| `allowCountries`       | —        | When set, only these are admitted. Fails closed on an unknown origin.      |
-| `upstreamHeaders`      | `{}`     | Alias for `requestHeaders.set`; see Header rules.                          |
-| `requestHeaders`       | off      | Headers to write or delete on the way upstream; see Header rules.          |
-| `responseHeaders`      | off      | Headers to write or delete on the way back; see Header rules.              |
-| `cache`                | off      | Upstream response caching; see Response caching.                           |
-| `requestPolicy`        | off      | Method allow-list and body size cap; see Guards.                           |
-| `cors`                 | off      | CORS handling; see Guards.                                                 |
-| `ip`                   | off      | IP allow/deny rules; see Guards.                                           |
-| `rateLimit`            | off      | Rate limiting via the native binding; see Guards.                          |
-| `access`               | off      | Route-level identity checks (Cloudflare Access JWT, API keys); see Guards. |
+| Option                 | Default   | Meaning                                                                           |
+| ---------------------- | --------- | --------------------------------------------------------------------------------- |
+| `id`                   | —         | Stable handle. Used for `byId` merges and rate-limit buckets.                     |
+| `match.host`           | —         | Host to match. `*.example.com` matches subdomains, not the apex.                  |
+| `match.path`           | —         | Path prefix, matched on segment boundaries.                                       |
+| `match.methods`        | all       | Restrict the route to specific methods.                                           |
+| `match.headers`        | `[]`      | Request-header conditions; see Match conditions below.                            |
+| `match.query`          | `[]`      | Query-parameter conditions; see Match conditions below.                           |
+| `match.cookies`        | `[]`      | Cookie conditions; see Match conditions below.                                    |
+| `upstream`             | —         | `host`, `host:port` or `host/base/path`. No scheme.                               |
+| `upstreams`            | —         | Ordered candidates for failover; see Failover and traffic splitting.              |
+| `trafficSplit`         | —         | Weighted split entries; see Failover and traffic splitting.                       |
+| `respond`              | —         | Answer at the edge instead of forwarding; see Edge answers.                       |
+| `errorPages`           | —         | Replace the payload of an upstream failure; see Edge answers.                     |
+| `failover`             | see text  | Switch policy and attempt cap for the multi-candidate forms.                      |
+| `outlier`              | see text  | Passive ejection of failing candidates; see Outlier ejection.                     |
+| `stickyBy`             | —         | `'cookie'`: split-assigned callers keep their upstream via a cookie.              |
+| `hashBy`               | caller IP | What the split's weighted hash is taken over; see Failover and traffic splitting. |
+| `hashType`             | `modulo`  | How the hashed key maps onto candidates: `modulo`, or a `consistent` ring.        |
+| `scheme`               | `https`   | Scheme used to reach the upstream.                                                |
+| `allowPrivateUpstream` | off       | Permit a loopback, private or metadata upstream.                                  |
+| `stripPrefix`          | `false`   | Remove the matched prefix before forwarding.                                      |
+| `timeoutMs`            | `10000`   | Per-attempt deadline for **response headers**. Max 120s.                          |
+| `totalTimeoutMs`       | `30000`   | Ceiling on all attempts to headers, including backoff. Max 300s.                  |
+| `firstChunkTimeoutMs`  | `60000`   | Wait for the body's first byte after headers arrive.                              |
+| `streamIdleTimeoutMs`  | `60000`   | Longest silence between body bytes once it has started.                           |
+| `retries`              | `0`       | Extra attempts. Only idempotent methods retry.                                    |
+| `retryBackoffMs`       | `100`     | Delay before the first retry, doubled for each subsequent one.                    |
+| `rewriteHeaders`       | `true`    | Rewrite `Location`, `Refresh` and `Set-Cookie` onto the proxy.                    |
+| `manualRedirect`       | `true`    | Ask for the redirect instead of following it upstream.                            |
+| `websocket`            | `true`    | Forward WebSocket upgrades.                                                       |
+| `bodyRewrite`          | off       | Streaming body rewriting; see below.                                              |
+| `blockCountries`       | `[]`      | ISO 3166-1 alpha-2 codes refused with 403.                                        |
+| `allowCountries`       | —         | When set, only these are admitted. Fails closed on an unknown origin.             |
+| `upstreamHeaders`      | `{}`      | Alias for `requestHeaders.set`; see Header rules.                                 |
+| `requestHeaders`       | off       | Headers to write or delete on the way upstream; see Header rules.                 |
+| `responseHeaders`      | off       | Headers to write or delete on the way back; see Header rules.                     |
+| `cache`                | off       | Upstream response caching; see Response caching.                                  |
+| `requestPolicy`        | off       | Method allow-list and body size cap; see Guards.                                  |
+| `cors`                 | off       | CORS handling; see Guards.                                                        |
+| `ip`                   | off       | IP allow/deny rules; see Guards.                                                  |
+| `rateLimit`            | off       | Rate limiting via the native binding; see Guards.                                 |
+| `access`               | off       | Route-level identity checks (Cloudflare Access JWT, API keys); see Guards.        |
 
 A `defaults` block at the top of the table supplies any of the behavioural
 fields for every route that does not state its own, so a table of twenty routes
@@ -423,14 +425,37 @@ actually answered — a response reached through a backup carries the backup's
 host, and a failure report names the last candidate tried.
 
 `trafficSplit` is a distribution, not an order. Callers are assigned by hashing
-a stable per-client key (the sticky cookie value, else `cf-connecting-ip`) into
-the weight space — deterministic, no state, and reproducible from the request
-alone. With `stickyBy: 'cookie'`, a newly assigned caller receives a host-only
+a stable key into the weight space — deterministic, no state, and reproducible
+from the request alone. The key is the caller's `cf-connecting-ip` by default;
+`hashBy` widens it to the request `path`, the full `url`, a named `header`, a
+named `cookie`, or a `query` parameter — so the same tenant header always lands
+on the same upstream, whatever address it called from. `hashType` chooses how
+the hashed key maps onto candidates. The default `modulo` divides the weight
+space as `hash()` does, and is bit-identical to the behaviour before `hashBy`
+existed; `consistent` builds a ketama-style ring over the candidates, which
+moves only the keys that land in the arc a candidate owned — so removing a
+candidate re-assigns its own share and nothing else, and adjusting a 95/5
+canary to 9/1 does not re-shuffle the entire audience the way `modulo` would.
+
+A content key that turns up missing on a request — the header absent, the
+cookie not sent, the parameter empty-by-absence — falls back to the address
+rather than to a constant, so those callers stay spread out instead of piling
+into one bucket; `scope` in the proxy event reads `ip` in that case, because it
+reports what was actually hashed, not what was configured. The address itself
+missing leaves nothing to hash and reports `none`.
+
+A weighted split is a distribution approximation, not a guarantee. Hash-based
+assignment is exact only when the key space is fine-grained and plentiful; keys
+of high cardinality skew the measured split away from the declared weights, and
+a `path` key over a small set of documents can turn a declared 95/5 into a
+measured 100/0. `consistent` rings soften this but do not remove it.
+
+With `stickyBy: 'cookie'`, a newly assigned caller receives a host-only
 `__jouska_upstream` cookie naming its upstream, and presents it back on later
 requests; a cookie naming an upstream the split no longer lists is re-assigned.
 The split winner is the walk's primary: failover from it continues into the
-other participants in declared order. `failover` and `stickyBy` are route-level
-only — they cannot be set in `defaults`.
+other participants in declared order. `failover`, `stickyBy`, `hashBy` and
+`hashType` are route-level only — they cannot be set in `defaults`.
 
 ### Edge answers
 
@@ -1250,20 +1275,20 @@ app.use(
 );
 ```
 
-| Field        | Meaning                                                                                                                                                                       |
-| ------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `routeId`    | The matched route, labelled the way rate-limit buckets are.                                                                                                                   |
-| `upstream`   | Authority the request was sent to. Empty on an edge answer — there is no upstream to blame.                                                                                   |
-| `method`     | Request method.                                                                                                                                                               |
-| `path`       | Path as the client wrote it, before normalisation.                                                                                                                            |
-| `status`     | Status returned to the client, including jouska's own 4xx and 5xx.                                                                                                            |
-| `durationMs` | Wall-clock milliseconds from match to response.                                                                                                                               |
-| `attempts`   | Upstream attempts, including the first — so a retry is visible.                                                                                                               |
-| `outcome`    | `ok`, `refused`, `timeout`, `unreachable`, `client_closed`, or `responded` — an edge answer from a `respond` route, which produced a response without one upstream attempt.   |
-| `cache`      | `hit`, `stale`, `miss`, `bypass` or `stale_error`; absent without a `cache` block.                                                                                            |
-| `selection`  | How a split route picked its upstream — present only on `trafficSplit` routes, with the winning entry's `index` and whether a `sticky` cookie or the `weighted` hash decided. |
-| `ejected`    | Candidates the outlier memory removed from the walk before the first attempt. Absent when nothing was skipped, and on routes without an `outlier` policy.                     |
-| `stream`     | Promise of how the body stream ended, resolved once it has. Absent when nothing streamed from an upstream — a refusal, a 101, a bodyless response, a cache hit.               |
+| Field        | Meaning                                                                                                                                                                                                                                                                                                                                                 |
+| ------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `routeId`    | The matched route, labelled the way rate-limit buckets are.                                                                                                                                                                                                                                                                                             |
+| `upstream`   | Authority the request was sent to. Empty on an edge answer — there is no upstream to blame.                                                                                                                                                                                                                                                             |
+| `method`     | Request method.                                                                                                                                                                                                                                                                                                                                         |
+| `path`       | Path as the client wrote it, before normalisation.                                                                                                                                                                                                                                                                                                      |
+| `status`     | Status returned to the client, including jouska's own 4xx and 5xx.                                                                                                                                                                                                                                                                                      |
+| `durationMs` | Wall-clock milliseconds from match to response.                                                                                                                                                                                                                                                                                                         |
+| `attempts`   | Upstream attempts, including the first — so a retry is visible.                                                                                                                                                                                                                                                                                         |
+| `outcome`    | `ok`, `refused`, `timeout`, `unreachable`, `client_closed`, or `responded` — an edge answer from a `respond` route, which produced a response without one upstream attempt.                                                                                                                                                                             |
+| `cache`      | `hit`, `stale`, `miss`, `bypass` or `stale_error`; absent without a `cache` block.                                                                                                                                                                                                                                                                      |
+| `selection`  | How a split route picked its upstream — present only on `trafficSplit` routes, with the winning entry's `index`, whether a `sticky` cookie or the `weighted` hash decided, and the `scope` the weighted hash was taken over: `ip` (the default and any fallback), `path`, `url`, `header`, `cookie`, `query`, or `none` when there was nothing to hash. |
+| `ejected`    | Candidates the outlier memory removed from the walk before the first attempt. Absent when nothing was skipped, and on routes without an `outlier` policy.                                                                                                                                                                                               |
+| `stream`     | Promise of how the body stream ended, resolved once it has. Absent when nothing streamed from an upstream — a refusal, a 101, a bodyless response, a cache hit.                                                                                                                                                                                         |
 
 Three more report what happened to the response body, which is what a mirrored
 site is judged by:
@@ -1435,6 +1460,16 @@ These are Workers limits, not choices, and they shape the architecture:
   stored with `Vary: cookie` to a request carrying a different cookie. Response
   caching therefore decides every one of those itself rather than leaning on the
   platform — all verified in workerd.
+- **No `least_conn` on a split.** Least-connections needs a shared count of
+  in-flight requests, which on Workers means a Durable Object round trip on
+  every proxied request — a latency and cost floor the routing layer exists to
+  avoid. A per-isolate count without that round trip is not a fallback either:
+  it would see only the requests that isolate happened to receive and read
+  counts that are wrong by whole isolates, while promising by its name to do
+  what it cannot. A split is hash-assigned for exactly that reason —
+  deterministic from the request alone, no shared state — and the honest
+  alternatives to that are recorded here rather than behind a flag that
+  overstates itself.
 
 ## Admin panel
 
