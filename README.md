@@ -1261,7 +1261,9 @@ and a route can neither write nor delete it there — see the reserved names abo
 
 There is no off switch. Three copies of one request with no way to line them up is
 the situation a reverse proxy exists to make debuggable, and the cost is one
-header per message.
+header per message. A `respond` route resolves one too — its answer is a
+response the client holds and a line in the log, and it still geo-blocks,
+rate-limits and authenticates before answering, so it is traceable the same way.
 
 The value comes from the first of these that produces a usable one:
 
