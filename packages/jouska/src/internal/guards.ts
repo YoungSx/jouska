@@ -118,29 +118,36 @@ export type GuardReason =
  * The comparison reuses `hostMatches`, the same matcher `match.host` runs, so
  * an allow-list entry means exactly what the same string means as a match
  * entry — including the `*.` rule that never admits the apex and never matches
- * a merely similar suffix like `evilexample.com`. Anything else would make
- * "allowed here" and "matched there" two different claims about one string.
+ * a merely similar suffix like `evilexample.com`. Only the hostname is read:
+ * the port, scheme and path are not part of the claim, and `match.host` does
+ * not consult them either.
  *
- * The header is read as a URL and its host compared; a value that does not
- * parse, or whose scheme is not http(s), counts as empty and falls to
- * `allowEmpty`. The header is forgeable by any non-browser client, so this is
- * a fence against other sites embedding assets, not an access control.
+ * Absence and unattributability are different things. A missing header — or a
+ * blank one — is direct navigation, and `allowEmpty` answers it. A value that
+ * is there but cannot be attributed (`Referer: blocked` from a privacy
+ * extension, gibberish, `about:blank`, whose hostname parses to the empty
+ * string) carries a claim that nothing on the list could satisfy, and is
+ * refused regardless of `allowEmpty`: admitting it would mean an unparseable
+ * referer is worth more than no referer at all.
+ *
+ * The header is forgeable by any non-browser client, so this is a fence
+ * against other sites embedding assets, not an access control.
  */
 export const checkReferer = (config: RefererConfig, request: Request): RefererVerdict => {
   const raw = request.headers.get('referer');
-  if (raw === null) {
+  if (raw === null || raw === '') {
     return config.allowEmpty ? { ok: true } : { ok: false, status: config.onRefuse };
   }
   let referer: URL;
   try {
     referer = new URL(raw);
   } catch {
-    return config.allowEmpty ? { ok: true } : { ok: false, status: config.onRefuse };
+    return { ok: false, status: config.onRefuse };
   }
   if (referer.protocol !== 'http:' && referer.protocol !== 'https:') {
-    return config.allowEmpty ? { ok: true } : { ok: false, status: config.onRefuse };
+    return { ok: false, status: config.onRefuse };
   }
-  const host = referer.host.toLowerCase();
-  const matched = config.allow.some((pattern) => hostMatches(pattern, host));
+  const hostname = referer.hostname.toLowerCase();
+  const matched = config.allow.some((pattern) => hostMatches(pattern, hostname));
   return matched ? { ok: true } : { ok: false, status: config.onRefuse };
 };

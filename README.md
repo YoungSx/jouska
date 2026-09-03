@@ -1135,7 +1135,7 @@ header is forgeable by any non-browser client.
   upstream: 'origin.example.com',
   referer: {
     allow: ['example.com', '*.example.com'],
-    // Admit a missing or unparseable referer — direct navigation has none.
+    // Admit a missing referer — direct navigation has none.
     allowEmpty: true,
     // 403 (default) or 404.
     onRefuse: 403,
@@ -1146,12 +1146,20 @@ header is forgeable by any non-browser client.
 Entries use the same host grammar as `match.host`: a literal host matches
 exactly, and `*.example.com` matches subdomains but never the apex — write both
 when the apex should pass. The comparison is deliberately the one matcher
-`match.host` runs, so an allow-list entry and a match entry mean exactly the
-same thing, and a lookalike suffix like `evilexample.com` or
-`c.example.com.evil.test` matches neither. A value that does not parse, or whose
-scheme is not http(s), counts as empty and falls to `allowEmpty`. Matching a
-repeated header compares the combined comma-joined value, the same rule
-`match.headers` follows.
+`match.host` runs, against the hostname alone — the port is not part of the
+claim, and a lookalike suffix like `evilexample.com` or
+`c.example.com.evil.test` matches neither. Absence and unattributability are
+different things: a missing header, or a blank one, is direct navigation and
+falls to `allowEmpty`, while a value that is there but cannot be attributed —
+`Referer: blocked` from a privacy extension, gibberish, `about:blank` — carries
+a claim nothing on the list could satisfy and is refused regardless of
+`allowEmpty`. Admitting it would mean an unparseable referer is worth more than
+no referer at all. Matching a repeated header compares the combined
+comma-joined value, the same rule `match.headers` follows.
+
+A route carrying `referer` and `signedLink` passes both: `allowEmpty: false`
+alongside `signedLink` also shuts out the direct visitor who opened a signed
+link with no referer at all.
 
 ### Signed links
 

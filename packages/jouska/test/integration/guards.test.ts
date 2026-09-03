@@ -606,6 +606,19 @@ describe('referer guard', () => {
     expect(res.status).toBe(403);
   });
 
+  it('compares the hostname only, so a port on the referer does not matter', async () => {
+    const app = appWith([
+      { match: { path: '/x' }, upstream: 'o.test', referer: { allow: ['c.test'] } },
+    ]);
+    // `match.host` compares against `url.hostname`; the referer guard must read
+    // the same field or `https://c.test:8443/` would fail an allow-list that
+    // the same host matches.
+    const res = await app.request(from('203.0.113.1'), {
+      headers: { referer: 'https://c.test:8443/page' },
+    });
+    expect(res.status).toBe(200);
+  });
+
   it('admits a missing referer by default', async () => {
     const app = appWith([
       { match: { path: '/x' }, upstream: 'o.test', referer: { allow: ['c.test'] } },
@@ -623,6 +636,40 @@ describe('referer guard', () => {
       },
     ]);
     const res = await app.request(from('203.0.113.1'));
+    expect(res.status).toBe(403);
+  });
+
+  it('admits a blank referer header as empty', async () => {
+    const app = appWith([
+      { match: { path: '/x' }, upstream: 'o.test', referer: { allow: ['c.test'] } },
+    ]);
+    // An empty string is the "no referer was sent" spelling some clients
+    // produce; it is absence, not a claim.
+    const res = await app.request(from('203.0.113.1'), { headers: { referer: '' } });
+    expect(res.status).toBe(200);
+  });
+
+  it('refuses an unattributable referer even when allowEmpty is true', async () => {
+    const app = appWith([
+      { match: { path: '/x' }, upstream: 'o.test', referer: { allow: ['c.test'] } },
+    ]);
+    // 'blocked' is what privacy extensions send: a value is present, but
+    // nothing on the list could have produced it. Treating that as empty would
+    // make an unparseable referer worth more than no referer at all.
+    const res = await app.request(from('203.0.113.1'), {
+      headers: { referer: 'blocked' },
+    });
+    expect(res.status).toBe(403);
+    expect(((await res.json()) as Record<string, string>).error).toBe('referer_forbidden');
+  });
+
+  it('refuses about:blank, whose hostname parses to nothing', async () => {
+    const app = appWith([
+      { match: { path: '/x' }, upstream: 'o.test', referer: { allow: ['c.test'] } },
+    ]);
+    const res = await app.request(from('203.0.113.1'), {
+      headers: { referer: 'about:blank' },
+    });
     expect(res.status).toBe(403);
   });
 

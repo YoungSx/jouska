@@ -696,6 +696,23 @@ describe('signedLinkCacheWarnings', () => {
     ]);
   });
 
+  it('advises the explicit `all` spelling the same way', () => {
+    const result = compile([signedRoute({ enabled: true, key: { query: 'all' } })]);
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error('expected ok');
+    expect(result.signedLinkCacheWarnings).toEqual([
+      { routeId: 'r0', param: 'sig', expiresParam: 'exp' },
+    ]);
+  });
+
+  it('does not advise `none`, which folds the whole query out of the key', () => {
+    const result = compile([signedRoute({ enabled: true, key: { query: 'none' } })]);
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error('expected ok');
+    // With no query in the key at all, sig and exp cannot split entries.
+    expect(result.signedLinkCacheWarnings).toEqual([]);
+  });
+
   it('stays silent when the key ignores both the signature and expiry parameters', () => {
     const result = compile([
       signedRoute({ enabled: true, key: { query: { ignore: ['sig', 'exp'] } } }),
