@@ -1366,10 +1366,57 @@ These are Workers limits, not choices, and they shape the architecture:
 
 `workers/admin-panel` is the operator UI for the remote route table: a Hono API
 and a no-build vanilla SPA deployed as one Worker with static assets. It
-supports multiple users out of the box — the first caller to `/api/auth/bootstrap`
-becomes the initial admin, further users are created by an admin — and stays
-inside the free tier (D1 for sessions, users and the audit log; one KV key for
-the published document).
+supports multiple users out of the box, and stays inside the free tier (D1 for
+users, sessions and the audit log; one KV key for the published document).
+
+### Sign-in
+
+Two doors, and they are not equal.
+
+**Cloudflare Access, preferred.** Set `ACCESS_TEAM` and `ACCESS_AUD` and the
+platform authenticates every request before this Worker runs. There is no
+password to store and no hash to budget CPU for, and adding a login method —
+Cloudflare's own identity provider, a one-time email PIN, GitHub, Google, Okta,
+generic OIDC, generic SAML — is a change in the Zero Trust dashboard rather than
+a change in this repository. Hardware keys are Access's per-application MFA, not
+a plugin here.
+
+The panel reads the identity from `Cf-Access-Jwt-Assertion` and verifies it with
+the same `verifyAccessJwt` the proxy's route-level `access` guard is built on —
+one verifier, two callers, for the same reason the panel validates with the
+proxy's own `configSchema`. It deliberately does _not_ rely on `ctx.access`: a
+Worker with static assets runs behind an internal router that never populates
+it, which is measured on a real deployment rather than inferred, and
+`run_worker_first` does not change it. Under `wrangler dev` the opposite holds —
+an `access.dev` block populates the context and no header exists — so both are
+accepted, header first.
+
+The first caller Access vouches for becomes the initial admin. Everyone after
+that has to already be in `users`: an Access policy is routinely written wider
+than the panel's intent (a whole email domain, a whole Cloudflare account), and
+creating a row for anyone who passes the door would hand the route table to a
+group nobody enumerated. `role` and `disabled` stay in D1 rather than moving to
+Access groups, because the last-admin guard is only enforceable where it is
+evaluated atomically at write time.
+
+Both variables or neither. A team name without an audience proves a token was
+signed by the right organisation but not that it was issued for _this_
+application, and any other app in the same team could then admit a caller.
+
+**Password, the older door.** Without those two variables the panel
+authenticates itself: the first caller to `/api/auth/bootstrap` becomes the
+initial admin, sessions live in D1 as SHA-256 digests of a 32-byte cookie token,
+five consecutive failures park an account for 15 minutes, and a lost password is
+recovered out of band through a one-time token an operator writes into
+`settings`.
+
+The two coexist so a deployment can migrate without a flag day, and the order
+between them is load-bearing: a credential that was _presented_ and failed is
+refused outright, and only an absent one falls through to the cookie. Otherwise
+a bad token could shop for a second opinion, and turning Access off would be
+something an attacker does per request instead of something the operator does in
+the dashboard. An unobtainable JWKS answers `503`, never `401` — without
+verification material there is no safe way to say yes.
 
 ### MCP access
 

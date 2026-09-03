@@ -357,6 +357,90 @@ export const insertUser = async (
   }
 };
 
+/** A user row as the auth path needs it: identity, role, and the off switch. */
+export interface UserRecord {
+  readonly id: number;
+  readonly subject: string;
+  readonly role: 'admin' | 'viewer';
+  readonly disabled: boolean;
+}
+
+/** An unrecognised role is read as the powerless one, never as admin. */
+const asRole = (value: unknown): 'admin' | 'viewer' => (value === 'admin' ? 'admin' : 'viewer');
+
+/**
+ * Looks a user up by their stable external identity.
+ *
+ * Returns the row even when it is disabled — the caller decides between "not
+ * yours" and "switched off", and can audit the attempt either way. The same
+ * reason `resolveSession` does it.
+ */
+export const findUserBySubject = async (
+  db: D1Database,
+  subject: string,
+): Promise<UserRecord | undefined> => {
+  const row = await db
+    .prepare('SELECT id, subject, role, disabled FROM users WHERE subject = ?')
+    .bind(subject)
+    .first<{ id: number; subject: string; role: string; disabled: number }>();
+  return row === null
+    ? undefined
+    : { id: row.id, subject: row.subject, role: asRole(row.role), disabled: row.disabled !== 0 };
+};
+
+/**
+ * First-run provisioning for a caller Cloudflare Access already vouched for.
+ *
+ * The Access equivalent of `/auth/bootstrap`, and closed the same way: the
+ * guard is inside the statement, so the INSERT only fires while `users` is
+ * empty and two concurrent first requests cannot both mint an admin. The
+ * unique index on `subject` closes what is left.
+ *
+ * Deliberately only the *first* caller. Access policies are frequently written
+ * wider than the panel's intent — a whole email domain, a whole Cloudflare
+ * account — so auto-creating a row for everyone who passes the door would hand
+ * the route table to a group the operator never enumerated. Everybody after the
+ * first is added on purpose, through the users screen.
+ *
+ * `password` is left NULL: this account has no password to verify, which is
+ * exactly what the column's NULL means.
+ */
+export const provisionFirstAdmin = async (
+  db: D1Database,
+  args: { readonly subject: string; readonly email?: string },
+): Promise<UserRecord | undefined> => {
+  try {
+    await db
+      .prepare(
+        `INSERT INTO users (subject, email, role, password, created_at)
+         SELECT ?, ?, 'admin', NULL, ?
+         WHERE NOT EXISTS (SELECT 1 FROM users)`,
+      )
+      .bind(args.subject, args.email ?? null, nowSeconds())
+      .run();
+  } catch {
+    // Lost the race: the unique index means the table is no longer empty.
+    return undefined;
+  }
+  return await findUserBySubject(db, args.subject);
+};
+
+/**
+ * Records that the caller was seen, at most once an hour.
+ *
+ * The freshness test is part of the UPDATE rather than a read followed by a
+ * write: one statement, no race, and — the reason it matters here — one D1
+ * write per hour per user instead of one per request. Publishes are supposed to
+ * be this Worker's expensive writes; a liveness timestamp is not.
+ */
+export const touchLastSeen = async (db: D1Database, id: number): Promise<void> => {
+  const now = nowSeconds();
+  await db
+    .prepare('UPDATE users SET last_seen = ? WHERE id = ? AND (last_seen IS NULL OR last_seen < ?)')
+    .bind(now, id, now - 3600)
+    .run();
+};
+
 export interface UserUpdate {
   readonly role?: 'admin' | 'viewer';
   readonly disabled?: boolean;

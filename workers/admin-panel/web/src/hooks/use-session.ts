@@ -11,7 +11,15 @@ import { api, ApiError, NetworkError, type User } from '@/lib/api';
 export type SessionState =
   | { readonly status: 'loading' }
   | { readonly status: 'authed'; readonly user: User }
-  | { readonly status: 'anonymous'; readonly bootstrapable: boolean }
+  | {
+      readonly status: 'anonymous';
+      readonly bootstrapable: boolean;
+      /**
+       * Access 放进来了，但 users 表里没这个地址。界面要说「找管理员加一下」，
+       * 不能再给登录表单——那张表单解不开这个状态。
+       */
+      readonly accessEmail?: string;
+    }
   /** 连不上服务器 —— 区别于"未登录"，因为该给的是重试而不是登录表单。 */
   | { readonly status: 'offline' };
 
@@ -29,8 +37,16 @@ export const useSession = (): Session => {
 
   const refresh = React.useCallback(async () => {
     try {
-      const { user, bootstrapable } = await api.me();
-      setState(user === null ? { status: 'anonymous', bootstrapable } : { status: 'authed', user });
+      const { user, bootstrapable, accessEmail } = await api.me();
+      setState(
+        user === null
+          ? {
+              status: 'anonymous',
+              bootstrapable,
+              ...(accessEmail === undefined ? {} : { accessEmail }),
+            }
+          : { status: 'authed', user },
+      );
     } catch (error) {
       // 网络不通与"服务端说未登录"是两件事：前者给重试，后者给登录表单。
       setState(
@@ -51,7 +67,13 @@ export const useSession = (): Session => {
 
   const signOut = React.useCallback(async () => {
     try {
-      await api.logout();
+      const { accessLogout } = await api.logout();
+      if (accessLogout !== undefined) {
+        // 平台那扇门只有平台关得掉：本地 Cookie 已经清了，但 CF_Authorization
+        // 在 team 域上，不去那儿退出的话下一次刷新又被放进来。
+        globalThis.location.assign(accessLogout);
+        return;
+      }
     } catch (error) {
       // 会话本来就无效也无妨，目标是回到登录页。只有网络故障值得让用户知道。
       if (error instanceof NetworkError) {

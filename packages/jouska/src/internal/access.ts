@@ -241,60 +241,110 @@ const verifySignature = async (
   }
 };
 
-interface AccessClaims {
+/** The claims a verified Access JWT carries. */
+export interface AccessClaims {
   aud?: string | string[];
   exp?: number;
   nbf?: number;
   email?: string;
 }
 
+/**
+ * Why a token could not be turned into claims.
+ *
+ * Deliberately the vocabulary the route-level guard already speaks, so the
+ * wrapper below is a status mapping and not a translation layer.
+ */
+export type AccessJwtRefusal =
+  'missing' | 'too_long' | 'invalid' | 'forbidden' | 'jwks_unavailable';
+
+export type AccessJwtResult =
+  { ok: true; claims: AccessClaims } | { ok: false; reason: AccessJwtRefusal };
+
+/**
+ * The shape a team name may have.
+ *
+ * The config schema pins this for the proxy's own `access` block, but this
+ * function is also reached from the admin panel, where the name arrives from a
+ * wrangler var. Checking it here means the JWKS URL can only ever name a
+ * `cloudflareaccess.com` host regardless of which caller got it wrong.
+ */
+const TEAM_NAME_PATTERN = /^[a-z0-9][a-z0-9-]{0,62}[a-z0-9]$/;
+
+/**
+ * The team's own sign-out URL, or undefined when the name could not be one.
+ *
+ * Exported because clearing a session cookie does not end an Access session:
+ * `CF_Authorization` lives on the team domain, and a panel that only dropped
+ * its own cookie would put the operator straight back in on the next reload.
+ * The shape check is the same one the JWKS URL relies on, and it matters more
+ * here — this string is handed to a browser to navigate to, so a malformed team
+ * name would be an open redirect rather than a failed fetch.
+ */
+export const accessLogoutUrl = (team: string | undefined): string | undefined =>
+  team !== undefined && TEAM_NAME_PATTERN.test(team)
+    ? `https://${team}.cloudflareaccess.com/cdn-cgi/access/logout`
+    : undefined;
+
 const audienceMatches = (claims: AccessClaims, audience: string): boolean =>
   Array.isArray(claims.aud) ? claims.aud.includes(audience) : claims.aud === audience;
 
 /**
- * Checks the Cloudflare Access JWT, given the JWKS already in hand.
+ * Verifies a Cloudflare Access JWT and hands back the claims it proved.
+ *
+ * Shared between the proxy's route-level guard and the admin panel's own
+ * login: the panel runs behind Access on a Static-Assets Worker, where
+ * `ctx.access` is never populated (measured in production, not inferred), so
+ * reading and verifying this header is the only way it can learn who called.
+ * One implementation, two callers — the same reason the panel and the proxy
+ * share `configSchema` rather than approximating each other.
  *
  * Verification is RS256 only: the key comes from the team's own JWKS, so the
  * algorithm is fixed by the key type and an `alg: none` header has nothing to
  * verify against. Nothing in the token is acted on before the signature over
  * it is checked — an unverified `exp` or `aud` is attacker-chosen text, and
- * letting it decide the status would let a crafted payload select between the
- * proxy's responses.
+ * letting it decide the outcome would let a crafted payload pick between the
+ * caller's branches.
  */
-const checkJwt = async (
-  config: NonNullable<AccessConfig['cloudflare']>,
-  request: Request,
-  fetchImpl: typeof fetch,
-): Promise<AccessVerdict> => {
-  const token = request.headers.get(ACCESS_JWT_HEADER);
+export const verifyAccessJwt = async (
+  token: string | null,
+  options: { team: string; audience: string },
+  fetchImpl: typeof fetch = fetch,
+): Promise<AccessJwtResult> => {
   if (token === null) {
-    return refused(401, 'missing');
+    return { ok: false, reason: 'missing' };
   }
   if (token.length > MAX_JWT_LENGTH) {
-    return refused(401, 'too_long');
+    return { ok: false, reason: 'too_long' };
+  }
+  // A malformed team name is a broken configuration, not a bad credential:
+  // there is no material to verify against, so it fails closed the same way an
+  // unreachable JWKS does.
+  if (!TEAM_NAME_PATTERN.test(options.team)) {
+    return { ok: false, reason: 'jwks_unavailable' };
   }
 
   const parts = token.split('.');
   if (parts.length !== 3) {
-    return refused(401, 'invalid');
+    return { ok: false, reason: 'invalid' };
   }
   const [headerPart, payloadPart, signaturePart] = parts as [string, string, string];
   const header = parseJson(base64UrlBytes(headerPart) ?? new Uint8Array()) as
     { alg?: string; kid?: string } | undefined;
   const signature = base64UrlBytes(signaturePart);
   if (header === undefined || signature === undefined) {
-    return refused(401, 'invalid');
+    return { ok: false, reason: 'invalid' };
   }
 
   const keys = await (async () => {
     try {
-      return await fetchJwks(config.team, fetchImpl);
+      return await fetchJwks(options.team, fetchImpl);
     } catch {
       return undefined;
     }
   })();
   if (keys === undefined) {
-    return refused(503, 'jwks_unavailable');
+    return { ok: false, reason: 'jwks_unavailable' };
   }
 
   let jwk = header.kid === undefined ? undefined : keys.find((k) => k.kid === header.kid);
@@ -302,22 +352,22 @@ const checkJwt = async (
     // Rotation: the key that signed this token arrived after the cached JWKS.
     // Re-fetch once, but only from a cache old enough to make rotation the
     // plausible explanation — see JWKS_REFRESH_MIN_AGE_MS.
-    const cached = jwksCache.get(config.team);
+    const cached = jwksCache.get(options.team);
     if (cached === undefined || Date.now() - cached.fetchedAt > JWKS_REFRESH_MIN_AGE_MS) {
-      jwksCache.delete(config.team);
+      jwksCache.delete(options.team);
       try {
-        const refreshed = await fetchJwks(config.team, fetchImpl);
+        const refreshed = await fetchJwks(options.team, fetchImpl);
         jwk = header.kid === undefined ? undefined : refreshed.find((k) => k.kid === header.kid);
       } catch {
-        return refused(503, 'jwks_unavailable');
+        return { ok: false, reason: 'jwks_unavailable' };
       }
     }
   }
   if (jwk === undefined || !verifyKeyShape(jwk)) {
-    return refused(401, 'invalid');
+    return { ok: false, reason: 'invalid' };
   }
   if (!(await verifySignature(`${headerPart}.${payloadPart}`, signature, jwk))) {
-    return refused(401, 'invalid');
+    return { ok: false, reason: 'invalid' };
   }
 
   // The signature vouches for this payload; now, and only now, its claims can
@@ -325,24 +375,51 @@ const checkJwt = async (
   const claims = parseJson(base64UrlBytes(payloadPart) ?? new Uint8Array()) as
     AccessClaims | undefined;
   if (claims === undefined) {
-    return refused(401, 'invalid');
+    return { ok: false, reason: 'invalid' };
   }
 
   const now = Date.now() / 1000;
   if (claims.exp !== undefined && claims.exp <= now) {
-    return refused(401, 'invalid');
+    return { ok: false, reason: 'invalid' };
   }
   if (claims.nbf !== undefined && claims.nbf > now) {
-    return refused(401, 'invalid');
+    return { ok: false, reason: 'invalid' };
   }
-  if (!audienceMatches(claims, config.audience)) {
+  if (!audienceMatches(claims, options.audience)) {
     // Signed by the team, just not for this application: an identity question,
-    // so 403 rather than 401.
-    return refused(403, 'forbidden');
+    // so the caller answers 403 rather than 401.
+    return { ok: false, reason: 'forbidden' };
+  }
+  return { ok: true, claims };
+};
+
+/**
+ * The route-level guard over `verifyAccessJwt`: a status for every refusal,
+ * plus the one condition that belongs to the route rather than to the token —
+ * the email allowlist.
+ */
+const checkJwt = async (
+  config: NonNullable<AccessConfig['cloudflare']>,
+  request: Request,
+  fetchImpl: typeof fetch,
+): Promise<AccessVerdict> => {
+  const result = await verifyAccessJwt(
+    request.headers.get(ACCESS_JWT_HEADER),
+    { team: config.team, audience: config.audience },
+    fetchImpl,
+  );
+  if (!result.ok) {
+    if (result.reason === 'jwks_unavailable') {
+      return refused(503, 'jwks_unavailable');
+    }
+    if (result.reason === 'forbidden') {
+      return refused(403, 'forbidden');
+    }
+    return refused(401, result.reason);
   }
   if (
     config.emails !== undefined &&
-    (claims.email === undefined || !config.emails.includes(claims.email))
+    (result.claims.email === undefined || !config.emails.includes(result.claims.email))
   ) {
     return refused(403, 'forbidden');
   }

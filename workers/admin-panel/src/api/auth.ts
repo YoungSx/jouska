@@ -6,17 +6,17 @@
  * check and the unique index together close the race.
  */
 import { Hono } from 'hono';
+import { accessLogoutUrl } from 'jouska';
 import { readJsonObject } from '../body.js';
 import {
   clearCookieHeader,
   createSession,
   destroySession,
-  resolveSession,
   sessionCookieHeader,
   sessionTokenHashFromCookie,
 } from '../auth.js';
 import type { AppEnv } from '../env.js';
-import { requireUser } from '../middleware.js';
+import { authenticate, requireUser } from '../middleware.js';
 import { hashPassword, verifyPassword } from '../password.js';
 import {
   boundedString,
@@ -140,9 +140,18 @@ authRoutes.post('/login', async (c) => {
 });
 
 authRoutes.post('/logout', async (c) => {
+  // Dropping this Worker's cookie does not end an Access session: the platform's
+  // own `CF_Authorization` lives on the team domain, and without visiting the
+  // team's sign-out endpoint the operator is signed straight back in on reload.
+  // So the caller is told where to go, and told it before the local session is
+  // destroyed — afterwards there is nothing left to identify which door they
+  // came through.
+  const outcome = await authenticate(c);
+  const accessLogout =
+    outcome.ok && outcome.user.via === 'access' ? accessLogoutUrl(c.env.ACCESS_TEAM) : undefined;
   await destroySession(c.env.DB, c.req.header('cookie'));
   c.header('set-cookie', clearCookieHeader());
-  return c.json({ ok: true });
+  return c.json(accessLogout === undefined ? { ok: true } : { ok: true, accessLogout });
 });
 
 /**
@@ -225,17 +234,34 @@ authRoutes.post('/recover', async (c) => {
 
 authRoutes.get('/me', async (c) => {
   // This group is mounted before the global requireUser, so /me guards
-  // itself — it is the endpoint the SPA pings to discover login state.
-  // bootstrapable lets the SPA show the first-run form only while the
-  // endpoint could actually succeed, without the SPA probing POSTs.
-  const user = await resolveSession(c.env.DB, c.req.header('cookie'));
-  if (user === undefined) {
-    const existing = await c.env.DB.prepare('SELECT COUNT(*) AS n FROM users').first<{
-      n: number;
-    }>();
-    return c.json({ user: null, bootstrapable: (existing?.n ?? 0) === 0 }, 200);
+  // itself — it is the endpoint the SPA pings to discover login state. It runs
+  // the same `authenticate` the middleware does, because a discovery endpoint
+  // that reached a different verdict than the gate would be worse than none.
+  const outcome = await authenticate(c);
+  if (outcome.ok) {
+    return c.json({ user: outcome.user, bootstrapable: false });
   }
-  return c.json({ user, bootstrapable: false });
+
+  // Access vouched for someone the panel has never heard of. Not a login
+  // problem — the platform already answered that — so the SPA is told the
+  // address and can say who to ask, instead of showing a form.
+  if (outcome.error === 'no_panel_account') {
+    return c.json({ user: null, bootstrapable: false, accessEmail: outcome.accessEmail }, 200);
+  }
+  // A refusal that is about *this* caller has to be reported as itself: a
+  // disabled account or an unverifiable Access token must not be flattened into
+  // "please log in", which would send the operator round a loop the login form
+  // cannot break.
+  if (outcome.status !== 401) {
+    return c.json({ error: outcome.error }, outcome.status);
+  }
+
+  // bootstrapable lets the SPA show the first-run form only while the endpoint
+  // could actually succeed, without the SPA probing POSTs.
+  const existing = await c.env.DB.prepare('SELECT COUNT(*) AS n FROM users').first<{
+    n: number;
+  }>();
+  return c.json({ user: null, bootstrapable: (existing?.n ?? 0) === 0 }, 200);
 });
 
 /**

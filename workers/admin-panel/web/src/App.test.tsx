@@ -51,7 +51,7 @@ describe('App', () => {
     vi.spyOn(api, 'listRoutes').mockResolvedValue([]);
     vi.spyOn(api, 'getDefaults').mockResolvedValue(null);
     vi.spyOn(api, 'preview').mockResolvedValue({ ok: true, empty: true, live: null });
-    vi.spyOn(api, 'logout').mockResolvedValue(undefined);
+    vi.spyOn(api, 'logout').mockResolvedValue({});
   });
 
   afterEach(() => {
