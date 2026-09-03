@@ -360,6 +360,29 @@ describe('selectUpstream consistent ring', () => {
       ),
     ).toEqual({ index: 1, reason: 'sticky', scope: 'none' });
   });
+
+  it('wraps keys hashing past the ring ceiling back to the first point', () => {
+    // The ring covers [minPoint, maxPoint] only, and a key hashing above
+    // maxPoint is a wrap-around key, not a member of the last point's arc.
+    // Whether this ever bites depends on who owns the first and last points —
+    // same owner makes the mistake invisible, which is exactly why the
+    // ordinary test rings hide it. `n0.test`/`n4.test` is measured to end on
+    // different owners (first point owned by entry 1, ceiling point by entry
+    // 0), and `198.51.100.7240` is measured to hash above that ceiling —
+    // both pinned here so the regression cannot drift back in.
+    const route = ringRoute(['n0.test', 'n4.test']);
+    const past = req({ 'cf-connecting-ip': '198.51.100.7240' });
+    expect(selectUpstream(route, past)).toEqual({
+      index: 1, // the first point's owner, not the ceiling's
+      reason: 'weighted',
+      scope: 'ip',
+    });
+    // And the ceiling's owner keeps its own arc: a key just *below* the
+    // ceiling still belongs to the last point, which is what the wrap must
+    // not steal from it.
+    const justBelow = req({ 'cf-connecting-ip': '198.51.100.7239' });
+    expect(selectUpstream(route, justBelow).index).not.toBe(1);
+  });
 });
 
 describe('stickyCookie', () => {

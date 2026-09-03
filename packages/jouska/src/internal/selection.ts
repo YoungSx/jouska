@@ -139,8 +139,12 @@ const buildRing = (
 const ringLookup = (points: readonly RingPoint[], key: string): number => {
   const target = hash(key);
   // Binary search for the first point at or past the key's hash. A key hashing
-  // past every point wraps to the first one on the ring, which is where the
-  // search has already stopped when it never advanced.
+  // past every point is not covered by the search — `low` stops on the *last*
+  // point, whose owner is whoever sat immediately anti-clockwise of the gap —
+  // so the search result is wrapped by hand: the ring is a circle, and that
+  // key belongs to the first point on it. Nothing hands the search a value it
+  // can wrap on, because `target` is compared against point values rather
+  // than indexes.
   let low = 0;
   let high = points.length - 1;
   while (low < high) {
@@ -150,6 +154,9 @@ const ringLookup = (points: readonly RingPoint[], key: string): number => {
     } else {
       high = mid;
     }
+  }
+  if (points[low]!.point < target) {
+    low = 0;
   }
   return points[low]!.index;
 };
