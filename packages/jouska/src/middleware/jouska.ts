@@ -15,6 +15,7 @@ import { routeAuthenticates, runAuthGuards } from '../internal/auth.js';
 import { BodyLimitError, forward } from '../internal/forward.js';
 import { checkRateLimit, corsMiddleware, ipMiddleware } from '../internal/guards.js';
 import { ledgerFor, outlierObserver } from '../internal/outlier.js';
+import { resolveRequestId, stampRequestId } from '../internal/request-id.js';
 import {
   applyResponseHeaderRules,
   rewriteResponseHeaders,
@@ -90,6 +91,18 @@ export type RewriteSkipReason =
 export interface ProxyEvent {
   /** The route that matched, labelled the way rate-limit buckets are. */
   routeId: string;
+  /**
+   * The ID the request is identified by — the value the client received, the
+   * value the upstream received, and the key that ties the access log to both.
+   *
+   * `cf-ray` when the edge supplied one, otherwise a UUID, unless the route
+   * opted into `trustInbound` and the caller sent a value of the accepted
+   * shape. It lives here and in the access log only: analytics indexes it, and
+   * per-request cardinality there would make every query one of two shapes —
+   * "this exact request" or "nothing". A `respond` route still resolves one,
+   * so an edge answer is traceable the same way a forwarded request is.
+   */
+  requestId: string;
   /**
    * Upstream authority the request was sent to. Empty for a `respond` route,
    * which answered at the edge and contacted nothing — an empty authority is
@@ -266,6 +279,21 @@ export const jouska = ({
     }
     const { route } = match;
 
+    // Resolved once, before anything can return: a guard refusal carries the
+    // same ID as a proxied response and the event reports it, so a refusal in
+    // the access log is still findable from the value the client holds.
+    const requestId = resolveRequestId(route, c.req.raw);
+    /**
+     * Stamps the ID onto a response jouska built itself — a guard refusal
+     * below, or a preflight answered by `corsMiddleware`. Proxied, cached and
+     * failure responses are stamped where they are assembled instead, because
+     * they also reach the upstream and must agree with it.
+     */
+    const stamped = (response: Response): Response => {
+      stampRequestId(response.headers, requestId);
+      return response;
+    };
+
     // Split routes resolve their bucket up front. The pick is deterministic from
     // the request alone, so it holds even when a guard refuses the request
     // before any upstream sees it — the event can still say where it *would*
@@ -297,6 +325,7 @@ export const jouska = ({
       try {
         onProxy({
           routeId: routeId(route, match.index),
+          requestId,
           upstream,
           method: c.req.method,
           path: url.pathname,
@@ -352,7 +381,7 @@ export const jouska = ({
       // RFC 9110 §15.5.5: the response to a refused method names what is
       // allowed. Empty allow-lists cannot occur — the schema requires nonempty.
       c.header('allow', policy.allowedMethods.join(', '));
-      return c.json({ error: 'method_not_allowed', allow: policy.allowedMethods }, 405);
+      return stamped(c.json({ error: 'method_not_allowed', allow: policy.allowedMethods }, 405));
     }
 
     // A declared size is refused before anything is forwarded; the undetectable
@@ -363,21 +392,21 @@ export const jouska = ({
       const declared = contentLength(c.req.raw);
       if (declared !== undefined && declared > maxBody) {
         report(413, 'refused', 0);
-        return c.json({ error: 'payload_too_large', maxBodyBytes: maxBody }, 413);
+        return stamped(c.json({ error: 'payload_too_large', maxBodyBytes: maxBody }, 413));
       }
     }
 
     const geo = checkGeo(route, c.req.raw);
     if (geo !== undefined) {
       report(403, 'refused', 0);
-      return c.text(geo, 403);
+      return stamped(c.text(geo, 403));
     }
 
     if (route.ip !== undefined) {
       const refused = await runGuard(ipMiddleware(route.ip), c);
       if (refused !== undefined) {
         report(refused.status, 'refused', 0);
-        return refused;
+        return stamped(refused);
       }
     }
 
@@ -393,15 +422,17 @@ export const jouska = ({
       if (!verdict.ok) {
         if (verdict.reason === 'exceeded') {
           report(429, 'refused', 0);
-          return c.json({ error: 'rate_limited' }, 429);
+          return stamped(c.json({ error: 'rate_limited' }, 429));
         }
         if (verdict.reason === 'unidentifiable') {
           // Fail closed: see checkRateLimit for why one shared bucket is worse.
           report(403, 'refused', 0);
-          return c.json({ error: 'rate_limit_unidentifiable' }, 403);
+          return stamped(c.json({ error: 'rate_limit_unidentifiable' }, 403));
         }
         report(500, 'refused', 0);
-        return c.json({ error: 'rate_limit_misconfigured', binding: route.rateLimit.binding }, 500);
+        return stamped(
+          c.json({ error: 'rate_limit_misconfigured', binding: route.rateLimit.binding }, 500),
+        );
       }
     }
 
@@ -417,7 +448,7 @@ export const jouska = ({
       if (!verdict.ok) {
         const status = verdict.status;
         report(status, 'refused', 0);
-        return c.json({ error: `access_${verdict.reason}` }, status);
+        return stamped(c.json({ error: `access_${verdict.reason}` }, status));
       }
     }
 
@@ -451,7 +482,7 @@ export const jouska = ({
             undefined,
             auth.authMs,
           );
-          return auth.refusal;
+          return stamped(auth.refusal);
         }
         // Authed and admitted — keep the designated headers for the forward,
         // and the spent latency for the event.
@@ -468,7 +499,9 @@ export const jouska = ({
     // same accounting every guard refusal uses, and `upstream` stays empty
     // because there is no authority to blame or probe.
     if (route.respond !== undefined) {
-      const answer = respondAnswer(route.respond, c.req.method);
+      // An edge answer is still a response the client holds and a line in the
+      // access log, so it carries the ID like anything else this proxy makes.
+      const answer = stamped(respondAnswer(route.respond, c.req.method));
       report(answer.status, 'responded', 0, '');
       if (route.cors !== undefined) {
         // CORS still negotiates for the answer itself: a browser fetches a
@@ -483,7 +516,7 @@ export const jouska = ({
     // CORS wraps the forward so preflights are answered without a round trip
     // and the response carries the negotiated headers.
     if (route.cors !== undefined) {
-      return corsMiddleware(route.cors)(c, async () => {
+      const corsResponse = await corsMiddleware(route.cors)(c, async () => {
         c.res = await proxyRequest(
           match,
           c,
@@ -491,11 +524,17 @@ export const jouska = ({
           fetchImpl,
           cacheImpl,
           report,
+          requestId,
           selection,
           authMs,
           authHeaders,
         );
       });
+      // A preflight is answered by the CORS middleware itself — the one
+      // jouska-made response that never flows through the forward, so it is
+      // stamped here, like the refusals above. A proxied response comes back as
+      // `undefined` here, already stamped where it was assembled.
+      return corsResponse instanceof Response ? stamped(corsResponse) : corsResponse;
     }
     return proxyRequest(
       match,
@@ -504,6 +543,7 @@ export const jouska = ({
       fetchImpl,
       cacheImpl,
       report,
+      requestId,
       selection,
       authMs,
       authHeaders,
@@ -659,6 +699,8 @@ const proxyRequest = async (
   fetchImpl: typeof fetch | undefined,
   cacheImpl: ResponseCacheStore | undefined,
   report: Report,
+  /** The ID stamped onto the upstream request, the response and the event. */
+  requestId: string,
   selection?: Selection,
   authMs?: number,
   authHeaders?: Headers,
@@ -720,6 +762,11 @@ const proxyRequest = async (
     // changes the fingerprint and so the key — but the diagnostic headers
     // `readCachedResponse` just wrote did not exist then, and an operator who
     // asked for one of those to be removed meant it on a hit too.
+    //
+    // The ID is stamped before the rules, not after: removing it is a decision
+    // the operator is allowed to make, and a rule that asked for that must win
+    // over the stamp.
+    stampRequestId(cached.response.headers, requestId);
     applyResponseHeaderRules(cached.response.headers, route.responseHeaders);
     report(
       cached.response.status,
@@ -752,6 +799,7 @@ const proxyRequest = async (
             detached: true,
             cacheState: undefined,
             selection,
+            requestId,
           });
           if (
             refreshed.fromUpstream &&
@@ -829,6 +877,7 @@ const proxyRequest = async (
       cacheState,
       selection,
       authHeaders,
+      requestId,
     });
   } catch (error) {
     // The fill died before it could decide anything about the cache: release
@@ -948,6 +997,8 @@ interface ProduceOptions {
    * so nothing ever refreshes there.
    */
   authHeaders?: Headers;
+  /** The request ID, carried onto the upstream request and the response. */
+  requestId: string;
 }
 
 /** One trip to the upstream and the rewriting of what comes back. */
@@ -1001,6 +1052,7 @@ const produceResponse = async ({
   cacheState,
   selection,
   authHeaders,
+  requestId,
 }: ProduceOptions): Promise<Produced> => {
   const { route } = match;
   // The per-request view over the route's failure memory. Filtered targets
@@ -1031,6 +1083,7 @@ const produceResponse = async ({
       targets,
       request: c.req.raw,
       requestUrl: url,
+      requestId,
       authHeaders,
       fetchImpl: counting,
       detached,
@@ -1040,6 +1093,9 @@ const produceResponse = async ({
     // Attributed to the last candidate actually tried: with no response there is
     // no `result.target`, and the walk's stopping point is where the fault is.
     const failure = upstreamFailure(error, c, lastTarget, route);
+    // A failure is still a response the client holds, and still one line in the
+    // access log — the ID on it is what ties the two to the attempt that died.
+    stampRequestId(failure.headers, requestId);
     return {
       response: failure,
       status: failure.status,
@@ -1114,6 +1170,10 @@ const produceResponse = async ({
   if (cacheState !== undefined) {
     headers.set(CACHE_STATE_HEADER, cacheState);
   }
+  // The same ID the upstream received, so a log line on either side finds the
+  // other. Before the rules, not after: `responseHeaders` may remove it, and an
+  // operator who asked for that means it — the event still reports the ID.
+  stampRequestId(headers, requestId);
   // Last, deliberately: the operator's rules can override anything above,
   // including the proxy's own rewrites. See `applyResponseHeaderRules`.
   applyResponseHeaderRules(headers, route.responseHeaders);

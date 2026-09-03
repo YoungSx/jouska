@@ -130,8 +130,10 @@ describe('responseHeaders', () => {
     expect(res.headers.get('x-content-type-options')).toBe('nosniff');
     expect(res.headers.get('server')).toBeNull();
     expect(res.headers.get('x-powered-by')).toBeNull();
-    // Untouched headers survive.
-    expect(res.headers.get('x-request-id')).toBe('abc');
+    // Untouched headers survive. The upstream's own `x-request-id` here is the
+    // echo of the ID jouska just stamped, so it is whatever the request carried
+    // rather than a literal; see request-id.test.ts for the correlation tests.
+    expect(res.headers.get('x-request-id')).not.toBeNull();
   });
 
   it('runs after the proxy rewrote Location, so a rule wins', async () => {

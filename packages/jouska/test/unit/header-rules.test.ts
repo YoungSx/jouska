@@ -37,6 +37,15 @@ describe('requestHeaders schema', () => {
     }
   });
 
+  it('refuses x-request-id, which the proxy resolves itself', () => {
+    // The proxy stamps the ID it resolved onto every attempt; a rule that wrote
+    // one would be silently discarded per candidate while reading as live.
+    expect(() => parse({ requestHeaders: { set: { 'x-request-id': 'forged' } } })).toThrow(
+      /may not write/,
+    );
+    expect(() => parse({ requestHeaders: { remove: ['X-Request-Id'] } })).toThrow(/may not delete/);
+  });
+
   it('refuses accept-encoding, which would silently disable body rewriting', () => {
     expect(() => parse({ requestHeaders: { set: { 'accept-encoding': 'gzip' } } })).toThrow(
       /may not write/,
