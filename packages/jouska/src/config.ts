@@ -716,7 +716,9 @@ const countryCode = z
  *    from the request. They used to be silently overwritten by jouska's own
  *    values afterwards — correct, but only because of where the spread happened
  *    — and a config that cannot take effect should say so rather than appear to
- *    work.
+ *    work. `x-request-id` is in the same position: the proxy stamps the value it
+ *    resolved (see `requestId`) onto every upstream attempt, so a written one
+ *    would be discarded per candidate while reading as live.
  *  - **Transport framing.** The hop-by-hop set and `content-length` describe this
  *    one connection; the runtime owns them, so a value written here is either
  *    discarded or corrupts the request. `transfer-encoding` is the sharpest case,
@@ -737,6 +739,7 @@ const RESERVED_REQUEST_HEADERS: ReadonlySet<string> = new Set([
   'x-forwarded-host',
   'x-forwarded-proto',
   'x-forwarded-for',
+  'x-request-id',
   ...HOP_BY_HOP,
   'content-length',
   'accept-encoding',
@@ -1599,6 +1602,40 @@ const errorPages = z
     }
   });
 
+/**
+ * Request-ID stamping.
+ *
+ * jouska resolves one ID per proxied request — the client's `x-request-id` when
+ * `trustInbound` admits it, `cf-ray` otherwise, with a UUID as the last resort —
+ * and stamps it onto the upstream request, the response the client receives and
+ * the proxy event, so the three can be tied together after the fact. Omitting
+ * the block keeps all of that with the default resolution: there is no off
+ * switch, because a response missing the header is the one case nobody can debug
+ * from logs.
+ *
+ * The block is optional rather than defaulted so a table-wide `defaults` block
+ * can still reach routes that said nothing (see `applyDefaults` — a defaulted
+ * field is always "stated"). `trustInbound`'s own default covers the rest.
+ *
+ * The header *name* is fixed rather than configurable. The refusal of
+ * `x-request-id` in `requestHeaders` is a parse-time check against a constant
+ * set; a per-route name would move it into cross-field validation that has to
+ * survive `defaults` folding, to buy a knob nothing calls for.
+ */
+const requestId = z.object({
+  /**
+   * Adopt the value the caller sent instead of resolving our own.
+   *
+   * Off by default: the header then names this request as seen from this
+   * proxy, and a caller-chosen one is a chain it does not control. On, it is
+   * how one ID spans a multi-hop path — but a caller-controlled string
+   * reaching a log line verbatim is log injection, so the value is accepted
+   * only if it is 1–64 characters of `[A-Za-z0-9_-]`, and one that fails is
+   * replaced rather than repaired.
+   */
+  trustInbound: z.boolean().default(false),
+});
+
 /** Fields shared by a route and the table-wide `defaults` block. */
 const routeBehaviour = {
   /** Scheme used to reach the upstream. `http` is for local and in-network origins. */
@@ -1727,6 +1764,13 @@ const routeBehaviour = {
   rateLimit: rateLimit.optional(),
   /** Identity checks: Cloudflare Access JWT and/or API key. Omit to admit every caller. */
   access: access.optional(),
+  /**
+   * Request-ID stamping. The ID is resolved per request, stamped onto the
+   * upstream request and the response, and reported on the proxy event, so the
+   * copies correlate. `trustInbound` is the one decision here — whether a
+   * caller may supply it, which is how a multi-hop path shares one ID.
+   */
+  requestId: requestId.optional(),
   // Spread rather than restated, so the schemas cannot drift between the route
   // and a future restatement. Whole-block replace on merge, like `cors`/`ip`.
   ...authBehaviour,
@@ -1874,6 +1918,10 @@ const defaults = z
     // merging here would splice a table-wide `url` under a route-local
     // `failOpen`, and the half-merged block would be nobody's intent.
     forwardAuth: routeBehaviour.forwardAuth,
+    // Whole-replace like `cors`: a route not stating `requestId` takes the
+    // table-wide one, and per-key merging would splice a table-wide
+    // `trustInbound: true` onto a route-local block that expected the default.
+    requestId: routeBehaviour.requestId,
   })
   .optional();
 
@@ -2408,6 +2456,7 @@ export type AccessConfig = z.output<typeof access>;
 export type BodyRewriteConfig = z.output<typeof bodyRewrite>;
 export type CacheConfig = z.output<typeof cache>;
 export type RequestPolicyConfig = z.output<typeof requestPolicy>;
+export type RequestIdConfig = z.output<typeof requestId>;
 export type ForwardAuthConfig = z.output<typeof forwardAuthSchema>;
 export type HeaderRulesConfig = HeaderRules;
 export type RouteInput = z.input<typeof anyRoute>;

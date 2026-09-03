@@ -11,6 +11,7 @@ import type { ProxyEvent } from 'jouska';
 
 const event = (overrides: Partial<ProxyEvent> = {}): ProxyEvent => ({
   routeId: 'example',
+  requestId: '8f14e45fceea167a5a36dedd4bea2543',
   upstream: 'origin.test',
   method: 'GET',
   path: '/api/models',
@@ -91,6 +92,21 @@ describe('analytics receiver', () => {
     expect(dataset.points[0]?.indexes).toEqual(dataset.points[1]?.indexes);
     expect(JSON.stringify(dataset.points)).not.toContain('/a');
   });
+
+  it('never carries the requestId, whose cardinality is one per request', () => {
+    // Every field the data point writes, checked against the one value that
+    // would explode if it ever joined them: an index or a blob keyed by the
+    // request ID turns the dataset into a series per request, which no query
+    // can group and the 5 KiB blob budget cannot survive a busy route for.
+    const dataset = recordingDataset();
+    const sink = createProxySink({ ANALYTICS: dataset });
+    sink?.(event({ requestId: 'unique-per-request' }));
+
+    const point = dataset.points[0] ?? {};
+    expect(point.indexes).toEqual(['example']);
+    expect(point.blobs).toEqual(['origin.test', 'GET', 'ok', '']);
+    expect(JSON.stringify(point)).not.toContain('unique-per-request');
+  });
 });
 
 describe('access-logs receiver', () => {
@@ -115,6 +131,24 @@ describe('access-logs receiver', () => {
     expect(String(line.path).length).toBeLessThanOrEqual(256);
     // No cache on this route, so the field is absent rather than null.
     expect('cache' in line).toBe(false);
+  });
+
+  it('carries the requestId the client received on x-request-id', () => {
+    const { lines, log } = collectingLog();
+    const sink = createProxySink({ ACCESS_LOGS: 'true' }, log);
+    sink?.(event({ requestId: 'abc-123_XY' }));
+    const line = JSON.parse(lines[0] ?? '{}') as Record<string, unknown>;
+    expect(line.requestId).toBe('abc-123_XY');
+  });
+
+  it('keeps the line valid JSON when an ID would have been log injection', () => {
+    // `trustInbound` rejects this shape before it gets here, so the value is
+    // what the test asserts on is the receiver's own guarantee: whatever the
+    // event carries, `JSON.stringify` cannot be tricked out of a parseable line.
+    const { lines, log } = collectingLog();
+    const sink = createProxySink({ ACCESS_LOGS: 'true' }, log);
+    sink?.(event({ requestId: 'injected"}\n{"x":"y' }));
+    expect(() => JSON.parse(lines[0] ?? '')).not.toThrow();
   });
 
   it('carries the cache state when the route has one', () => {

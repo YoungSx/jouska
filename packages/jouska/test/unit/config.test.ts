@@ -106,6 +106,43 @@ describe('defineConfig', () => {
     expect(config.routes[1]!.streamIdleTimeoutMs).toBe(5_000);
   });
 
+  it('leaves the requestId block undefined when not stated', () => {
+    // Optional rather than defaulted, so a table-wide `defaults` block can
+    // still reach routes that said nothing. `resolveRequestId` reads the
+    // missing block as "do not trust the caller".
+    const route = defineConfig({ routes: [{ match: { path: '/a' }, upstream: 'o.test' }] })
+      .routes[0]!;
+    expect(route.requestId).toBeUndefined();
+  });
+
+  it('defaults trustInbound to false when the block is stated empty', () => {
+    const route = defineConfig({
+      routes: [{ match: { path: '/a' }, upstream: 'o.test', requestId: {} }],
+    }).routes[0]!;
+    expect(route.requestId).toEqual({ trustInbound: false });
+  });
+
+  it('keeps trustInbound as written when the block is stated', () => {
+    const route = defineConfig({
+      routes: [{ match: { path: '/a' }, upstream: 'o.test', requestId: { trustInbound: true } }],
+    }).routes[0]!;
+    expect(route.requestId).toEqual({ trustInbound: true });
+  });
+
+  it('folds a table-wide requestId onto routes that said nothing', () => {
+    // Whole-replace, like `cors`: per-key merging would splice a table-wide
+    // `trustInbound: true` under a route that expected the default.
+    const config = defineConfig({
+      defaults: { requestId: { trustInbound: true } },
+      routes: [
+        { match: { path: '/a' }, upstream: 'o.test' },
+        { match: { path: '/b' }, upstream: 'o.test', requestId: { trustInbound: false } },
+      ],
+    });
+    expect(config.routes[0]!.requestId).toEqual({ trustInbound: true });
+    expect(config.routes[1]!.requestId).toEqual({ trustInbound: false });
+  });
+
   it('accepts a traffic split wider than six buckets', () => {
     // A split picks one candidate and never walks, so it has no multi-attempt
     // worst case that a bound of six was protecting.

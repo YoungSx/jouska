@@ -11,6 +11,7 @@ export type {
   ForwardAuthConfig,
   HeaderRulesConfig,
   RateLimitConfig,
+  RequestIdConfig,
   Route,
   RouteInput,
 } from './config.js';

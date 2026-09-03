@@ -22,7 +22,11 @@
  * - **Cardinality has an upper bound.** Analytics Engine indexes only
  *   `routeId`, which is stable; `path` never reaches it, because a mirror site
  *   serving arbitrary URLs would grow unbounded dimensions. The log line may
- *   carry `path`, but truncated, so a hostile URL cannot balloon a line.
+ *   carry `path`, but truncated, so a hostile URL cannot balloon a line. The
+ *   same bound is why `requestId` stays out of the data point entirely: it is
+ *   one value per request, so a blob or an index slot for it would be a
+ *   dimension per request. It reaches the log line, where a string is just a
+ *   string.
  *
  * No `ctx.waitUntil` anywhere: `writeDataPoint` and `console.*` are synchronous
  * and buffered by the runtime, so neither holds the response. A receiver that
@@ -66,6 +70,12 @@ const clip = (value: string, limit: number): string => {
  * previous three-blob layout keeps returning the same columns. It is the empty
  * string on a route without caching, which is what distinguishes "not caching"
  * from a `bypass` the cache decided on.
+ *
+ * `requestId` is deliberately absent. Analytics Engine's dimensions are the
+ * cardinality budget, and one ID per request is cardinality with no ceiling: a
+ * single hot route would turn every query into one of two answers — "this exact
+ * request" or "nothing". The log line carries it instead, where a string costs
+ * what it costs and nothing is grouped on it.
  */
 const analyticsReceiver =
   (dataset: AnalyticsEngineDataset): ProxySink =>
@@ -85,6 +95,11 @@ const logsReceiver =
       JSON.stringify({
         message: 'proxy',
         routeId: event.routeId,
+        // The correlation handle: the value the client received on
+        // `x-request-id`, which is what ties this line to the upstream's own
+        // log and to the response the caller holds. Deliberately not in the
+        // Analytics data point — see `analyticsReceiver`.
+        requestId: event.requestId,
         upstream: event.upstream,
         method: event.method,
         path: clip(event.path, LOG_PATH_LIMIT),

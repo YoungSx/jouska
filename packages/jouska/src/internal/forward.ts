@@ -1,6 +1,7 @@
 import type { Route } from '../config.js';
 import { HOP_BY_HOP, stripConnectionNamed } from './hop.js';
 import type { OutlierObserver } from './outlier.js';
+import { REQUEST_ID_HEADER } from './request-id.js';
 
 /** Methods safe to replay after a failure. */
 const IDEMPOTENT = new Set(['GET', 'HEAD', 'OPTIONS', 'TRACE']);
@@ -75,6 +76,7 @@ export const buildUpstreamHeaders = (
   target: URL,
   requestUrl: URL,
   authHeaders?: Headers,
+  requestId?: string,
 ): Headers => {
   const headers = new Headers(request.headers);
 
@@ -142,6 +144,14 @@ export const buildUpstreamHeaders = (
     // No trustworthy value, so leave nothing behind that looks like one.
     headers.delete('x-forwarded-for');
   }
+
+  // The request ID, resolved once per request and passed in, so every candidate
+  // of a failover walk carries the same one — the whole point is that all copies
+  // of one request are findable. Written after the route's rules, which cannot
+  // set this name: the schema refuses it.
+  if (requestId !== undefined) {
+    headers.set(REQUEST_ID_HEADER, requestId);
+  }
   return headers;
 };
 
@@ -159,6 +169,12 @@ export interface ForwardOptions {
   request: Request;
   /** Parsed request URL, so callers that already have one need not re-parse. */
   requestUrl: URL;
+  /**
+   * The request ID stamped onto every attempt, and reported back to the caller
+   * for the response and the proxy event. Resolved once per request, so a
+   * failover walk hands all its candidates the same one.
+   */
+  requestId: string;
   /**
    * Identity headers from a passed forward-auth check, written into every
    * upstream attempt after the route's own rules. Absent when the route does
@@ -282,6 +298,7 @@ export const forward = async ({
   targets,
   request,
   requestUrl,
+  requestId,
   authHeaders,
   fetchImpl,
   detached = false,
@@ -368,7 +385,14 @@ export const forward = async ({
       break;
     }
 
-    const headers = buildUpstreamHeaders(request, route, target, requestUrl, authHeaders);
+    const headers = buildUpstreamHeaders(
+      request,
+      route,
+      target,
+      requestUrl,
+      authHeaders,
+      requestId,
+    );
     try {
       // Attempts are deliberately sequential: running them in parallel would
       // fire N simultaneous upstream requests, which is both wasteful and

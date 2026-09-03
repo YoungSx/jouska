@@ -108,6 +108,7 @@ Routes are evaluated in order and the first match wins.
 | `ip`                   | off       | IP allow/deny rules; see Guards.                                                  |
 | `rateLimit`            | off       | Rate limiting via the native binding; see Guards.                                 |
 | `access`               | off       | Route-level identity checks (Cloudflare Access JWT, API keys); see Guards.        |
+| `requestId`            | off       | `trustInbound`: adopt the caller's `x-request-id`; see Request ID.                |
 
 A `defaults` block at the top of the table supplies any of the behavioural
 fields for every route that does not state its own, so a table of twenty routes
@@ -147,13 +148,14 @@ header past a middlebox. `accept-encoding` is dropped so bodies arrive
 uncompressed, which is what makes streaming body rewriting possible.
 
 On top of that every forwarded request carries `Host` (set to the upstream),
-`X-Forwarded-Host`, `X-Forwarded-Proto`, and `X-Forwarded-For`. The last is
-derived from Cloudflare's `cf-connecting-ip` and **overwrites** any value the
-client sent, so the upstream sees the real visitor address rather than a forged
-chain; with no `cf-connecting-ip` to trust, the header is removed rather than
-passed through. A route may neither write nor delete any of these four — the
-config is rejected rather than silently ignored. See Header rules for every name a
-route cannot touch, and why each one is on the list.
+`X-Forwarded-Host`, `X-Forwarded-Proto`, `X-Forwarded-For`, and `X-Request-Id`
+(resolved by jouska; see Request ID below). The last-but-one is derived from
+Cloudflare's `cf-connecting-ip` and **overwrites** any value the client sent, so
+the upstream sees the real visitor address rather than a forged chain; with no
+`cf-connecting-ip` to trust, the header is removed rather than passed through. A
+route may neither write nor delete any of these five — the config is rejected
+rather than silently ignored. See Header rules for every name a route cannot
+touch, and why each one is on the list.
 
 ### Header rules
 
@@ -208,15 +210,15 @@ correct if that ever relaxes.
 **Names a route cannot touch.** Each of these is refused at parse time rather
 than ignored at request time, because a rule that cannot take effect should say so:
 
-| Direction | Names                                                              | Refused for                                                                                                                           |
-| --------- | ------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------- |
-| Request   | `host`, `x-forwarded-host`, `x-forwarded-proto`, `x-forwarded-for` | jouska derives them from the request; a value here would be overwritten.                                                              |
-| Request   | the hop-by-hop set, `content-length`                               | They describe this one connection. `transfer-encoding` is the sharpest case — a forged one is where request smuggling starts.         |
-| Request   | `accept-encoding`                                                  | Deleted so bodies arrive uncompressed. Writing it back leaves the body rewriter scanning compressed bytes and silently doing nothing. |
-| Request   | `upgrade`, `sec-websocket-*`                                       | The `websocket` flag governs these. Writing them back would let an upgrade through on a route that turned it off.                     |
-| Response  | the hop-by-hop set, `content-length`, `content-encoding`           | The runtime recomputes them for the hop out; a value here describes bytes the client is not about to read.                            |
-| Response  | `set-cookie`                                                       | `Headers.set` replaces _every_ value under a name, so writing one cookie discards all of the upstream's — writing it is deleting it.  |
-| Response  | `location`, `content-location`, `refresh` (deletion only)          | Deleting one makes a redirect vanish or loses a rewrite quietly. Writing them is permitted; see the trade-off above.                  |
+| Direction | Names                                                                              | Refused for                                                                                                                           |
+| --------- | ---------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| Request   | `host`, `x-forwarded-host`, `x-forwarded-proto`, `x-forwarded-for`, `x-request-id` | jouska derives them; `x-request-id` is stamped per attempt, so a written value would be discarded while reading as live.              |
+| Request   | the hop-by-hop set, `content-length`                                               | They describe this one connection. `transfer-encoding` is the sharpest case — a forged one is where request smuggling starts.         |
+| Request   | `accept-encoding`                                                                  | Deleted so bodies arrive uncompressed. Writing it back leaves the body rewriter scanning compressed bytes and silently doing nothing. |
+| Request   | `upgrade`, `sec-websocket-*`                                                       | The `websocket` flag governs these. Writing them back would let an upgrade through on a route that turned it off.                     |
+| Response  | the hop-by-hop set, `content-length`, `content-encoding`                           | The runtime recomputes them for the hop out; a value here describes bytes the client is not about to read.                            |
+| Response  | `set-cookie`                                                                       | `Headers.set` replaces _every_ value under a name, so writing one cookie discards all of the upstream's — writing it is deleting it.  |
+| Response  | `location`, `content-location`, `refresh` (deletion only)                          | Deleting one makes a redirect vanish or loses a rewrite quietly. Writing them is permitted; see the trade-off above.                  |
 
 Two spellings of one name in the same map (`X-Foo` and `x-foo`) are refused too:
 header names are case-insensitive, so that is one rule with two values, and which
@@ -1250,6 +1252,45 @@ of zero rather than an error.
 Cache API rather than KV, deliberately: a KV read per request is the cost the config
 cache exists to avoid, and paying it back here would spend the saving twice.
 
+## Request ID
+
+Every proxied request is identified by one value, resolved before any upstream is
+contacted and stamped onto three things: the upstream request, the response the
+client receives, and the `onProxy` event. The name is fixed at `x-request-id`,
+and a route can neither write nor delete it there — see the reserved names above.
+
+There is no off switch. Three copies of one request with no way to line them up is
+the situation a reverse proxy exists to make debuggable, and the cost is one
+header per message. A `respond` route resolves one too — its answer is a
+response the client holds and a line in the log, and it still geo-blocks,
+rate-limits and authenticates before answering, so it is traceable the same way.
+
+The value comes from the first of these that produces a usable one:
+
+1. the caller's own `x-request-id`, but only when the route states
+   `requestId: { trustInbound: true }` — off by default, because a caller-supplied
+   ID is also a way to forge what your logs say happened;
+2. Cloudflare's `cf-ray`, which every request through the edge already carries and
+   which matches Cloudflare's own request logs, so adopting it correlates for free;
+3. a random UUID, for requests with no platform value — tests, or this middleware
+   outside the edge.
+
+A value is adopted only if it is 1–64 characters of `[A-Za-z0-9_-]`. Anything else
+is discarded and replaced, never repaired: a newline or control character landing
+in a JSON log line is log injection, and an escaped value is an ID nobody else is
+logging.
+
+Failover hands every candidate in one walk the same ID, so the attempts read as
+one request rather than several. The event reports the ID regardless of what a
+route's `responseHeaders` rules did to the header on the way back — an operator
+who removes it there keeps the correlation in the logs and on the upstream, and
+loses only the client's ability to quote it back.
+
+`requestId` is deliberately **not** one of the Analytics Engine fields the example
+below builds: the index is 96 bytes and the blobs share 5 KiB, and a value that
+differs per request would turn every row into its own dimension. It belongs in the
+log line, where a free-text field is free.
+
 ## Observability
 
 `onProxy` is called once per proxied request, after the response is decided:
@@ -1278,6 +1319,7 @@ app.use(
 | Field        | Meaning                                                                                                                                                                                                                                                                                                                                                 |
 | ------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `routeId`    | The matched route, labelled the way rate-limit buckets are.                                                                                                                                                                                                                                                                                             |
+| `requestId`  | The ID on `x-request-id` this request was served under — the same value the client's response and the upstream request carried.                                                                                                                                                                                                                         |
 | `upstream`   | Authority the request was sent to. Empty on an edge answer — there is no upstream to blame.                                                                                                                                                                                                                                                             |
 | `method`     | Request method.                                                                                                                                                                                                                                                                                                                                         |
 | `path`       | Path as the client wrote it, before normalisation.                                                                                                                                                                                                                                                                                                      |
@@ -1387,7 +1429,9 @@ and deletable, and are a no-op when nothing is configured:
 - **Workers Logs** — set `ACCESS_LOGS: "true"` (the reference config does) and
   every proxied request emits one structured JSON line via `console.info`,
   which Workers Logs collects because the deployment has `observability`
-  enabled.
+  enabled. The line carries `requestId`, which the Analytics data point above
+  deliberately does not — see Request ID for the cardinality reason — so the log
+  line is where a client-quoted `x-request-id` is looked up.
 
 Two properties the receivers guarantee, because the library's contract forces
 them. `onProxy` throws are swallowed, so each receiver catches its own errors:
