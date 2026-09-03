@@ -77,6 +77,8 @@ Routes are evaluated in order and the first match wins.
 | `upstream`             | —        | `host`, `host:port` or `host/base/path`. No scheme.                        |
 | `upstreams`            | —        | Ordered candidates for failover; see Failover and traffic splitting.       |
 | `trafficSplit`         | —        | Weighted split entries; see Failover and traffic splitting.                |
+| `respond`              | —        | Answer at the edge instead of forwarding; see Edge answers.                |
+| `errorPages`           | —        | Replace the payload of an upstream failure; see Edge answers.              |
 | `failover`             | see text | Switch policy and attempt cap for the multi-candidate forms.               |
 | `outlier`              | see text | Passive ejection of failing candidates; see Outlier ejection.              |
 | `stickyBy`             | —        | `'cookie'`: split-assigned callers keep their upstream via a cookie.       |
@@ -429,6 +431,74 @@ requests; a cookie naming an upstream the split no longer lists is re-assigned.
 The split winner is the walk's primary: failover from it continues into the
 other participants in declared order. `failover` and `stickyBy` are route-level
 only — they cannot be set in `defaults`.
+
+### Edge answers
+
+`respond` replaces forwarding entirely. A route either names an upstream (in one
+of the three ways above) or answers for itself, never both — the config is
+refused when the two appear together, because a route that can answer has no
+reason to forward and a route that forwards cannot promise the answer:
+
+```ts
+// Maintenance page for the whole site, guards still applying.
+{ match: { host: 'app.example.com' },
+  respond: {
+    status: 503,
+    contentType: 'text/html; charset=utf-8',
+    body: '<h1>Back soon</h1>',
+    headers: { 'retry-after': '1800' },
+  } },
+
+// Redirect: the old docs path moves, everything under it follows.
+{ match: { path: '/docs' },
+  respond: { redirect: { to: '/handbook', status: 301 } } },
+```
+
+`respond` carries exactly one of `redirect` or `status`. `redirect` defaults to
+301 and admits only 301, 302, 303, 307 and 308 — the statuses that carry a
+redirect instruction rather than a cache validator. Its target must be a
+relative path: a redirect to another host is an open redirect waiting for one
+corrupted value, so it needs `respond.redirect.allowExternal: true` written
+beside it, and even then the target has to be a real `http(s)` URL. Targets like
+`//elsewhere.example/x` are refused outright — browsers read the leading
+double slash as a host, so the config says so instead of guessing.
+
+A `status` answer runs through the runtime's `Response` constructor, which
+refuses a body on 204, 205 and 304 and refuses any status outside 200–599; the
+config refuses the same pairings up front with a message naming the reason. A
+body requires a `contentType` beside it — a body with no type is a guess — and
+`headers` carries the rest, subject to the same reserved-name check as the
+proxy's own response headers (`content-length`, `set-cookie`, `transfer-encoding`
+and friends are refused, and `location` is refused beside a `redirect`, whose
+target is `redirect.to`). The same 64 KiB route-definition ceiling the panel
+enforces bounds the body; a route table is not the place for an asset.
+
+`errorPages` is the counterpart on a route that **does** forward. When jouska
+itself fails to reach the upstream — the 502 for unreachable and the 504 for
+timeout — the page named for that status replaces the error payload and its
+headers, and the status is left alone:
+
+```ts
+{ match: { path: '/api' }, upstream: 'origin.example.com',
+  errorPages: {
+    502: { body: '<h1>Upstream down</h1>', contentType: 'text/html; charset=utf-8' },
+    504: { body: '<h1>Slow upstream</h1>', contentType: 'text/html; charset=utf-8' },
+  } }
+```
+
+Only 5xx keys are accepted, because 502 and 504 are the only statuses jouska's
+own failure path produces here; a 404 page would promise coverage for an
+upstream answer that is not a failure at all. The status survives because it is
+the only truthful part of the exchange — the upstream is still as broken as the
+status says, and a 200-wrapped maintenance page would poison every health check
+reading the route. `errorPages` cannot appear on a `respond` route, which has no
+upstream to fail to reach.
+
+Both kinds of answer are produced after the guard chain: a `respond` route with
+`blockCountries` still returns 403, and the CORS block still wraps the answer.
+The panel flags a `respond` route and the external-redirect switch as high
+danger on publish — a maintenance page left in place takes real traffic offline
+with nothing upstream to notice.
 
 ### Outlier ejection
 
@@ -1183,13 +1253,13 @@ app.use(
 | Field        | Meaning                                                                                                                                                                       |
 | ------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `routeId`    | The matched route, labelled the way rate-limit buckets are.                                                                                                                   |
-| `upstream`   | Authority the request was sent to.                                                                                                                                            |
+| `upstream`   | Authority the request was sent to. Empty on an edge answer — there is no upstream to blame.                                                                                   |
 | `method`     | Request method.                                                                                                                                                               |
 | `path`       | Path as the client wrote it, before normalisation.                                                                                                                            |
 | `status`     | Status returned to the client, including jouska's own 4xx and 5xx.                                                                                                            |
 | `durationMs` | Wall-clock milliseconds from match to response.                                                                                                                               |
 | `attempts`   | Upstream attempts, including the first — so a retry is visible.                                                                                                               |
-| `outcome`    | `ok`, `refused`, `timeout`, `unreachable`, or `client_closed`.                                                                                                                |
+| `outcome`    | `ok`, `refused`, `timeout`, `unreachable`, `client_closed`, or `responded` — an edge answer from a `respond` route, which produced a response without one upstream attempt.   |
 | `cache`      | `hit`, `stale`, `miss`, `bypass` or `stale_error`; absent without a `cache` block.                                                                                            |
 | `selection`  | How a split route picked its upstream — present only on `trafficSplit` routes, with the winning entry's `index` and whether a `sticky` cookie or the `weighted` hash decided. |
 | `ejected`    | Candidates the outlier memory removed from the walk before the first attempt. Absent when nothing was skipped, and on routes without an `outlier` policy.                     |
@@ -1318,6 +1388,10 @@ a receiver that does real async I/O is the one that needs `ctx.waitUntil`.
 | 500    | The `rateLimit` binding named in config is missing.             |
 | 502    | Upstream unreachable after all attempts.                        |
 | 504    | Upstream sent no headers within `timeoutMs` / `totalTimeoutMs`. |
+
+An `errorPages` entry for 502 or 504 replaces the payload and the headers of the
+matching row above, never its status: the upstream is still as broken as the
+status says, and a page must not make a failure read as success.
 
 499 is nginx's non-standard "client closed request". Nothing is listening for it,
 but it keeps client aborts out of the upstream error rate, where they would look

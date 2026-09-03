@@ -186,6 +186,19 @@ describe('shadowWarnings', () => {
     }
   });
 
+  it('flags a later upstream route shadowed by an earlier respond route', () => {
+    // Shadowing is a property of `match` alone, so an edge-answering route
+    // shadows exactly like a forwarding one — and here it is worse: the shadowed
+    // route never runs at all, so the visitor gets the maintenance answer.
+    const config = configOf([
+      { id: 'maintenance', match: { host: 'a.com' }, respond: { status: 503 } },
+      { id: 'real', match: { host: 'a.com', path: '/api' }, upstream: 'u2.com' },
+    ]);
+    expect(shadowWarnings(config)).toContainEqual(
+      expect.objectContaining({ shadowedId: 'real', byId: 'maintenance' }),
+    );
+  });
+
   it('flags a hostless later route shadowed by an earlier host route', () => {
     const config = configOf([
       { id: 'host', match: { host: 'a.com' }, upstream: 'u1.com' },
@@ -439,6 +452,40 @@ describe('dangerFlags', () => {
       forwardAuth: { url: 'http://sso.example.com/check' },
     }).map((f) => f.path);
     expect(plain).toContain('forwardAuth.url');
+  });
+
+  it('flags a respond route as high danger, and the external-redirect switch beside it', () => {
+    // A whole-site 503 answered at the edge is the "left the maintenance page
+    // on" shape; it takes real traffic offline with no upstream to notice.
+    const maintenance = dangerFlags({
+      match: { path: '/' },
+      respond: { status: 503, contentType: 'text/html', body: '<p>back soon</p>' },
+    });
+    expect(maintenance).toContainEqual(expect.objectContaining({ path: 'respond', level: 'high' }));
+
+    const external = dangerFlags({
+      match: { path: '/' },
+      respond: {
+        redirect: { to: 'https://elsewhere.test', allowExternal: true },
+      },
+    });
+    expect(external.map((f) => f.path)).toContain('respond');
+    expect(external).toContainEqual(
+      expect.objectContaining({ path: 'respond.redirect.allowExternal', level: 'high' }),
+    );
+
+    // A relative redirect carries no host risk; the respond rule still fires.
+    const internal = dangerFlags({
+      match: { path: '/old' },
+      respond: { redirect: { to: '/new' } },
+    });
+    expect(internal.map((f) => f.path)).toEqual(['respond']);
+    expect(internal.map((f) => f.level)).toEqual(['high']);
+
+    // A forwarding route is not a respond route.
+    expect(
+      dangerFlags({ match: { path: '/' }, upstream: 'a.com' }).map((f) => f.path),
+    ).not.toContain('respond');
   });
 });
 
