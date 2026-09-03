@@ -61,6 +61,27 @@ const RULES: readonly Rule[] = [
       'decoding a body in the wrong charset mangles it; the wrong guess is worse than no rewrite',
   },
   {
+    // The one field that puts arbitrary markup in front of every visitor: whoever
+    // can edit a route can run script in every mirrored page. The upstream's CSP
+    // does not stop it, because the rewriter has already dropped that header —
+    // so there is no second layer between a stolen route edit and the reader.
+    path: 'bodyRewrite.inject',
+    level: 'high',
+    reason:
+      'injected markup reaches every visitor of every mirrored page verbatim — one stolen route edit delivers a script to every reader, and the upstream CSP that might have blocked it is dropped before the page is served',
+  },
+  {
+    // Same delivery channel as `inject`, one step removed: these run as literal
+    // substitutions on the served bytes, so a `from` that occurs in markup
+    // replaces it with whatever `to` says. The empty default spelled out gets no
+    // warning, like `cache.key.headers`.
+    path: 'bodyRewrite.replace',
+    level: 'high',
+    guard: (node) => Array.isArray(node) && node.length > 0,
+    reason:
+      'literal substitutions run on the served bytes, so a `from` that occurs in the page is replaced by whatever `to` names — including markup a visitor will execute',
+  },
+  {
     path: 'ip.allow',
     level: 'medium',
     reason: 'an allow-list with a typo silently admits the addresses it was meant to exclude',

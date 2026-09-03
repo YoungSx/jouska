@@ -618,19 +618,216 @@ export interface HtmlRewriteOptions {
   base: string;
   /** Also rewrite `<style>` text, inline `style` attributes and meta refresh. */
   rewriteStyles: boolean;
+  /**
+   * Also rewrite URL-bearing attributes. A route that injects but does not
+   * rewrite links turns this off, and the document is otherwise untouched — the
+   * HTML path is reached for the injection alone.
+   */
+  rewriteLinks: boolean;
+  /**
+   * Markup to insert at up to four anchors of the document. Absent (or present
+   * with nothing in it) means no injection is attempted, which is how a route
+   * that only rewrites links keeps paying no per-document registration cost.
+   */
+  inject?: InjectConfig;
+}
+
+/**
+ * Where configured markup lands in the document, and the four spots that
+ * cover it.
+ *
+ * Measured in workerd against seven document shapes (well-formed, implied
+ * `<head>`/`<body>`, missing closing tags, uppercase tags, truncated mid-tag):
+ *
+ *  - `headStart`/`bodyStart` are implemented with `element.prepend`, so they
+ *    fire from the start tag alone — a document that never closes `<head>`
+ *    still receives its `headStart` content.
+ *  - `headEnd`/`bodyEnd` are implemented with `element.onEndTag`, so they need
+ *    the actual closing tag to exist in the byte stream. An unclosed `<body>`
+ *    — the common shape for a page truncated by an origin or a proxy — loses
+ *    its `bodyEnd` content silently at the parser level. That miss is exactly
+ *    why the verdict exists: see {@link InjectReport}.
+ *  - A document with neither tag (a bare fragment like `<p>hi</p>`) fires no
+ *    head or body handler at all: the parser never *creates* the elements, so
+ *    there is nothing to prepend to. Every anchor then reads as missed.
+ *
+ * Selectors are matched case-insensitively by the parser, so `<HEAD>` behaves
+ * like `<head>`.
+ */
+export type InjectAnchor = 'headStart' | 'headEnd' | 'bodyStart' | 'bodyEnd';
+
+/**
+ * Markup to insert at each anchor, verbatim and with `{ html: true }` — the
+ * operator wrote markup, not text, and the anchors are DOM positions rather
+ * than string indexes, so `</HEAD>` or minified output cannot defeat it the
+ * way a literal `replace` against `</head>` can.
+ *
+ * An injected `<script>` runs because the proxy has already stripped the
+ * upstream's `Content-Security-Policy` (see `stripBodyValidators`'s cousin in
+ * headers.ts and the README's body-rewriting section): the CSP named the
+ * upstream's own origins and would otherwise block the rewritten page from
+ * loading anything.
+ */
+export type InjectConfig = Partial<Record<InjectAnchor, string>>;
+
+/** One anchor of an inject configuration. */
+const ANCHORS: readonly InjectAnchor[] = ['headStart', 'headEnd', 'bodyStart', 'bodyEnd'];
+
+/**
+ * What injection did on one document.
+ *
+ * `landed` names the anchors that fired, `missed` the ones that did not. A miss
+ * is a real outcome, not a diagnostic: the parser never errors on a missing
+ * `<head>`, so without this the failure is the same "config written but not in
+ * effect" silence the `rewriteSkipped` reasons exist to end.
+ *
+ * `missed` is only final once the body has drained — an `onEndTag` for a closing
+ * tag in the last chunk fires as that chunk is parsed. The observer carrying
+ * this report settles on stream end, so a host that awaits it is safe; one that
+ * reads it early may see fewer misses than there will be.
+ */
+export interface InjectReport {
+  /** Anchors whose markup was inserted. */
+  readonly landed: readonly InjectAnchor[];
+  /** Anchors configured but never reached, because the tag was not in the document. */
+  readonly missed: readonly InjectAnchor[];
+}
+
+/**
+ * Whether the document actually ends at the anchor, and what to do when it does.
+ *
+ * `headStart`/`bodyStart` prepend on the start tag alone, so they land even when
+ * the closing tag never arrives — the common shape for a page truncated by an
+ * origin. `headEnd`/`bodyEnd` ride the closing tag, and so need it to exist in
+ * the byte stream; that is exactly the case a literal `replace` against
+ * `</head>` also lost, and exactly what {@link InjectReport} makes visible.
+ *
+ * `landed` is invoked at the point of insertion, not at the start tag: an
+ * `onEndTag` for an implicitly truncated document never fires (measured in
+ * workerd), and marking `headEnd` when `<head>` merely *opened* would report an
+ * insertion that never reached the bytes. For the start-tag anchors the two
+ * moments are the same moment.
+ */
+const anchorHandlers: Readonly<
+  Record<InjectAnchor, (element: Element, markup: string, landed: () => void) => void>
+> = {
+  headStart: (element, markup, landed) => {
+    element.prepend(markup, { html: true });
+    landed();
+  },
+  headEnd: (element, markup, landed) => {
+    element.onEndTag((end) => {
+      end.before(markup, { html: true });
+      landed();
+    });
+  },
+  bodyStart: (element, markup, landed) => {
+    element.prepend(markup, { html: true });
+    landed();
+  },
+  bodyEnd: (element, markup, landed) => {
+    element.onEndTag((end) => {
+      end.before(markup, { html: true });
+      landed();
+    });
+  },
+};
+
+/** The start tag each anchor rides on; both ends of an element share one. */
+const anchorTag: Readonly<Record<InjectAnchor, string>> = {
+  headStart: 'head',
+  headEnd: 'head',
+  bodyStart: 'body',
+  bodyEnd: 'body',
+};
+
+/**
+ * The pass-through observer that settles the anchor verdict.
+ *
+ * It cannot be folded into the rewriter itself, because `HTMLRewriter` has no
+ * document-end callback: the handlers fire while the document is still
+ * streaming, and a `</body>` in the last chunk fires after any callback that ran
+ * earlier. Only something downstream of the rewrite chain knows the document is
+ * over, so one of these rides at the end of it and does nothing to the bytes.
+ *
+ * `cancel` settles too: a client that hangs up mid-document leaves no reader for
+ * the verdict either, and a promise that never settles on the one path where
+ * "did it land" was actually interesting — a truncated document — would make the
+ * field read as missing exactly when it matters. First-wins, so a runtime that
+ * runs both keeps the first answer.
+ */
+const injectObserver = (
+  verdict: Set<InjectAnchor>,
+  configured: readonly InjectAnchor[],
+): { stream: TransformStream<Uint8Array, Uint8Array>; report: Promise<InjectReport> } => {
+  let settle: (report: InjectReport) => void;
+  const report = new Promise<InjectReport>((resolve) => {
+    settle = resolve;
+  });
+  // Assigned synchronously by the Promise executor above, so this is defined by
+  // the time any chunk can arrive.
+  let settled = false;
+  const flush = (): void => {
+    if (settled) {
+      return;
+    }
+    settled = true;
+    settle({
+      landed: configured.filter((anchor) => verdict.has(anchor)),
+      missed: configured.filter((anchor) => !verdict.has(anchor)),
+    });
+  };
+  return {
+    stream: new TransformStream<Uint8Array, Uint8Array>({
+      transform(chunk, controller) {
+        controller.enqueue(chunk);
+      },
+      flush,
+      cancel: flush,
+    }),
+    report,
+  };
+};
+
+/**
+ * What `htmlRewriter` builds for one response.
+ *
+ * `rewriter` is the one-pass rewriter. `inject` is present only when an inject
+ * config was asked for: its `stream` rides at the end of the rewrite chain and
+ * its `report` resolves once that chain has drained, with which anchors landed
+ * and which never met their tag. It is a promise because the verdict cannot be
+ * known until the document is over — see {@link InjectReport}.
+ */
+export interface HtmlRewriter {
+  rewriter: HTMLRewriter;
+  inject?: {
+    /** Pass-through stage that settles `report` when the chain drains. */
+    readonly stream: TransformStream<Uint8Array, Uint8Array>;
+    /** The anchor verdict for this document. */
+    readonly report: Promise<InjectReport>;
+  };
 }
 
 /**
  * Rewrites URL-bearing markup so hosts belonging to the upstream point at the
  * proxy. Text nodes outside `<style>` are left alone: rewriting prose or inline
  * script bodies risks corrupting them for no navigational benefit.
+ *
+ * Injected markup never passes back through the URL-attribute pass: measured in
+ * workerd, an element inserted by a handler is not visited by the same
+ * rewriter's other handlers, so the `.on('*')` pass above cannot rewrite what
+ * the anchors put in. That is the wanted behaviour — the operator writes
+ * markup that points where they mean it to, and a second pass over it would be
+ * the runtime deciding otherwise.
  */
 export const htmlRewriter = ({
   isUpstreamHost,
   proxyHost,
   base,
   rewriteStyles,
-}: HtmlRewriteOptions): HTMLRewriter => {
+  rewriteLinks,
+  inject,
+}: HtmlRewriteOptions): HtmlRewriter => {
   const rewrite = (value: string): string =>
     rewriteUrlValue(value, isUpstreamHost, proxyHost, base);
   // Accumulates one `<style>` text node across however many chunks it arrives in.
@@ -641,14 +838,16 @@ export const htmlRewriter = ({
 
   const rewriter = new HTMLRewriter().on('*', {
     element(element) {
-      for (const attribute of URL_ATTRIBUTES) {
-        const value = element.getAttribute(attribute);
-        if (value === null) {
-          continue;
-        }
-        const rewritten = rewrite(value);
-        if (rewritten !== value) {
-          element.setAttribute(attribute, rewritten);
+      if (rewriteLinks) {
+        for (const attribute of URL_ATTRIBUTES) {
+          const value = element.getAttribute(attribute);
+          if (value === null) {
+            continue;
+          }
+          const rewritten = rewrite(value);
+          if (rewritten !== value) {
+            element.setAttribute(attribute, rewritten);
+          }
         }
       }
       if (!rewriteStyles) {
@@ -675,65 +874,97 @@ export const htmlRewriter = ({
     },
   });
 
-  if (!rewriteStyles) {
-    return rewriter;
+  // One anchor set per document, and one verdict for it. Configured anchors with
+  // no markup — the schema refuses them, but this layer should not depend on
+  // that — are simply never attempted, so they cannot be reported as a miss.
+  let injectStage: HtmlRewriter['inject'];
+  if (inject !== undefined) {
+    const configured: InjectAnchor[] = [];
+    const verdict = new Set<InjectAnchor>();
+    for (const anchor of ANCHORS) {
+      const markup = inject[anchor];
+      if (markup === undefined || markup.length === 0) {
+        continue;
+      }
+      configured.push(anchor);
+      rewriter.on(anchorTag[anchor], {
+        element(element) {
+          // Guards the whole handler, not just the insertion: a document that
+          // names `<head>` twice would otherwise fire the start-tag pass twice.
+          if (verdict.has(anchor)) {
+            return;
+          }
+          anchorHandlers[anchor](element, markup, () => verdict.add(anchor));
+        },
+      });
+    }
+    if (configured.length > 0) {
+      injectStage = injectObserver(verdict, configured);
+    }
   }
 
-  return rewriter
-    .on('meta[http-equiv]', {
-      element(element) {
-        if (element.getAttribute('http-equiv')?.toLowerCase() !== 'refresh') {
-          return;
-        }
-        const content = element.getAttribute('content');
-        if (content === null) {
-          return;
-        }
-        const rewritten = rewriteMetaRefresh(content, isUpstreamHost, proxyHost, base);
-        if (rewritten !== content) {
-          element.setAttribute('content', rewritten);
-        }
-      },
-    })
-    .on('style', {
-      // A text node can arrive in several chunks when the document itself is
-      // streamed, and a `url(...)` may span two of them. Accumulate until
-      // `lastInTextNode`, then rewrite once and emit — the alternative rewrote
-      // each fragment separately and missed anything that straddled a boundary.
-      //
-      // Accumulation is capped: see MAX_STYLE_BUFFER. Past the cap the node is
-      // emitted unrewritten rather than held, because holding it is the one
-      // failure this file exists to avoid.
-      text(chunk) {
-        if (styleOverflowed) {
-          // Already given up on this node; let its remaining text through as is.
-          if (chunk.lastInTextNode) {
-            styleOverflowed = false;
+  if (!rewriteStyles) {
+    return injectStage === undefined ? { rewriter } : { rewriter, inject: injectStage };
+  }
+
+  return {
+    rewriter: rewriter
+      .on('meta[http-equiv]', {
+        element(element) {
+          if (element.getAttribute('http-equiv')?.toLowerCase() !== 'refresh') {
+            return;
           }
-          return;
-        }
+          const content = element.getAttribute('content');
+          if (content === null) {
+            return;
+          }
+          const rewritten = rewriteMetaRefresh(content, isUpstreamHost, proxyHost, base);
+          if (rewritten !== content) {
+            element.setAttribute('content', rewritten);
+          }
+        },
+      })
+      .on('style', {
+        // A text node can arrive in several chunks when the document itself is
+        // streamed, and a `url(...)` may span two of them. Accumulate until
+        // `lastInTextNode`, then rewrite once and emit — the alternative rewrote
+        // each fragment separately and missed anything that straddled a boundary.
+        //
+        // Accumulation is capped: see MAX_STYLE_BUFFER. Past the cap the node is
+        // emitted unrewritten rather than held, because holding it is the one
+        // failure this file exists to avoid.
+        text(chunk) {
+          if (styleOverflowed) {
+            // Already given up on this node; let its remaining text through as is.
+            if (chunk.lastInTextNode) {
+              styleOverflowed = false;
+            }
+            return;
+          }
 
-        styleBuffer += chunk.text;
+          styleBuffer += chunk.text;
 
-        if (styleBuffer.length > MAX_STYLE_BUFFER) {
-          // Emit what was withheld, unrewritten, and stop buffering this node.
-          // Rewriting here would allocate a second copy of an already oversized
-          // string, which is the opposite of what the cap is for.
-          const held = styleBuffer;
+          if (styleBuffer.length > MAX_STYLE_BUFFER) {
+            // Emit what was withheld, unrewritten, and stop buffering this node.
+            // Rewriting here would allocate a second copy of an already oversized
+            // string, which is the opposite of what the cap is for.
+            const held = styleBuffer;
+            styleBuffer = '';
+            styleOverflowed = !chunk.lastInTextNode;
+            chunk.replace(held, { html: true });
+            return;
+          }
+
+          if (!chunk.lastInTextNode) {
+            // Remove the fragment; the whole node is re-emitted on the last chunk.
+            chunk.remove();
+            return;
+          }
+          const rewritten = rewriteCss(styleBuffer, isUpstreamHost, proxyHost, base);
           styleBuffer = '';
-          styleOverflowed = !chunk.lastInTextNode;
-          chunk.replace(held, { html: true });
-          return;
-        }
-
-        if (!chunk.lastInTextNode) {
-          // Remove the fragment; the whole node is re-emitted on the last chunk.
-          chunk.remove();
-          return;
-        }
-        const rewritten = rewriteCss(styleBuffer, isUpstreamHost, proxyHost, base);
-        styleBuffer = '';
-        chunk.replace(rewritten, { html: true });
-      },
-    });
+          chunk.replace(rewritten, { html: true });
+        },
+      }),
+    inject: injectStage,
+  };
 };

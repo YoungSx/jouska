@@ -305,4 +305,28 @@ describe('danger classification boundaries', () => {
     const flags = dangerFlags({ ip: [{ allow: ['1.2.3.4'] }] });
     expect(flags.some((f) => f.path === 'ip.allow')).toBe(false);
   });
+
+  it('flags inject as high danger whenever the block exists', () => {
+    // The block itself is the risk — it puts markup in front of every visitor —
+    // so there is no spelled-out default that reads as safe.
+    const flags = dangerFlags({ bodyRewrite: { inject: { bodyStart: '<div>mirror</div>' } } });
+    const inject = flags.find((f) => f.path === 'bodyRewrite.inject');
+    expect(inject?.level).toBe('high');
+    expect(inject?.reason).toContain('every visitor');
+  });
+
+  it('flags replace as high danger once it carries a rule, and not when empty', () => {
+    // A non-empty `replace` can put markup in front of a visitor exactly like
+    // `inject` can, one string substitution removed.
+    const present = dangerFlags({
+      bodyRewrite: { replace: [{ from: '</head>', to: '<script>x</script>' }] },
+    });
+    const flagged = present.find((f) => f.path === 'bodyRewrite.replace');
+    expect(flagged?.level).toBe('high');
+
+    // The empty array is the default spelled out; warning on it would make the
+    // publish dialog lie about a config that does nothing.
+    const empty = dangerFlags({ bodyRewrite: { replace: [] } });
+    expect(empty.some((f) => f.path === 'bodyRewrite.replace')).toBe(false);
+  });
 });

@@ -58,3 +58,6 @@ export type { Selection } from './internal/selection.js';
 // copy made of itself needs the report shape even though the sender stays
 // internal — same reason `StreamReport` is here.
 export type { MirrorReport } from './internal/traffic-mirror.js';
+// `ProxyEvent.inject` resolves to one of these, so a host that watches whether
+// an injection actually landed needs the report shape and the anchor names.
+export type { InjectAnchor, InjectReport } from './internal/body.js';

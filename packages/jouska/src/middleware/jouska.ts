@@ -8,6 +8,7 @@ import {
   resolveCharset,
   textRewriteStream,
   type ContentType,
+  type InjectReport,
   type Replacement,
 } from '../internal/body.js';
 import { checkAccess } from '../internal/access.js';
@@ -245,6 +246,26 @@ export interface ProxyEvent {
    */
   mirror?: Promise<MirrorReport>;
   /**
+   * Which of the route's `bodyRewrite.inject` anchors landed, resolved once the
+   * body has drained — a promise on the same terms as {@link ProxyEvent.stream},
+   * offered rather than pushed, never rejecting, and ignorable by a host that
+   * does not want it.
+   *
+   * Injection is a DOM-position operation over a streaming parse, so a verdict
+   * cannot be known when this event fires: a `</body>` in the document's last
+   * chunk is parsed after every earlier callback. Awaiting it inside
+   * `ctx.waitUntil` is the one way to read it truthfully.
+   *
+   * `missed` is the alert: an anchor that never met its tag is markup the config
+   * paid for and the page never carried, and the parser says nothing about it on
+   * its own.
+   *
+   * Absent when nothing was injected — no `inject` config, a body that skipped
+   * the rewriter (any `rewriteSkipped` reason), a cache hit, whose bytes were
+   * injected when they were stored and are not re-injected on delivery.
+   */
+  inject?: Promise<InjectReport>;
+  /**
    * Wall-clock milliseconds the access-control stage spent, when the route has
    * auth fields configured. Absent on routes without them, and on preflights,
    * which skip the stage. Includes a refusal's own latency: a slow auth
@@ -368,6 +389,7 @@ export const jouska = ({
       authMs,
       limitReason,
       mirror,
+      inject,
     ): void => {
       if (onProxy === undefined) {
         return;
@@ -399,6 +421,7 @@ export const jouska = ({
           ...(ejected !== undefined && ejected.length > 0 ? { ejected } : {}),
           ...(stream !== undefined ? { stream } : {}),
           ...(mirror !== undefined ? { mirror } : {}),
+          ...(inject !== undefined ? { inject } : {}),
           ...(authMs !== undefined ? { authDurationMs: authMs } : {}),
           ...(limitReason !== undefined ? { limitReason } : {}),
         });
@@ -685,6 +708,8 @@ interface RewriteReport {
   readonly bodyRewritten: boolean;
   readonly rewriteSkipped?: RewriteSkipReason;
   readonly redirectRewritten: boolean;
+  /** The anchor verdict, when injection was attempted on this body. */
+  readonly inject?: Promise<InjectReport>;
 }
 
 /**
@@ -704,6 +729,7 @@ type Report = (
   authMs?: number,
   limitReason?: LimitReason,
   mirror?: Promise<MirrorReport>,
+  inject?: Promise<InjectReport>,
 ) => void;
 
 /**
@@ -1086,6 +1112,7 @@ const proxyRequest = async (
     authMs,
     produced.limitReason,
     mirror,
+    produced.rewrite?.inject,
   );
 
   const cacheableFill =
@@ -1356,7 +1383,7 @@ const produceResponse = async ({
   // including the proxy's own rewrites. See `applyResponseHeaderRules`.
   applyResponseHeaderRules(headers, route.responseHeaders);
 
-  const response = decision.rewrite
+  const { response, inject } = decision.rewrite
     ? rewriteBody({
         upstream,
         headers,
@@ -1367,11 +1394,14 @@ const produceResponse = async ({
         target,
         proxyHost: url.host,
       })
-    : new Response(upstream.body, {
-        status: upstream.status,
-        statusText: upstream.statusText,
-        headers,
-      });
+    : {
+        response: new Response(upstream.body, {
+          status: upstream.status,
+          statusText: upstream.statusText,
+          headers,
+        }),
+        inject: undefined,
+      };
   return {
     response,
     status: upstream.status,
@@ -1389,6 +1419,7 @@ const produceResponse = async ({
       bodyRewritten: decision.rewrite,
       ...(decision.rewrite ? {} : { rewriteSkipped: decision.skipped }),
       redirectRewritten,
+      ...(inject !== undefined ? { inject } : {}),
     },
   };
 };
@@ -1624,14 +1655,18 @@ const rewriteBody = ({
   upstreamHost,
   target,
   proxyHost,
-}: RewriteBodyOptions): Response => {
+}: RewriteBodyOptions): { response: Response; inject?: Promise<InjectReport> } => {
   const base = new Response(upstream.body, {
     status: upstream.status,
     statusText: upstream.statusText,
     headers,
   });
 
-  if (isHtml && rewrite.rewriteLinks) {
+  // Inject reaches the HTML path on its own: a route that adds a banner but
+  // wants the document's links left alone still needs the rewriter, just not
+  // its URL-attribute pass.
+  const hasInject = rewrite.inject !== undefined;
+  if (isHtml && (rewrite.rewriteLinks || hasInject)) {
     // Native HTMLRewriter streams, so the document is never materialised. It
     // also assumes UTF-8 input, so a transcoding body is decoded first.
     const decoded =
@@ -1642,27 +1677,39 @@ const rewriteBody = ({
             statusText: base.statusText,
             headers: base.headers,
           });
-    const transformed = htmlRewriter({
+    const { rewriter, inject: injected } = htmlRewriter({
       isUpstreamHost: upstreamHostMatcher(upstreamHost),
       proxyHost,
       base: target.toString(),
       rewriteStyles: rewrite.rewriteStyles,
-    }).transform(decoded);
-    return rewrite.replace.length > 0
-      ? pipeText(transformed, rewrite.replace, undefined)
-      : transformed;
+      rewriteLinks: rewrite.rewriteLinks,
+      inject: rewrite.inject,
+    });
+    const transformed = rewriter.transform(decoded);
+    const observed =
+      injected === undefined
+        ? transformed
+        : new Response(transformed.body?.pipeThrough(injected.stream) ?? null, {
+            status: transformed.status,
+            statusText: transformed.statusText,
+            headers: transformed.headers,
+          });
+    const response =
+      rewrite.replace.length > 0 ? pipeText(observed, rewrite.replace, undefined) : observed;
+    return injected === undefined ? { response } : { response, inject: injected.report };
   }
 
   // Text bodies get URL-aware host rewriting rather than a literal substitution:
   // substituting the host as a substring turned `https://o.test.evil.com/b` in a
-  // stylesheet into `https://p.dev.evil.com/b`.
+  // stylesheet into `https://p.dev.evil.com/b`. No inject stage here by
+  // definition — anchors are DOM positions, and this path never parses a DOM.
   const hostRewrite = rewrite.rewriteLinks
     ? { isUpstreamHost: upstreamHostMatcher(upstreamHost), proxyHost }
     : undefined;
   if (hostRewrite === undefined && rewrite.replace.length === 0 && charset === 'utf-8') {
-    return base;
+    return { response: base };
   }
-  return pipeText(base, rewrite.replace, hostRewrite, charset);
+  return { response: pipeText(base, rewrite.replace, hostRewrite, charset) };
 };
 
 /** Re-encodes a body from `charset` into UTF-8 without buffering it. */

@@ -24,6 +24,84 @@ describe('defineConfig', () => {
     });
   });
 
+  it('accepts inject with one anchor and keeps it in the parsed route', () => {
+    const config = defineConfig({
+      routes: [
+        {
+          match: { path: '/a' },
+          upstream: 'o.test',
+          bodyRewrite: { inject: { headEnd: '<script src="/_stats.js" defer></script>' } },
+        },
+      ],
+    });
+    expect(config.routes[0]!.bodyRewrite?.inject).toEqual({
+      headEnd: '<script src="/_stats.js" defer></script>',
+    });
+  });
+
+  it('rejects an inject block that sets no anchor', () => {
+    // An empty block turns the rewriter on for nothing: the HTML path would run
+    // and the event would claim a rewrite that changed no bytes.
+    expect(() =>
+      defineConfig({
+        routes: [{ match: { path: '/a' }, upstream: 'o.test', bodyRewrite: { inject: {} } }],
+      }),
+    ).toThrow(/inject must set at least one anchor/);
+  });
+
+  it('rejects an empty anchor string', () => {
+    expect(() =>
+      defineConfig({
+        routes: [
+          { match: { path: '/a' }, upstream: 'o.test', bodyRewrite: { inject: { bodyStart: '' } } },
+        ],
+      }),
+    ).toThrow();
+  });
+
+  it('refuses inject only past the 64 KiB the four anchors share', () => {
+    const banner = 'x'.repeat(1024);
+    const config = defineConfig({
+      routes: [
+        {
+          match: { path: '/a' },
+          upstream: 'o.test',
+          // Four anchors summing to exactly 64 KiB is accepted: the budget is on
+          // the sum, so a config that fills it is legal however it is divided.
+          bodyRewrite: {
+            inject: {
+              headStart: banner,
+              headEnd: banner,
+              bodyStart: banner.repeat(31),
+              bodyEnd: banner.repeat(31),
+            },
+          },
+        },
+      ],
+    });
+    expect(config.routes[0]!.bodyRewrite?.inject).toBeDefined();
+
+    // One more byte anywhere — here in the last anchor — is refused.
+    expect(() =>
+      defineConfig({
+        routes: [
+          {
+            match: { path: '/a' },
+            upstream: 'o.test',
+            bodyRewrite: {
+              inject: {
+                headStart: banner,
+                headEnd: banner,
+                bodyStart: banner.repeat(31),
+                bodyEnd: banner.repeat(31) + 'x',
+              },
+            },
+          },
+        ],
+      }),
+    ).toThrow(/inject totals .* bytes across its anchors/);
+  });
+
   it('rejects an upstream with a scheme', () => {
     expect(() =>
       defineConfig({ routes: [{ match: { path: '/a' }, upstream: 'https://o.test' }] }),
