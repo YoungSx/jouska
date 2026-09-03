@@ -487,6 +487,61 @@ describe('dangerFlags', () => {
       dangerFlags({ match: { path: '/' }, upstream: 'a.com' }).map((f) => f.path),
     ).not.toContain('respond');
   });
+
+  it('flags mirroring a non-idempotent method or a body, and neither on the defaults', () => {
+    // The schema defaults the list to GET and HEAD; writing POST in is the
+    // deliberate widening the panel must ask twice about.
+    const post = dangerFlags({
+      match: { path: '/' },
+      upstream: 'a.com',
+      mirror: { upstream: 'b.com', methods: ['POST'] },
+    }).map((f) => f.path);
+    expect(post).toContain('mirror.methods');
+
+    // The other idempotent methods ride the same guard, and a value that only
+    // re-states the defaults raises nothing — a warning on `GET` would make the
+    // publish dialog lie.
+    expect(
+      dangerFlags({
+        match: { path: '/' },
+        upstream: 'a.com',
+        mirror: { upstream: 'b.com', methods: ['GET', 'DELETE'] },
+      }).map((f) => f.path),
+    ).toContain('mirror.methods');
+    expect(
+      dangerFlags({
+        match: { path: '/' },
+        upstream: 'a.com',
+        mirror: { upstream: 'b.com' },
+      }).map((f) => f.path),
+    ).toEqual([]);
+
+    // Bodies off is the default spelled out and warns on nothing; `true` is the
+    // acceptance of a second host seeing the payload.
+    expect(
+      dangerFlags({
+        match: { path: '/' },
+        upstream: 'a.com',
+        mirror: { upstream: 'b.com', includeBody: false },
+      }).map((f) => f.path),
+    ).toEqual([]);
+    expect(
+      dangerFlags({
+        match: { path: '/' },
+        upstream: 'a.com',
+        mirror: { upstream: 'b.com', includeBody: true },
+      }).map((f) => f.path),
+    ).toContain('mirror.includeBody');
+
+    // A body mirror is memory and reach, but not a re-run of the method.
+    expect(
+      dangerFlags({
+        match: { path: '/' },
+        upstream: 'a.com',
+        mirror: { upstream: 'b.com', includeBody: true },
+      }).map((f) => f.path),
+    ).not.toContain('mirror.methods');
+  });
 });
 
 describe('shadowWarnings with match conditions', () => {

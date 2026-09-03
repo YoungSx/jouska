@@ -76,6 +76,7 @@ Routes are evaluated in order and the first match wins.
 | `upstreams` | — | Ordered candidates for failover; see Failover and traffic splitting. |
 | `trafficSplit` | — | Weighted split entries; see Failover and traffic splitting. |
 | `respond` | — | Answer at the edge instead of forwarding; see Edge answers. |
+| `mirror` | off | Send a background copy of matching requests to a second upstream; see Traffic mirroring. |
 | `errorPages` | — | Replace the payload of an upstream failure; see Edge answers. |
 | `failover` | see text | Switch policy and attempt cap for the multi-candidate forms. |
 | `outlier` | see text | Passive ejection of failing candidates; see Outlier ejection. |
@@ -212,6 +213,7 @@ than ignored at request time, because a rule that cannot take effect should say 
 | Direction | Names                                                                              | Refused for                                                                                                                           |
 | --------- | ---------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
 | Request   | `host`, `x-forwarded-host`, `x-forwarded-proto`, `x-forwarded-for`, `x-request-id` | jouska derives them; `x-request-id` is stamped per attempt, so a written value would be discarded while reading as live.              |
+| Request   | `x-jouska-mirror`                                                                  | jouska stamps it on mirrored copies. A route that could write it could disguise a real request as a copy.                             |
 | Request   | the hop-by-hop set, `content-length`                                               | They describe this one connection. `transfer-encoding` is the sharpest case — a forged one is where request smuggling starts.         |
 | Request   | `accept-encoding`                                                                  | Deleted so bodies arrive uncompressed. Writing it back leaves the body rewriter scanning compressed bytes and silently doing nothing. |
 | Request   | `upgrade`, `sec-websocket-*`                                                       | The `websocket` flag governs these. Writing them back would let an upgrade through on a route that turned it off.                     |
@@ -525,6 +527,64 @@ Both kinds of answer are produced after the guard chain: a `respond` route with
 The panel flags a `respond` route and the external-redirect switch as high
 danger on publish — a maintenance page left in place takes real traffic offline
 with nothing upstream to notice.
+
+### Traffic mirroring
+
+Mirroring is how you find out what a new backend would have said about real
+traffic before it gets any. The route keeps answering exactly as it does — the
+visitor sees nothing new — and a copy of each matching request is sent in the
+background to a second upstream:
+
+```ts
+{ match: { path: '/api' }, upstream: 'v1.example.com',
+  mirror: { upstream: 'v2.example.com', percent: 10 } },
+```
+
+Mirroring is not traffic splitting: a split moves traffic, a mirror adds a
+shadow. The copy shares nothing with the primary walk — no cache, no rewriting,
+no sticky cookie, no failover participation, no second delegated-auth exchange.
+Its response is discarded unread, so the mirror target's status codes are a
+fact for its own metrics to explain, never something a visitor can receive.
+
+- **`percent`** (default 100) samples by hashing the request ID — the same
+  deterministic hash traffic splitting uses, so "why was this request mirrored"
+  is answerable from the request alone afterwards, not a coin toss nobody can
+  re-derive.
+- **`methods`** defaults to `GET` and `HEAD` and only they. Anything else must
+  be written in, and the panel flags a non-idempotent method as high danger on
+  publish — a mirrored POST runs twice at two hosts, which is two charges, two
+  emails or two records from one visitor action.
+- **`includeBody`** defaults to off. On, the request body is tee'd into a
+  bounded buffer (256 KiB) and replayed to the mirror target; past the cap the
+  **copy is abandoned, never the request**, and the report says
+  `body_over_limit`. A slow mirror target cannot throttle the visitor's upload,
+  because the copy is buffered rather than streamed in lockstep with it. Bodies
+  reaching a second host are their own risk; the panel flags the switch too.
+- **`timeoutMs`** (default 2000, max 5000) is the copy's own short deadline —
+  independent of the route's, which governs the response the visitor waits on.
+
+The mirror target passes the same upstream validation as the primary one:
+no scheme, no private-network address unless the route opted into
+`allowPrivateUpstream` — the mirror inherits that exemption from its route,
+and a target that fails the screen is refused at config time, not discovered
+as an SSRF in production.
+
+The copy carries the client's headers as the primary would (minus hop-by-hop),
+plus `X-Request-Id` — so both upstreams' logs correlate on the same request —
+and `x-jouska-mirror: 1`, so an upstream can tell the copy from the real one
+and decline to act on it. That name is on the reserved list: a route may not
+write it itself, since a route that could would be able to disguise a real
+request as a copy.
+
+Mirroring is planned after every guard: a refused request is not traffic, and
+mirroring an attacker's probe to a second host serves no one. It runs on cache
+hits too — what v2 would have made of the request is exactly the question a
+mirror exists to answer — and regardless of how the primary walk ends, since a
+copy is most interesting precisely when v1 is down. WebSocket upgrades are
+never mirrored; the "body" is the socket. The mirror result rides
+`ProxyEvent.mirror` — `answered`, `timeout`, `unreachable` or
+`body_over_limit`, with the target and duration — and carries no body or query
+fields, for the same reason the rest of the event does not.
 
 ### Outlier ejection
 
@@ -1366,22 +1426,23 @@ app.use(
 );
 ```
 
-| Field         | Meaning                                                                                                                                                                                                                                                                                                                                                 |
-| ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `routeId`     | The matched route, labelled the way rate-limit buckets are.                                                                                                                                                                                                                                                                                             |
-| `requestId`   | The ID on `x-request-id` this request was served under — the same value the client's response and the upstream request carried.                                                                                                                                                                                                                         |
-| `upstream`    | Authority the request was sent to. Empty on an edge answer — there is no upstream to blame.                                                                                                                                                                                                                                                             |
-| `method`      | Request method.                                                                                                                                                                                                                                                                                                                                         |
-| `path`        | Path as the client wrote it, before normalisation.                                                                                                                                                                                                                                                                                                      |
-| `status`      | Status returned to the client, including jouska's own 4xx and 5xx.                                                                                                                                                                                                                                                                                      |
-| `durationMs`  | Wall-clock milliseconds from match to response.                                                                                                                                                                                                                                                                                                         |
-| `attempts`    | Upstream attempts, including the first — so a retry is visible.                                                                                                                                                                                                                                                                                         |
-| `outcome`     | `ok`, `refused`, `timeout`, `unreachable`, `client_closed`, or `responded` — an edge answer from a `respond` route, which produced a response without one upstream attempt.                                                                                                                                                                             |
-| `cache`       | `hit`, `stale`, `miss`, `bypass` or `stale_error`; absent without a `cache` block.                                                                                                                                                                                                                                                                      |
-| `selection`   | How a split route picked its upstream — present only on `trafficSplit` routes, with the winning entry's `index`, whether a `sticky` cookie or the `weighted` hash decided, and the `scope` the weighted hash was taken over: `ip` (the default and any fallback), `path`, `url`, `header`, `cookie`, `query`, or `none` when there was nothing to hash. |
-| `ejected`     | Candidates the outlier memory removed from the walk before the first attempt. Absent when nothing was skipped, and on routes without an `outlier` policy.                                                                                                                                                                                               |
-| `stream`      | Promise of how the body stream ended, resolved once it has. Absent when nothing streamed from an upstream — a refusal, a 101, a bodyless response, a cache hit.                                                                                                                                                                                         |
-| `limitReason` | Why a `limits` fuse held this request back: `retry_budget` when a walk was denied its extra attempts, `in_flight` when it was refused at the cap with `attempts: 0`. Absent when nothing was held back, and on routes without a `limits` block.                                                                                                         |
+| Field         | Meaning                                                                                                                                                                                                                                                                                                                                                       |
+| ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `routeId`     | The matched route, labelled the way rate-limit buckets are.                                                                                                                                                                                                                                                                                                   |
+| `requestId`   | The ID on `x-request-id` this request was served under — the same value the client's response and the upstream request carried.                                                                                                                                                                                                                               |
+| `upstream`    | Authority the request was sent to. Empty on an edge answer — there is no upstream to blame.                                                                                                                                                                                                                                                                   |
+| `method`      | Request method.                                                                                                                                                                                                                                                                                                                                               |
+| `path`        | Path as the client wrote it, before normalisation.                                                                                                                                                                                                                                                                                                            |
+| `status`      | Status returned to the client, including jouska's own 4xx and 5xx.                                                                                                                                                                                                                                                                                            |
+| `durationMs`  | Wall-clock milliseconds from match to response.                                                                                                                                                                                                                                                                                                               |
+| `attempts`    | Upstream attempts, including the first — so a retry is visible.                                                                                                                                                                                                                                                                                               |
+| `outcome`     | `ok`, `refused`, `timeout`, `unreachable`, `client_closed`, or `responded` — an edge answer from a `respond` route, which produced a response without one upstream attempt.                                                                                                                                                                                   |
+| `cache`       | `hit`, `stale`, `miss`, `bypass` or `stale_error`; absent without a `cache` block.                                                                                                                                                                                                                                                                            |
+| `selection`   | How a split route picked its upstream — present only on `trafficSplit` routes, with the winning entry's `index`, whether a `sticky` cookie or the `weighted` hash decided, and the `scope` the weighted hash was taken over: `ip` (the default and any fallback), `path`, `url`, `header`, `cookie`, `query`, or `none` when there was nothing to hash.       |
+| `ejected`     | Candidates the outlier memory removed from the walk before the first attempt. Absent when nothing was skipped, and on routes without an `outlier` policy.                                                                                                                                                                                                     |
+| `stream`      | Promise of how the body stream ended, resolved once it has. Absent when nothing streamed from an upstream — a refusal, a 101, a bodyless response, a cache hit.                                                                                                                                                                                               |
+| `limitReason` | Why a `limits` fuse held this request back: `retry_budget` when a walk was denied its extra attempts, `in_flight` when it was refused at the cap with `attempts: 0`. Absent when nothing was held back, and on routes without a `limits` block.                                                                                                               |
+| `mirror`      | Promise of how the background copy fared — `answered`, `timeout`, `unreachable` or `body_over_limit`, with the target and duration. Absent when nothing was mirrored: no `mirror` block, method outside `mirror.methods`, a WebSocket upgrade, or outside the sampled `percent`. No body or query fields, for the same reason the rest of the event has none. |
 
 Three more report what happened to the response body, which is what a mirrored
 site is judged by:
@@ -1540,7 +1601,10 @@ These are Workers limits, not choices, and they shape the architecture:
   request to one winner, so racing or fanning out across upstreams is not
   expressible here. A delegated-auth subrequest takes one of the six itself;
   it runs before the upstream attempt, so a guarded route spends its budget on
-  the auth round trip first and the connection count still holds.
+  the auth round trip first and the connection count still holds. A mirrored
+  copy is the one deliberate +1: a single background subrequest, disjoint from
+  the walk, which the connection budget still covers — main walk (two held at a
+  time, sequentially) plus one copy is three of the six.
 - **128MB memory, on every plan.** Body rewriting is streaming throughout;
   nothing calls `await response.text()` on a proxied body.
 - **Wall time is not bounded, CPU time is.** An HTTP-triggered Worker has no

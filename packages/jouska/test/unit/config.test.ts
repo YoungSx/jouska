@@ -1015,3 +1015,103 @@ describe('access control config (cache cross-check)', () => {
     ).toThrow(/cache is refused/);
   });
 });
+
+describe('mirror config', () => {
+  it('defaults the mirror block to a full-sample, bodyless, GET/HEAD copy', () => {
+    const config = defineConfig({
+      routes: [{ match: { path: '/a' }, upstream: 'a.test', mirror: { upstream: 'b.test' } }],
+    });
+    expect(config.routes[0]!.mirror).toEqual({
+      upstream: 'b.test',
+      percent: 100,
+      includeBody: false,
+      methods: ['GET', 'HEAD'],
+      timeoutMs: 2_000,
+    });
+  });
+
+  it('rejects a mirror percent outside 1–100 and a timeout past the copy bound', () => {
+    const route = (mirror: Record<string, unknown>) =>
+      defineConfig({ routes: [{ match: { path: '/a' }, upstream: 'a.test', mirror }] });
+    expect(() => route({ upstream: 'b.test', percent: 0 })).toThrow();
+    expect(() => route({ upstream: 'b.test', percent: 101 })).toThrow();
+    expect(() => route({ upstream: 'b.test', timeoutMs: 5_001 })).toThrow();
+    expect(() => route({ upstream: 'b.test', percent: 10, timeoutMs: 5_000 })).not.toThrow();
+  });
+
+  it('folds method case and refuses an empty list', () => {
+    const config = defineConfig({
+      routes: [
+        {
+          match: { path: '/a' },
+          upstream: 'a.test',
+          mirror: { upstream: 'b.test', methods: ['get'] },
+        },
+      ],
+    });
+    expect(config.routes[0]!.mirror!.methods).toEqual(['GET']);
+    expect(() =>
+      defineConfig({
+        routes: [
+          {
+            match: { path: '/a' },
+            upstream: 'a.test',
+            mirror: { upstream: 'b.test', methods: [] },
+          },
+        ],
+      }),
+    ).toThrow();
+  });
+
+  it('refuses mirror beside respond — an edge answer has no request to copy', () => {
+    expect(() =>
+      defineConfig({
+        routes: [
+          {
+            match: { path: '/a' },
+            respond: { status: 503, contentType: 'text/plain', body: 'down' },
+            mirror: { upstream: 'b.test' },
+          },
+        ],
+      }),
+    ).toThrow(/mirror requires an upstream/);
+  });
+
+  it('refuses a private mirror target at parse time (acceptance #5)', () => {
+    expect(() =>
+      defineConfig({
+        routes: [{ match: { path: '/a' }, upstream: 'a.test', mirror: { upstream: '10.0.0.9' } }],
+      }),
+    ).toThrow();
+  });
+
+  it('refuses a private mirror target even when the primary upstream was allowed one', () => {
+    // `allowPrivateUpstream` exempts the route's forwarding targets; the mirror
+    // inherits the exemption the same way, so on a route without the flag both
+    // are refused — and the parse-time refusal above already pins that. What
+    // this pins is the other half: the mirror shape is the *allowing* variant
+    // only where the route opted in, and a private mirror behind the flag parses.
+    expect(() =>
+      defineConfig({
+        routes: [
+          {
+            match: { path: '/a' },
+            upstream: 'a.test',
+            allowPrivateUpstream: true,
+            mirror: { upstream: '127.0.0.1' },
+          },
+        ],
+      }),
+    ).not.toThrow();
+  });
+
+  it('refuses a mirror upstream with a scheme, like any upstream', () => {
+    expect(() =>
+      defineConfig({
+        routes: [
+          { match: { path: '/a' }, upstream: 'a.test', mirror: { upstream: 'https://b.test' } },
+        ],
+      }),
+    ).toThrow();
+  });
+});

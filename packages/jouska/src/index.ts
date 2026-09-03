@@ -10,6 +10,7 @@ export type {
   CorsConfig,
   ForwardAuthConfig,
   HeaderRulesConfig,
+  MirrorConfig,
   RateLimitConfig,
   RequestIdConfig,
   Route,
@@ -53,3 +54,7 @@ export type { StreamOutcome, StreamReport } from './internal/stream-watch.js';
 // `ProxyEvent.selection` references it, so consumers typing their `onProxy`
 // need the shape even though the picker itself stays internal.
 export type { Selection } from './internal/selection.js';
+// `ProxyEvent.mirror` resolves to one of these, so a host watching what the
+// copy made of itself needs the report shape even though the sender stays
+// internal — same reason `StreamReport` is here.
+export type { MirrorReport } from './internal/traffic-mirror.js';
