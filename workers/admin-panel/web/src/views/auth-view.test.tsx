@@ -13,6 +13,39 @@ import { ApiError, api, type MeResult } from '@/lib/api';
 
 const me = (bootstrapable: boolean): MeResult => ({ user: null, bootstrapable });
 
+/**
+ * Access 认了人、面板还没这一行时的终点页。
+ *
+ * 焊的是「不能给一张解不开这个状态的表单」：再输一次密码不会让 users 表里冒出
+ * 那一行，所以这条路径上必须没有账号/密码输入框，也必须没有登录按钮。
+ */
+describe('AuthView：Access 已放行但面板还没账号', () => {
+  const pending: MeResult = {
+    user: null,
+    bootstrapable: false,
+    accessEmail: 'ops@example.com',
+  };
+
+  it('显示邮箱与下一步，不给登录表单', () => {
+    render(<AuthView me={pending} loading={false} onSignedIn={() => {}} />);
+
+    expect(screen.getByText(/ops@example\.com/)).toBeInTheDocument();
+    expect(screen.getByText('还没有面板账号')).toBeInTheDocument();
+    // 关键否定断言：这两个控件在这个状态下出现就是设计错了。
+    expect(screen.queryByLabelText('账号')).toBeNull();
+    expect(screen.queryByLabelText('密码')).toBeNull();
+    expect(screen.queryByRole('button', { name: '登录' })).toBeNull();
+  });
+
+  it('即使服务端同时说了 bootstrapable，也不回落到建号表单', () => {
+    render(
+      <AuthView me={{ ...pending, bootstrapable: true }} loading={false} onSignedIn={() => {}} />,
+    );
+    expect(screen.queryByLabelText('账号')).toBeNull();
+    expect(screen.getByText('还没有面板账号')).toBeInTheDocument();
+  });
+});
+
 describe('AuthView 登录表单', () => {
   beforeEach(() => {
     vi.spyOn(api, 'login').mockResolvedValue({ subject: 'op', role: 'admin' });

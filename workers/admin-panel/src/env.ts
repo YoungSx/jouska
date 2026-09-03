@@ -30,6 +30,26 @@ export interface Env {
   CF_ACCOUNT_ID?: string;
 
   /**
+   * Cloudflare Access team name — the `<team>` in `<team>.cloudflareaccess.com`.
+   *
+   * Setting this and `ACCESS_AUD` together is what turns Access login on. Both
+   * or neither: a team without an audience would verify that the token was
+   * signed by the right organisation but not that it was issued for *this*
+   * application, and any other app in the same team could then let a caller in.
+   *
+   * Not a secret — it names a public JWKS endpoint.
+   */
+  ACCESS_TEAM?: string;
+
+  /**
+   * Audience (AUD) tag of the Access application in front of this panel.
+   *
+   * Read it off the Access application in the Zero Trust dashboard. Not a
+   * secret either; it is a public identifier that appears in every token.
+   */
+  ACCESS_AUD?: string;
+
+  /**
    * Read-only Cloudflare API token, for hostname discovery. A secret.
    *
    * Set with `wrangler secret put CF_API_TOKEN`. Wants only read scopes —
@@ -43,7 +63,18 @@ export interface Env {
 
 /** Hono variables set by the auth middleware. */
 export interface Vars {
-  user: { userId: number; subject: string; role: 'admin' | 'viewer' };
+  user: {
+    userId: number;
+    subject: string;
+    role: 'admin' | 'viewer';
+    /**
+     * Which door proved this caller: the platform's Access token, or the
+     * panel's own session cookie. Recorded because the two coexist while a
+     * deployment migrates, and "who changed the route table, through which
+     * door" is a question the audit log should be able to answer.
+     */
+    via: 'access' | 'session';
+  };
 }
 
 export type AppEnv = { Bindings: Env; Variables: Vars };

@@ -117,6 +117,16 @@ export const AuthView = ({ me, loading, onSignedIn }: AuthViewProps) => {
   const bootstrapable = me?.bootstrapable === true;
   const mode: AuthMode = chosen ?? (bootstrapable ? 'bootstrap' : 'login');
 
+  // Access 已经放人进来了，只是 users 表里没有这个地址。登录表单解不开这个
+  // 状态——再输一次密码也不会让那一行出现——所以整条路径换成「找谁」。
+  if (me?.accessEmail !== undefined) {
+    return (
+      <div className="mx-auto w-full max-w-sm px-4 py-16">
+        <AccessPendingCard email={me.accessEmail} />
+      </div>
+    );
+  }
+
   if (loading) {
     return (
       <div className="mx-auto w-full max-w-sm px-4 py-16" aria-hidden>
@@ -159,6 +169,34 @@ export const AuthView = ({ me, loading, onSignedIn }: AuthViewProps) => {
     </div>
   );
 };
+
+/**
+ * 「Access 认了你，面板还不认你」的终点页。
+ *
+ * 刻意没有表单：唯一能改变这个状态的动作发生在别人的账号里。刷新按钮是为了
+ * 管理员加完之后不用解释「关掉标签页再打开」。
+ */
+const AccessPendingCard = ({ email }: { readonly email: string }) => (
+  <Card>
+    <CardHeader>
+      <CardTitle>{t.accessPending.title}</CardTitle>
+      <CardDescription>{t.accessPending.lead(email)}</CardDescription>
+    </CardHeader>
+    <CardContent className="flex flex-col gap-4">
+      <Alert>
+        <AlertTitle>{t.accessPending.hint}</AlertTitle>
+      </Alert>
+      <Button
+        variant="outline"
+        onClick={() => {
+          globalThis.location.reload();
+        }}
+      >
+        {t.accessPending.refresh}
+      </Button>
+    </CardContent>
+  </Card>
+);
 
 interface AuthCardProps {
   readonly mode: AuthMode;

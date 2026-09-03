@@ -294,7 +294,13 @@ const App = () => {
     return (
       <>
         <AuthView
-          me={{ user: null, bootstrapable: session.state.bootstrapable }}
+          me={{
+            user: null,
+            bootstrapable: session.state.bootstrapable,
+            ...(session.state.accessEmail === undefined
+              ? {}
+              : { accessEmail: session.state.accessEmail }),
+          }}
           loading={false}
           onSignedIn={() => void session.refresh()}
         />
@@ -406,10 +412,14 @@ const App = () => {
                     {user.subject}
                   </DropdownMenuLabel>
                   <DropdownMenuSeparator />
-                  <DropdownMenuItem onClick={() => setPasswordOpen(true)}>
-                    <KeyRoundIcon />
-                    {t.account.changePassword}
-                  </DropdownMenuItem>
+                  {/* 走 Access 进来的账号没有密码可改（users.password 是 NULL），
+                      服务端会答 409。留着这一项只会让人点开一个必然失败的弹窗。 */}
+                  {user.via !== 'access' && (
+                    <DropdownMenuItem onClick={() => setPasswordOpen(true)}>
+                      <KeyRoundIcon />
+                      {t.account.changePassword}
+                    </DropdownMenuItem>
+                  )}
                   <DropdownMenuItem
                     variant="destructive"
                     onClick={() => {
