@@ -1271,6 +1271,279 @@ const cache = z.object({
   key: cacheKey.prefault({}),
 });
 
+/**
+ * A redirect target for {@link respond}.
+ *
+ * The default `301` covers the dominant "this moved for good" case; `302`,
+ * `303`, `307` and `308` are the other statuses that name a redirect rather
+ * than an error. A `Location` value must survive the browser too, so the set is
+ * spelled out rather than left as a range — 300 and 304 are not directives a
+ * route table can issue on a client's behalf.
+ */
+const redirectStatuses = [301, 302, 303, 307, 308] as const;
+
+/**
+ * A redirect target, with the refusals that keep it pointing at this proxy.
+ *
+ * `to` accepts a relative path or an absolute URL, and the two mean different
+ * things a schema cannot confuse:
+ *
+ * A relative path — `to: '/v2/docs'` — is resolved against the request's own
+ * origin at answer time, so the redirect goes wherever the request came from.
+ * That is the ordinary "this endpoint moved" case, and it needs nothing extra.
+ * The path must start with `/` and start with nothing else: `//evil.example`
+ * is a protocol-relative URL that browsers read as another host, and `/\` is
+ * read as `//` by some. Both are refused rather than escaped.
+ *
+ * An absolute URL is, by that spelling, another host. It is still legitimate —
+ * a domain that moved wholesale points its replacement at the old one — but a
+ * route table that will silently send visitors to any host named in it is a
+ * misconfigured or corrupted entry away from an open redirect, so it requires
+ * the explicit `allowExternal: true` switch. (Writing "the proxy's own host"
+ * as an absolute URL cannot be validated here: the proxy's host is a fact of
+ * the deployment, not of the route table, and a value that matches it today
+ * breaks the day the proxy moves. Write the relative path instead — it means
+ * the same thing and survives the move.)
+ */
+const respondRedirect = z
+  .object({
+    /** Where to send the visitor: a relative path, or an absolute URL with `allowExternal`. */
+    to: z.string().min(1),
+    /** Redirect status. Defaults to `301`. */
+    status: z.literal(redirectStatuses).default(301),
+    /**
+     * Permit an absolute URL naming another host. Off by default — see the
+     * object's own comment for why this is opt-in rather than free.
+     */
+    allowExternal: z.literal(true).optional(),
+  })
+  .superRefine((redirect, ctx) => {
+    const to = redirect.to;
+    if (to.startsWith('/') && !to.startsWith('//') && !to.startsWith('/\\')) {
+      return;
+    }
+    if (to.startsWith('//') || to.startsWith('/\\')) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['to'],
+        message:
+          `respond.redirect.to "${to}" is protocol-relative and browsers read it as ` +
+          'another host; write the path with a single leading slash, or the absolute ' +
+          'URL with respond.redirect.allowExternal: true',
+      });
+      return;
+    }
+    if (to.startsWith('//') || to.startsWith('/\\')) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['to'],
+        message:
+          `respond.redirect.to "${to}" is protocol-relative and browsers read it as ` +
+          'another host; write the path with a single leading slash, or the absolute ' +
+          'URL with respond.redirect.allowExternal: true',
+      });
+      return;
+    }
+    // Not a relative path, so the only remaining reading is an absolute URL —
+    // and that reading needs the switch, plus a value the parser agrees is one.
+    if (redirect.allowExternal !== true) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['to'],
+        message:
+          `respond.redirect.to "${to}" is not a relative path; redirects to another ` +
+          'host need respond.redirect.allowExternal: true',
+      });
+      return;
+    }
+    let parsed: URL;
+    try {
+      parsed = new URL(to);
+    } catch {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['to'],
+        message: `respond.redirect.to "${to}" is neither a relative path nor an absolute URL`,
+      });
+      return;
+    }
+    if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['to'],
+        message: `respond.redirect.to "${to}" must name an http(s) URL, not ${parsed.protocol}`,
+      });
+    }
+  });
+
+/** Statuses whose body the platform refuses to construct — verified against workerd. */
+const NULL_BODY_STATUSES = new Set([204, 205, 304]);
+
+/**
+ * A fixed answer this route gives instead of forwarding.
+ *
+ * Exactly one of `redirect` and `status` may be set — a redirect's status is
+ * the redirect's own, and folding the two into one field would make
+ * `respond: {status: 503, redirect: {…}}` a document with two readings.
+ */
+const respond = z
+  .object({
+    /** Send a redirect instead of answering or forwarding. */
+    redirect: respondRedirect.optional(),
+    /** Answer with this status and (optionally) a body, without contacting an upstream. */
+    status: z
+      .number()
+      .int()
+      .min(200)
+      .max(599)
+      .refine((status) => status !== 101, {
+        message: '101 is a protocol switch, not a status a route table can hand out',
+      })
+      .optional(),
+    /** Content-Type of `body`. Required beside it — a body with no type is a guess. */
+    contentType: z.string().min(1).optional(),
+    /**
+     * Literal body served verbatim. UTF-8, as everything this proxy produces is.
+     *
+     * Size is bounded by the same limit as the rest of the route definition —
+     * the admin panel refuses documents over 64 KiB in full (`MAX_DEFINITION_BYTES`
+     * in the panel's validate.ts) — rather than by a second number here. A body
+     * large enough to matter is a page someone maintains, and it lives in the
+     * same document that names it.
+     *
+     * Refused alongside a status that cannot carry one (204, 205, 304): the
+     * platform's `Response` constructor throws on the pairing, and a config
+     * that throws on its first request should throw at parse time instead.
+     */
+    body: z.string().optional(),
+    /**
+     * Extra response headers. Reserved names are refused for the same reason as
+     * in `responseHeaders.set` — the proxy derives them or the runtime owns them.
+     */
+    headers: z.record(headerName, z.string()).optional(),
+  })
+  .superRefine((answer, ctx) => {
+    const kinds = [answer.redirect, answer.status].filter((v) => v !== undefined);
+    if (kinds.length !== 1) {
+      ctx.addIssue({
+        code: 'custom',
+        path: [],
+        message: `respond must set exactly one of redirect or status (found ${kinds.length})`,
+      });
+      return;
+    }
+    if (answer.status !== undefined && answer.body !== undefined) {
+      if (NULL_BODY_STATUSES.has(answer.status)) {
+        ctx.addIssue({
+          code: 'custom',
+          path: ['body'],
+          message:
+            `respond.status ${answer.status} cannot carry a body: the runtime's ` +
+            `Response constructor throws on the pairing`,
+        });
+      }
+      if (answer.contentType === undefined) {
+        ctx.addIssue({
+          code: 'custom',
+          path: ['contentType'],
+          message: 'respond.body requires respond.contentType — a body with no type is a guess',
+        });
+      }
+    }
+    if (answer.redirect !== undefined && answer.body !== undefined) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['body'],
+        message: 'respond.redirect answers with Location and carries no body',
+      });
+    }
+    if (answer.headers !== undefined) {
+      const { canonical, problems } = inspectHeaderNames(
+        Object.keys(answer.headers),
+        'respond.headers',
+        RESERVED_RESPONSE_HEADERS,
+      );
+      for (const message of problems) {
+        ctx.addIssue({ code: 'custom', path: ['headers'], message });
+      }
+      // On a redirect the target is `respond.redirect.to`; a `headers.location`
+      // beside it would give the response two addresses and the one that won
+      // would depend on construction order in the middleware.
+      if (answer.redirect !== undefined && canonical.has('location')) {
+        ctx.addIssue({
+          code: 'custom',
+          path: ['headers'],
+          message:
+            'respond.headers may not write "location" on a redirect — the target is ' +
+            'respond.redirect.to',
+        });
+      }
+    }
+  });
+
+/**
+ * A page is a body plus its type and optional headers, all three present or
+ * none of the point: a body without a type is a guess, and a page with no body
+ * is just the JSON error it was meant to replace.
+ */
+const errorPage = z
+  .object({
+    /** The HTML (or text) served in place of the JSON failure. */
+    body: z.string().min(1),
+    /** Content-Type of `body` — the pairing `respond` requires, page-side too. */
+    contentType: z.string().min(1),
+    /**
+     * Extra headers on the replacement page. Reserved names are refused for
+     * the same reason as in `responseHeaders.set`.
+     */
+    headers: z.record(headerName, z.string()).optional(),
+  })
+  .superRefine((page, ctx) => {
+    const { problems } = inspectHeaderNames(
+      Object.keys(page.headers ?? {}),
+      'errorPages.headers',
+      RESERVED_RESPONSE_HEADERS,
+    );
+    for (const message of problems) {
+      ctx.addIssue({ code: 'custom', path: ['headers'], message });
+    }
+  });
+
+/**
+ * Replacement bodies for the upstream failures jouska itself answers.
+ *
+ * Only reachable on a route that has an upstream — a route that answers for
+ * itself cannot fail to reach one, so the schema rejects the pairing before
+ * a page that can never fire ships in the table.
+ *
+ * The key is the status the failure produced. Only 5xx keys are accepted,
+ * because those are the only statuses this lookup ever sees — jouska's own
+ * upstream failures are 502 and 504, and the 4xx and 413 the guards produce
+ * are refusals, not faults. A key outside that range would be config that
+ * cannot take effect, and config that cannot take effect should say so at
+ * parse time rather than sit inert.
+ *
+ * The status is never replaced. A maintenance page served as 200 defeats every
+ * monitoring probe that keys on status — the one signal that says "this is
+ * broken" — so the failure's status passes through and only the payload does.
+ */
+const errorPages = z
+  .record(z.string().regex(/^[1-5]\d\d$/, 'expected a three-digit HTTP status'), errorPage)
+  .superRefine((pages, ctx) => {
+    for (const status of Object.keys(pages)) {
+      const code = Number(status);
+      if (code < 500 || code > 599) {
+        ctx.addIssue({
+          code: 'custom',
+          path: [status],
+          message:
+            `errorPages.${status}: only 5xx statuses can occur here — jouska's own ` +
+            'upstream failures are 502 and 504',
+        });
+      }
+    }
+  });
+
 /** Fields shared by a route and the table-wide `defaults` block. */
 const routeBehaviour = {
   /** Scheme used to reach the upstream. `http` is for local and in-network origins. */
@@ -1441,6 +1714,23 @@ const route = z.object({
    * corrupted config into an internal network probe.
    */
   allowPrivateUpstream: z.literal(true).optional(),
+  /**
+   * Answer for this route at the edge instead of forwarding. See
+   * {@link respond} for the two shapes and the refusals around them. Mutually
+   * exclusive with every upstream strategy — checked in the table refine below,
+   * where the three-way `upstream`/`upstreams`/`trafficSplit` check already
+   * runs, because one route cannot both answer and forward. Neither this nor
+   * `errorPages` is a `defaults` field: a table-wide `respond` would turn every
+   * route into an edge answer, and a table-wide `errorPages` would promise
+   * coverage on the very routes that need none.
+   */
+  respond: respond.optional(),
+  /**
+   * Replacement pages for the upstream failures jouska answers itself. See
+   * {@link errorPages}; requires an upstream strategy, and never replaces the
+   * failure's status code.
+   */
+  errorPages: errorPages.optional(),
   ...routeBehaviour,
 });
 
@@ -1897,7 +2187,28 @@ export const configSchema = z
       const strategies = [entry.upstream, entry.upstreams, entry.trafficSplit].filter(
         (v) => v !== undefined,
       );
-      if (strategies.length !== 1) {
+
+      /**
+       * A route that answers for itself has no upstream to consult, so a
+       * strategy beside `respond` has no reading — and the reverse pairing is
+       * worse than meaningless: `errorPages` only ever fires on a failure the
+       * proxy reaches itself, so on a route that answers at the edge it is
+       * config that looks like coverage and never runs. The pairing is
+       * refused, and `errorPages` stays legal on every upstream route, where
+       * it replaces the failure's payload and never its status.
+       */
+      if (entry.respond !== undefined) {
+        if (strategies.length !== 0) {
+          ctx.addIssue({
+            code: 'custom',
+            path: ['routes', index, 'respond'],
+            message:
+              'respond replaces forwarding entirely; remove the upstream side or the ' +
+              'respond side — a route cannot both answer and forward',
+          });
+          return;
+        }
+      } else if (strategies.length !== 1) {
         ctx.addIssue({
           code: 'custom',
           path: ['routes', index],
@@ -1906,6 +2217,15 @@ export const configSchema = z
             `(found ${strategies.length})`,
         });
         return;
+      }
+
+      if (entry.errorPages !== undefined && strategies.length === 0) {
+        ctx.addIssue({
+          code: 'custom',
+          path: ['routes', index, 'errorPages'],
+          message:
+            'errorPages requires an upstream — a route with no upstream cannot fail to reach one',
+        });
       }
 
       /**

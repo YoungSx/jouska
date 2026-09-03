@@ -90,7 +90,11 @@ export type RewriteSkipReason =
 export interface ProxyEvent {
   /** The route that matched, labelled the way rate-limit buckets are. */
   routeId: string;
-  /** Upstream authority the request was sent to. */
+  /**
+   * Upstream authority the request was sent to. Empty for a `respond` route,
+   * which answered at the edge and contacted nothing — an empty authority is
+   * the event's own statement that there is no upstream to blame or probe.
+   */
   upstream: string;
   method: string;
   /** Path as the client wrote it, before any normalisation. */
@@ -101,8 +105,11 @@ export interface ProxyEvent {
   durationMs: number;
   /** Attempts made against the upstream, including the first. */
   attempts: number;
-  /** Set when the request never reached a normal response. */
-  outcome: 'ok' | 'refused' | 'timeout' | 'unreachable' | 'client_closed';
+  /**
+   * Set when the request never reached a normal response, plus `responded` for
+   * a `respond` route, which produced a normal response without one.
+   */
+  outcome: 'ok' | 'refused' | 'timeout' | 'unreachable' | 'client_closed' | 'responded';
   /**
    * True when the body was handed to the rewriter.
    *
@@ -451,6 +458,26 @@ export const jouska = ({
         authMs = auth.authMs;
         authHeaders = auth.authHeaders;
       }
+    }
+
+    // A route that answers for itself stops here. Every guard above has run
+    // unchanged — a `respond` route still geo-blocks, rate-limits and
+    // authenticates like any other — but nothing below is for it: CORS wraps
+    // the forward, and everything past that exists to describe a response that
+    // came from an upstream, which this one never had. `attempts: 0` is the
+    // same accounting every guard refusal uses, and `upstream` stays empty
+    // because there is no authority to blame or probe.
+    if (route.respond !== undefined) {
+      const answer = respondAnswer(route.respond, c.req.method);
+      report(answer.status, 'responded', 0, '');
+      if (route.cors !== undefined) {
+        // CORS still negotiates for the answer itself: a browser fetches a
+        // `respond` reply cross-origin exactly as it would a proxied one.
+        return corsMiddleware(route.cors)(c, async () => {
+          c.res = answer;
+        });
+      }
+      return answer;
     }
 
     // CORS wraps the forward so preflights are answered without a round trip
@@ -1012,7 +1039,7 @@ const produceResponse = async ({
   } catch (error) {
     // Attributed to the last candidate actually tried: with no response there is
     // no `result.target`, and the walk's stopping point is where the fault is.
-    const failure = upstreamFailure(error, c, lastTarget);
+    const failure = upstreamFailure(error, c, lastTarget, route);
     return {
       response: failure,
       status: failure.status,
@@ -1257,6 +1284,38 @@ const contentLength = (request: Request): number | undefined => {
   return Number.isSafeInteger(value) ? value : undefined;
 };
 
+/**
+ * Builds the response a `respond` route answers with.
+ *
+ * A redirect is answered with `Location` alone and no body — the body is the
+ * browser's business, and the statuses a redirect may carry (301–308) are
+ * bodyless by convention even when the platform would construct one. A fixed
+ * answer serves its body verbatim under the headers the route names, with
+ * `content-type` set last so a route cannot contradict itself between the
+ * dedicated field and the map.
+ *
+ * A `HEAD` gets the status and the headers and no body, per RFC 9110 §9.3.2:
+ * the server must not send one, and the headers still describe what a `GET`
+ * would have received. The empty answer is built rather than stripped, so a
+ * `Content-Length` from `respond.headers` (if an operator wrote one) stays
+ * truthful about the GET.
+ */
+const respondAnswer = (respond: NonNullable<Route['respond']>, method: string): Response => {
+  const headers = new Headers(respond.headers);
+  const redirect = respond.redirect;
+  if (redirect !== undefined) {
+    headers.set('location', redirect.to);
+    return new Response(null, { status: redirect.status, headers });
+  }
+  if (respond.contentType !== undefined) {
+    headers.set('content-type', respond.contentType);
+  }
+  return new Response(method === 'HEAD' ? null : (respond.body ?? null), {
+    status: respond.status!,
+    headers,
+  });
+};
+
 /** Classifies a forward failure for reporting. */
 const failureOutcome = (error: unknown): ProxyEvent['outcome'] => {
   const name = error instanceof Error ? error.name : '';
@@ -1271,7 +1330,7 @@ const failureOutcome = (error: unknown): ProxyEvent['outcome'] => {
 };
 
 /** Maps a forward failure onto a status the caller can act on. */
-const upstreamFailure = (error: unknown, c: Context, target: URL): Response => {
+const upstreamFailure = (error: unknown, c: Context, target: URL, route: Route): Response => {
   const name = error instanceof Error ? error.name : '';
   // Distinguish a deadline from a genuine failure, and both from the client
   // simply hanging up — which is nobody's fault and not worth a 5xx.
@@ -1282,15 +1341,26 @@ const upstreamFailure = (error: unknown, c: Context, target: URL): Response => {
     return Response.json({ error: 'client_closed_request' }, { status: 499 });
   }
   const timedOut = name === 'TimeoutError' || name === 'TotalTimeoutError';
+  const status = timedOut ? 504 : 502;
   // A chunked body that grew past `maxBodyBytes` mid-upload. Not an upstream
   // fault, so it must not read as one: it is the client's body that is too
   // large, and 413 says so rather than 502.
   if (error instanceof BodyLimitError) {
     return c.json({ error: 'payload_too_large', maxBodyBytes: error.limitBytes }, 413);
   }
+  // The route's own page replaces the JSON payload only. The status passes
+  // through untouched — a maintenance page served as 200 defeats every probe
+  // that keys on status, and the two statuses this lookup can see are exactly
+  // the two `errorPages` keys the schema admits.
+  const page = route.errorPages?.[String(status)];
+  if (page !== undefined) {
+    const headers = new Headers(page.headers);
+    headers.set('content-type', page.contentType);
+    return new Response(c.req.method === 'HEAD' ? null : page.body, { status, headers });
+  }
   return c.json(
     { error: timedOut ? 'upstream_timeout' : 'upstream_unreachable', upstream: target.host },
-    timedOut ? 504 : 502,
+    status,
   );
 };
 

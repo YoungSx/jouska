@@ -131,6 +131,25 @@ const RULES: readonly Rule[] = [
     reason:
       'an unreachable auth endpoint then admits everything — availability outranks admission, so an outage becomes open doors',
   },
+  {
+    // The whole site (or the whole matched prefix) answers with whatever the
+    // route wrote, and nothing reaches an upstream. A typo in the match or a
+    // leftover maintenance block takes real traffic offline at the edge, which
+    // is why this reads as high rather than as a mere note.
+    path: 'respond',
+    level: 'high',
+    reason:
+      'the route answers at the edge and forwards nothing — a maintenance page left in place, or a match wider than intended, takes real traffic offline with no upstream to notice',
+  },
+  {
+    // Points the redirect at a host this proxy does not control. Off by default
+    // for the same open-redirect reason the library refuses the pairing, so the
+    // panel asks twice on publish.
+    path: 'respond.redirect.allowExternal',
+    level: 'high',
+    reason:
+      'the redirect may name any host — one corrupted value turns the route into an open redirect to a host nobody vetted',
+  },
 ];
 
 /**
