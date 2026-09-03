@@ -352,7 +352,21 @@ idle deadline, which is correct — those frames are the upstream saying it is
 still there. jouska never injects keep-alives of its own: feeding the deadline
 from inside the proxy would guarantee it never fires.
 
-A route proxying a streaming API therefore wants its own numbers:
+A route proxying a streaming API therefore wants its own numbers. The presets
+below are that advice in copyable form; the code block that follows is the same
+advice written out longhand.
+
+**Timing presets.** Copy the fields into a route — the panel fills them from
+this table, and a unit test keeps this table and the panel's copy from drifting.
+A preset is a one-shot template, not a reference: nothing in the config points
+at it, and once copied the numbers are ordinary route fields you can edit.
+Fields a preset does not name keep their defaults. Apply both when a route is
+an LLM upstream _and_ streams tokens — they move disjoint fields.
+
+| Preset      | For                                                                                   | Fields (copy into the route)                                 |
+| ----------- | ------------------------------------------------------------------------------------- | ------------------------------------------------------------ |
+| `llm`       | An upstream that thinks before answering: OpenAI-style APIs, a cold-starting HF Space | `timeoutMs: 90_000, totalTimeoutMs: 120_000, retries: 1`     |
+| `streaming` | A response that streams tokens for minutes                                            | `firstChunkTimeoutMs: 180_000, streamIdleTimeoutMs: 180_000` |
 
 ```ts
 {

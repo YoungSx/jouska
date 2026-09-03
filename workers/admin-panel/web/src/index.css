@@ -239,6 +239,22 @@
   animation: gate-land 200ms ease-out;
 }
 
+/* 预设按钮刚写完一组输入框的时刻：tonal 闪一下，告诉眼睛「这几个框是刚才那
+   一按填的」。全灰阶 —— 这个世界唯一的色相是 destructive，确认不配得上它。
+   data-flashed 由 React 挂上并在 400ms 后摘除，重按重放，静止时零成本。 */
+@keyframes field-flash {
+  from {
+    background-color: var(--muted);
+  }
+  to {
+    background-color: transparent;
+  }
+}
+
+[data-flashed] input {
+  animation: field-flash 400ms ease-out;
+}
+
 /* ---------------------------------------------------------------------------
    粗指针（手指）下的命中区。nova 的紧凑尺寸是这个面板的承诺 —— 28px 的图标钮、
    25px 的 tab、18px 的开关 —— 桌面上鼠标点得准，手指点不准。这里只用伪元素把

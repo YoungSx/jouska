@@ -13,7 +13,17 @@ import { defineConfig } from 'vite';
 export default defineConfig({
   plugins: [react(), tailwindcss()],
   resolve: {
-    alias: { '@': path.resolve(import.meta.dirname, './src') },
+    alias: {
+      '@': path.resolve(import.meta.dirname, './src'),
+      // 面板要从 jouska 拿预设数字，但 jouska 的 exports 指向 dist（仓库外消费
+      // 者），而它的 index.ts 又依赖 workers-types —— 面板的 tsc 没有那套类型。
+      // 这里只放行 presets.ts：一个零依赖的纯常量文件，dev/build/test 三条路
+      // 都直接编库源码，预设数字永远只有 jouska 一份，不存在第二份拷贝。
+      '@jouska/timing-presets': path.resolve(
+        import.meta.dirname,
+        '../../../packages/jouska/src/presets.ts',
+      ),
+    },
   },
   build: {
     outDir: path.resolve(import.meta.dirname, '../public'),

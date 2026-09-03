@@ -17,6 +17,11 @@ export type {
   RouteInput,
 } from './config.js';
 export { resolveConfig } from './resolve.js';
+// Timing presets are documentation-shaped data: the panel imports them to fill
+// form fields, hand-written JSON copies them from the README, and a unit test
+// keeps the two copies from drifting. Nothing at request time reads them.
+export { TIMING_PRESETS } from './presets.js';
+export type { TimingPreset, TimingPresetName } from './presets.js';
 // Match diagnostics: an admin panel validates a route table with the same
 // matcher the proxy runs (shadow detection, probe checks), so the matcher must
 // be importable rather than reimplemented beside it. `upstreamCandidates`

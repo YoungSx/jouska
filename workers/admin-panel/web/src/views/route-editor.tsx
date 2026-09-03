@@ -44,6 +44,10 @@ import {
   FieldSet,
 } from '@/components/ui/field';
 import { Input } from '@/components/ui/input';
+// 预设数字的唯一源头是 jouska 库（README 与面板共用一份），别名指到库源码，
+// 库改数字这里自动跟上。别处的 jouska import 一律不走这条路 —— 那个文件依赖
+// workers-types，面板的 tsc 没有它。
+import { TIMING_PRESETS } from '@jouska/timing-presets';
 import {
   Select,
   SelectContent,
@@ -68,6 +72,7 @@ import {
   HTTP_METHODS,
   LIMITS,
   NUMERIC_BOUNDS,
+  PRESET_NUMERIC_KEYS,
   RESERVED_REQUEST_HEADERS,
   ROUTE_ID_PATTERN,
   SCHEME_DEFAULT,
@@ -104,6 +109,23 @@ const NUMERIC_FIELDS: Record<
   retries: { label: t.fields.retries.label, unit: undefined },
   retryBackoffMs: { label: t.fields.retryBackoffMs.label, unit: t.fields.retryBackoffMs.unit },
 };
+
+/**
+ * 预设按钮的元数据：名字与描述进按钮，数字从库里的 TIMING_PRESETS 取。
+ *
+ * 「填哪几个框」由 types.ts 的 PRESET_NUMERIC_KEYS 声明 —— 库加字段时编译会
+ * 在这里报错，逼着人确认新字段要不要进预设按钮，而不是静默漏掉。
+ */
+const TIMING_PRESET_BUTTONS = (
+  ['llm', 'streaming'] as const satisfies readonly (keyof typeof TIMING_PRESETS)[]
+).map((name) => ({
+  name,
+  keys: PRESET_NUMERIC_KEYS[name],
+  values: TIMING_PRESETS[name],
+  label: name === 'llm' ? t.fields.sections.presetLlm : t.fields.sections.presetStreaming,
+  description:
+    name === 'llm' ? t.fields.sections.presetLlmDesc : t.fields.sections.presetStreamingDesc,
+}));
 
 const BOOLEAN_KEYS = ['stripPrefix', 'rewriteHeaders', 'manualRedirect', 'websocket'] as const;
 type BooleanKey = (typeof BOOLEAN_KEYS)[number];
@@ -384,6 +406,8 @@ interface NumberPropertyProps {
   /** schema 没有上限时不传，属性整个省掉。 */
   readonly max?: number;
   readonly error?: string;
+  /** 刚被（比如预设按钮）外部改写时的灰阶闪烁标记；true 只维持一瞬。 */
+  readonly flashed?: boolean;
   readonly onChange: (value: string) => void;
 }
 
@@ -396,9 +420,10 @@ const NumberProperty = ({
   min,
   max,
   error,
+  flashed,
   onChange,
 }: NumberPropertyProps) => (
-  <Field data-invalid={hasText(error) ? true : undefined}>
+  <Field data-invalid={hasText(error) ? true : undefined} data-flashed={flashed || undefined}>
     <FieldLabel htmlFor={id}>
       {label}
       {/* 单位挂在标签上而不是占位符里：填完之后依然看得见。 */}
@@ -1074,6 +1099,27 @@ export const RouteEditor = ({
       return next;
     });
 
+  /** 一次写多个顶层键（undefined 删键）—— 预设按钮是唯一的调用方。 */
+  const setTopLevelFields = (fields: Record<string, unknown>) =>
+    setDefinition((prev) => {
+      const next = { ...prev };
+      for (const [key, value] of Object.entries(fields)) {
+        if (value === undefined) {
+          delete next[key];
+        } else {
+          next[key] = value;
+        }
+      }
+      return next;
+    });
+
+  /** 刚被预设写过的框闪一下（index.css 的 field-flash），400ms 后复位。 */
+  const [flashedKeys, setFlashedKeys] = React.useState<readonly string[]>([]);
+  const flashFields = (keys: readonly string[]) => {
+    setFlashedKeys(keys);
+    window.setTimeout(() => setFlashedKeys([]), 400);
+  };
+
   const setMatchKey = (key: 'host' | 'path', value: string | undefined) =>
     setDefinition((prev) => {
       const match: Record<string, unknown> = { ...prev.match };
@@ -1556,6 +1602,47 @@ export const RouteEditor = ({
                     <Hint text={t.fields.sections.timingHint} />
                   </FieldDescription>
 
+                  {/* 预设行：一次性模板。点按只填该预设覆盖的框，之后它们就是
+                      普通数字，随便改 —— 配置里永远没有「指向预设」的引用。
+                      闪烁只标记刚写过的框，不抢焦点：焦点属于用户。 */}
+                  <div className="flex flex-wrap items-start gap-2">
+                    {TIMING_PRESET_BUTTONS.map((preset) => (
+                      <Button
+                        key={preset.name}
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        title={preset.description}
+                        onClick={() => {
+                          const values: Record<string, unknown> = preset.values;
+                          setTopLevelFields(
+                            Object.fromEntries(preset.keys.map((key) => [key, values[key]])),
+                          );
+                          flashFields(preset.keys);
+                        }}
+                      >
+                        {preset.label}
+                      </Button>
+                    ))}
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      title={t.fields.sections.presetClearDesc}
+                      onClick={() => {
+                        setTopLevelFields(
+                          Object.fromEntries(NUMERIC_KEYS.map((key) => [key, undefined])),
+                        );
+                        flashFields([...NUMERIC_KEYS]);
+                      }}
+                    >
+                      {t.fields.sections.presetClear}
+                    </Button>
+                  </div>
+                  <FieldDescription>
+                    <Hint text={t.fields.sections.presetHint} />
+                  </FieldDescription>
+
                   {NUMERIC_KEYS.map((key) => (
                     <NumberProperty
                       key={key}
@@ -1567,6 +1654,7 @@ export const RouteEditor = ({
                       min={NUMERIC_BOUNDS[key].min}
                       max={NUMERIC_BOUNDS[key].max}
                       error={errors[key]}
+                      flashed={flashedKeys.includes(key)}
                       onChange={(raw) => {
                         // 数字直接存，越界与非整数交给校验就地说清；空串 = 未设置。
                         const next = raw === '' ? undefined : Number(raw);
