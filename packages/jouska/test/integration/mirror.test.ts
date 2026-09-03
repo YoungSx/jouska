@@ -98,6 +98,18 @@ const upstream: typeof fetch = async (input) => {
       // A 200 that carries nothing, as the answer to a HEAD does. The status
       // permits a body; none arrived.
       return new Response(null, { status: 200, headers: { 'content-type': 'text/html' } });
+    case '/csp':
+      // A page whose own CSP would block any injected script — irrelevant here,
+      // because the rewriting path drops the header before the body is served.
+      return new Response('<html><head></head><body><p>shielded</p></body></html>', {
+        headers: {
+          'content-type': 'text/html',
+          'content-security-policy': "script-src 'self'",
+        },
+      });
+    case '/fragment':
+      // Not a document: no `head`, no `body`, nothing for an anchor to ride.
+      return new Response('<p>fragment</p>', { headers: { 'content-type': 'text/html' } });
     default:
       return new Response('not found', { status: 404 });
   }
@@ -284,5 +296,103 @@ describe('the event names why a body was not rewritten', () => {
       redirectRewritten: false,
     });
     expect(site.events[0]).not.toHaveProperty('rewriteSkipped');
+  });
+});
+
+describe('inject puts operator markup into the mirrored document', () => {
+  /**
+   * The inject route under test. `rewriteLinks` is left at its default so the
+   * common shape — banner plus stats, links rewritten — is the one exercised.
+   */
+  const injected = (inject: BodyRewriteInput['inject'], extra: Record<string, unknown> = {}) =>
+    mount({
+      id: 'mirror',
+      match: MATCH,
+      upstream: 'upstream.test',
+      bodyRewrite: { inject },
+      ...extra,
+    });
+
+  it('lands a script inside head and a banner at the top of body, byte-identical otherwise', async () => {
+    // The issue's own example: stats in the head, a mirror banner at the top.
+    const source =
+      '<html><head><title>t</title></head><body><p>plain text, no upstream refs</p></body></html>';
+    const stub: typeof fetch = async () =>
+      new Response(source, { headers: { 'content-type': 'text/html' } });
+    const events: ProxyEvent[] = [];
+    const app = new Hono();
+    app.use(
+      '*',
+      jouska({
+        config: defineConfig({
+          routes: [
+            {
+              id: 'mirror',
+              match: MATCH,
+              upstream: 'upstream.test',
+              bodyRewrite: {
+                rewriteLinks: false,
+                inject: {
+                  headEnd: '<script src="/_stats.js" defer></script>',
+                  bodyStart: '<div class="mirror-banner">本站为镜像</div>',
+                },
+              },
+            },
+          ],
+        }),
+        fetchImpl: stub,
+        onProxy: (event) => events.push(event),
+      }),
+    );
+    const html = await (await app.request('https://mirror.test/x')).text();
+    // The anchors are DOM positions: the script sits just before `</head>`, the
+    // banner just inside `<body>`, and everything the origin sent is untouched
+    // around them. `replace` against the literal `</head>` would lose to
+    // `</HEAD>`, minification or a missing tag; this cannot.
+    expect(html).toBe(
+      '<html><head><title>t</title>' +
+        '<script src="/_stats.js" defer></script>' +
+        '</head><body><div class="mirror-banner">本站为镜像</div>' +
+        '<p>plain text, no upstream refs</p></body></html>',
+    );
+    expect(events[0]).toMatchObject({ bodyRewritten: true });
+  });
+
+  it('injects a script a page whose own CSP would have blocked it', async () => {
+    // The CSP drop is documented behaviour of the rewriting path (it quotes the
+    // upstream's own origins, which no longer load once links are rewritten).
+    // The side effect is the prerequisite this feature leans on: the injected
+    // script is not refused by a policy that was already discarded before the
+    // body was parsed.
+    const site = injected({ headEnd: '<script src="/_stats.js" defer></script>' });
+    const res = await site.get('/csp');
+    expect(res.headers.get('content-security-policy')).toBeNull();
+    expect(await res.text()).toContain('<script src="/_stats.js" defer></script>');
+  });
+
+  it('reports a fragment with no head or body as all missed, rather than failing silently', async () => {
+    // Measured in workerd: the parser never *creates* an implied `<head>` or
+    // `<body>`, so a document without them fires no anchor handler at all. That
+    // is exactly the "config written but not in effect" silence the
+    // `rewriteSkipped` reasons exist to end — and it ends it the same way, by
+    // making the miss observable rather than by guessing at one.
+    const site = injected({ headEnd: '<script src="/_stats.js" defer></script>' });
+    const html = await (await site.get('/fragment')).text();
+    expect(html).toBe('<p>fragment</p>');
+    const report = await site.events[0]!.inject;
+    expect(report).toEqual({ landed: [], missed: ['headEnd'] });
+  });
+
+  it('leaves the injected markup out of link rewriting while rewriting the page itself', async () => {
+    // Pinned after measuring in workerd: markup inserted by a handler is never
+    // visited by the same rewriter's other handlers, so the `.on('*')` pass
+    // cannot rewrite what the anchors put in. The operator's banner names the
+    // origin deliberately; the page's own link is the one that must move.
+    const site = injected({
+      bodyStart: '<a href="https://upstream.test/banner">original here</a>',
+    });
+    const html = await (await site.get('/page')).text();
+    expect(html).toContain('href="https://upstream.test/banner"');
+    expect(html).toContain('href="https://mirror.test/next"');
   });
 });

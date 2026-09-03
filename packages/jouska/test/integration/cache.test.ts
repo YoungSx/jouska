@@ -392,6 +392,37 @@ describe('caching a rewritten document', () => {
     expect(await second.text()).toContain('href="https://p.dev/r:0"');
     expect(trips).toBe(1);
   });
+
+  it('stores the injected bytes, and an inject edit starts a new entry', async () => {
+    // What is stored must be the post-injection document — the cache sits
+    // outside the rewriter, so the entry is the last place the injection could
+    // be lost. And since the key carries a fingerprint of the whole route,
+    // editing `inject` is a different key: the old entry is unreachable by
+    // construction, with no invalidation sweep needed.
+    const store = memoryStore();
+    const route = (headEnd: string) =>
+      cachedRoute({
+        // bodyStart, not headEnd: the stub page has no `<head>`, and an anchor
+        // that misses is a real miss, not an insertion.
+        bodyRewrite: { rewriteLinks: false, inject: { bodyStart: headEnd } },
+        cache: { ttlSeconds: 300, contentTypes: ['text/html'] },
+      })[0]!;
+
+    const first = await fetchWith(appWith([route('<B1>')], store), '/page.html');
+    expect(first.headers.get(CACHE_STATE_HEADER)).toBe('miss');
+    expect(await first.text()).toContain('<B1>');
+
+    const hit = await fetchWith(appWith([route('<B1>')], store), '/page.html');
+    expect(hit.headers.get(CACHE_STATE_HEADER)).toBe('hit');
+    expect(await hit.text()).toContain('<B1>');
+
+    // One anchor edited — the case an operator hits when they retune a banner.
+    const edited = await fetchWith(appWith([route('<B2>')], store), '/page.html');
+    expect(edited.headers.get(CACHE_STATE_HEADER)).toBe('miss');
+    const text = await edited.text();
+    expect(text).toContain('<B2>');
+    expect(text).not.toContain('<B1>');
+  });
 });
 
 describe('HEAD entries', () => {

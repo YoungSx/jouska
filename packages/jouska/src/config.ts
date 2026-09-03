@@ -579,6 +579,18 @@ const cookieCondition = z
  */
 const MAX_MATCH_CONDITIONS = MAX_LIST;
 
+/** The four anchors `bodyRewrite.inject` can name, in reporting order. */
+const ANCHOR_KEYS = ['headStart', 'headEnd', 'bodyStart', 'bodyEnd'] as const;
+
+/**
+ * The budget all four `inject` anchors share: 64 KiB of UTF-8, the ceiling the
+ * admin panel already applies to a whole route definition (`MAX_DEFINITION_BYTES`
+ * in the panel's validate.ts). A route could not carry more than this anyway —
+ * the panel would refuse the document — so the schema states the bound the
+ * deployment actually enforces rather than a second, unrelated one.
+ */
+const MAX_INJECT_BYTES = 64 * 1024;
+
 const match = z
   .object({
     /** Matches the request host. `*.example.com` matches subdomains, not the apex. */
@@ -621,6 +633,70 @@ const bodyRewrite = z.object({
    * rather than silently standing in UTF-8 for the charset that was asked for.
    */
   fallbackCharset: z.string().min(1).optional(),
+  /**
+   * Markup inserted into HTML documents at fixed anchors of the structure:
+   * `headStart`/`headEnd` just inside `<head>`'s opening and just before its
+   * closing tag, `bodyStart`/`bodyEnd` likewise for `<body>`.
+   *
+   * Only responses that go through the HTML rewriter are touched — the
+   * `contentTypes` list still decides which those are. The markup is inserted
+   * verbatim and is deliberately *not* passed back through link rewriting: it
+   * was written by the operator, pointing where they meant it to point, and a
+   * second pass over it would be the runtime deciding otherwise.
+   *
+   * This is the XSS surface of body rewriting: whoever can edit a route can run
+   * script in every visitor's page. The panel flags it accordingly, which is the
+   * same posture as `upstreamHeaders` — permitted, but never quiet about it.
+   *
+   * Each anchor is a DOM position rather than a string match, so `</HEAD>`,
+   * minified output or a missing closing tag cannot defeat it the way a literal
+   * `replace` against `</head>` can — though a `headEnd`/`bodyEnd` anchor does
+   * need that closing tag to exist at all, and reports when it did not.
+   */
+  inject: z
+    .object({
+      /** Markup inserted just inside the opening `<head>`. */
+      headStart: z.string().min(1).optional(),
+      /** Markup inserted just before `</head>`. */
+      headEnd: z.string().min(1).optional(),
+      /** Markup inserted just inside the opening `<body>`. */
+      bodyStart: z.string().min(1).optional(),
+      /** Markup inserted just before `</body>`. */
+      bodyEnd: z.string().min(1).optional(),
+    })
+    .superRefine((inject, ctx) => {
+      // An empty block turns the rewriter on for nothing: the HTML path runs, the
+      // event reports a body that was rewritten, and no page changes. Refused
+      // rather than accepted as a switch with no effect.
+      if (ANCHOR_KEYS.every((key) => inject[key] === undefined)) {
+        ctx.addIssue({
+          code: 'custom',
+          path: [],
+          message: 'inject must set at least one anchor',
+        });
+        return;
+      }
+      // Four fields sharing one budget, so the bound lives on the sum and not on
+      // each field: four fields a quarter of the budget each would let a config
+      // quadruple it, and four separate numbers would be a limit on nothing.
+      //
+      // 64 KiB is the route document's own ceiling (MAX_DEFINITION_BYTES in the
+      // panel's validate.ts) rather than a second, invented number. A banner
+      // large enough to matter is a page someone maintains, and it lives in the
+      // same document that carries the rest of the route.
+      const bytes = ANCHOR_KEYS.reduce(
+        (total, key) => total + new TextEncoder().encode(inject[key] ?? '').length,
+        0,
+      );
+      if (bytes > MAX_INJECT_BYTES) {
+        ctx.addIssue({
+          code: 'custom',
+          path: [],
+          message: `inject totals ${bytes} bytes across its anchors; the shared budget is ${MAX_INJECT_BYTES}`,
+        });
+      }
+    })
+    .optional(),
 });
 
 /**

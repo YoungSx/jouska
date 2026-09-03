@@ -669,7 +669,8 @@ A route with no `limits` block behaves exactly as it did before the block existe
 
 `bodyRewrite` accepts `rewriteLinks` (default `true`), `contentTypes` (default
 `['text/html']`), `rewriteStyles` (default `true`), `replace` (literal
-`from`/`to` pairs), and `fallbackCharset`.
+`from`/`to` pairs), `fallbackCharset`, and `inject` (markup placed at anchors of
+the document structure; see Injecting markup below).
 
 HTML goes through the native `HTMLRewriter`, which rewrites URL-bearing
 attributes — including `srcset`, `imagesrcset`, `ping`, `cite`, `data` and
@@ -718,6 +719,53 @@ A 206 is a byte range, so changing its length would contradict the
 Whether any of this ran on a given response is not something to infer from the
 page: the `onProxy` event reports `bodyRewritten`, `rewriteSkipped` and
 `redirectRewritten`. See Observability below.
+
+### Injecting markup
+
+`inject` places operator markup at fixed anchors of the document structure:
+
+```json
+{
+  "bodyRewrite": {
+    "rewriteLinks": false,
+    "inject": {
+      "headEnd": "<script src=\"/_stats.js\" defer></script>",
+      "bodyStart": "<div class=\"mirror-banner\">Mirrored from the origin</div>"
+    }
+  }
+}
+```
+
+The four anchors are `headStart` and `headEnd` — just inside the opening
+`<head>` and just before its closing tag — and `bodyStart`/`bodyEnd` likewise
+for `<body>`. Because the insertion is a DOM position rather than a string
+match, `</HEAD>`, minified markup or a differently spelled tag cannot defeat it
+the way a literal `replace` against `</head>` can. Only responses that go
+through the HTML rewriter are touched; the `contentTypes` list decides which
+those are, and `inject` on its own is enough to put a response on that path.
+Setting `rewriteLinks: false` keeps the document's URLs untouched while the
+markup is still placed.
+
+The markup is inserted verbatim and deliberately not passed back through link
+rewriting: it was written by the operator, pointing where they meant it to
+point. This is measured behaviour of `HTMLRewriter`, not an exclusion this
+library implements — an element a handler inserts is not visited by the same
+rewriter's other handlers.
+
+A `headEnd` or `bodyEnd` anchor needs the closing tag to exist in the byte
+stream, so a page cut off before it loses that anchor — the same silence a
+literal `replace` against `</head>` suffered, with the difference that here it
+is reported. The `onProxy` event carries an `inject` promise that resolves to
+`{ landed, missed }` once the response has drained, naming which anchors were
+placed and which never met their tag. A document without a `<head>` or
+`<body>` reports every anchor as missed; the parser never creates those
+elements, so nothing is invented on the visitor's behalf.
+
+Inject is the XSS surface of body rewriting: whoever can edit a route can run
+script in every visitor's page, and the upstream CSP that might have blocked it
+has already been dropped. The admin panel flags it as high danger for that
+reason — permitted, but never quiet about it. The four anchors share one 64 KiB
+budget, the ceiling a route definition can carry anyway.
 
 ### WebSockets
 
@@ -1447,11 +1495,12 @@ app.use(
 Three more report what happened to the response body, which is what a mirrored
 site is judged by:
 
-| Field               | Meaning                                                                  |
-| ------------------- | ------------------------------------------------------------------------ |
-| `bodyRewritten`     | True when the body was handed to the rewriter.                           |
-| `rewriteSkipped`    | Why it was not. Absent when it was, and when nothing was proxied.        |
-| `redirectRewritten` | True when the `Location` sent to the client differs from the upstream's. |
+| Field               | Meaning                                                                                                                                                     |
+| ------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `bodyRewritten`     | True when the body was handed to the rewriter.                                                                                                              |
+| `rewriteSkipped`    | Why it was not. Absent when it was, and when nothing was proxied.                                                                                           |
+| `redirectRewritten` | True when the `Location` sent to the client differs from the upstream's.                                                                                    |
+| `inject`            | Promise of `{ landed, missed }` for the route's `inject` anchors. Absent when nothing was injected — no `inject` config, a skipped rewrite, or a cache hit. |
 
 `rewriteSkipped` names one of seven causes. Every one of them used to be silent,
 and that silence is the problem: a mirror whose links still point at the origin
@@ -1495,6 +1544,14 @@ All three are known, and reported, before the body is streamed. `bodyRewritten`
 therefore states that the transform was installed rather than that it finished:
 waiting for it to drain would hold the event — and any `waitUntil` queued from it —
 until the client had already read the response.
+
+`inject` is a promise for the same reason as `stream`: which anchors landed cannot
+be known until the document has drained, and the verdict is worth the wait only
+because a miss is otherwise silent. A missed `headEnd` or `bodyEnd` means the page
+was served without the markup the route asked for — the same "config written but
+not in effect" state `rewriteSkipped` exists to end. It never rejects, and it
+settles even when the client hangs up mid-document; whatever the rewriter had
+reached by then counts as landed, the rest as missed. See Injecting markup.
 
 The event carries no URLs beyond `path`. Reporting the address before and after
 rewriting would put whatever a query string held, tokens included, into every log

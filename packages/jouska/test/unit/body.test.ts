@@ -7,6 +7,8 @@ import {
   scan,
   textReplaceStream,
   textRewriteStream,
+  type InjectConfig,
+  type InjectReport,
 } from '../../src/internal/body';
 import { upstreamHostMatcher } from '../../src/internal/headers';
 
@@ -161,12 +163,16 @@ describe('resolveCharset', () => {
 
 describe('htmlRewriter', () => {
   const rewrite = async (html: string): Promise<string> => {
-    const res = htmlRewriter({
+    const { rewriter } = htmlRewriter({
       isUpstreamHost: upstreamHostMatcher('origin.test'),
       proxyHost: 'p.dev',
       base: 'https://origin.test/',
       rewriteStyles: true,
-    }).transform(new Response(html, { headers: { 'content-type': 'text/html' } }));
+      rewriteLinks: true,
+    });
+    const res = rewriter.transform(
+      new Response(html, { headers: { 'content-type': 'text/html' } }),
+    );
     return res.text();
   };
 
@@ -195,6 +201,159 @@ describe('htmlRewriter', () => {
     const out = await rewrite('<p>🎉🚀</p><a href="https://origin.test/e">e</a>');
     expect(out).toContain('🎉🚀');
     expect(out).toContain('https://p.dev/e');
+  });
+});
+
+describe('htmlRewriter inject', () => {
+  /**
+   * Runs the rewriter with an inject config and returns the output text plus the
+   * anchor verdict, which settles only once the document has drained.
+   */
+  const inject = async (
+    html: string,
+    config: InjectConfig,
+    links = true,
+  ): Promise<{ out: string; report?: InjectReport }> => {
+    const { rewriter, inject: stage } = htmlRewriter({
+      isUpstreamHost: upstreamHostMatcher('origin.test'),
+      proxyHost: 'p.dev',
+      base: 'https://origin.test/',
+      rewriteStyles: true,
+      rewriteLinks: links,
+      inject: config,
+    });
+    const res = rewriter.transform(
+      new Response(html, { headers: { 'content-type': 'text/html' } }),
+    );
+    const out =
+      stage === undefined
+        ? await res.text()
+        : await new Response(res.body!.pipeThrough(stage.stream)).text();
+    return stage === undefined ? { out } : { out, report: await stage.report };
+  };
+
+  it('lands all four anchors on a well-formed document', async () => {
+    const { out, report } = await inject(
+      '<html><head><title>t</title></head><body><p>hi</p></body></html>',
+      { headStart: '<A>', headEnd: '<B>', bodyStart: '<C>', bodyEnd: '<D>' },
+    );
+    expect(out).toBe(
+      '<html><head><A><title>t</title><B></head><body><C><p>hi</p><D></body></html>',
+    );
+    expect(report).toEqual({
+      landed: ['headStart', 'headEnd', 'bodyStart', 'bodyEnd'],
+      missed: [],
+    });
+  });
+
+  it('matches uppercase tags, which the parser treats like any other spelling', async () => {
+    const { out, report } = await inject('<HTML><HEAD></HEAD><BODY><P>hi</P></BODY></HTML>', {
+      headStart: '<A>',
+      bodyEnd: '<D>',
+    });
+    expect(out).toContain('<A>');
+    expect(out).toContain('<D>');
+    expect(report).toEqual({ landed: ['headStart', 'bodyEnd'], missed: [] });
+  });
+
+  it('lands the start-tag anchors even when the document never closes the element', async () => {
+    // Measured in workerd: `prepend` fires on the start tag, `onEndTag` needs the
+    // closing tag to exist. A page truncated by an origin keeps its banner and
+    // loses its footer — and the verdict is what makes that visible.
+    const { out, report } = await inject('<html><head><title>open', {
+      headStart: '<A>',
+      headEnd: '<B>',
+    });
+    expect(out).toContain('<A>');
+    expect(out).not.toContain('<B>');
+    expect(report).toEqual({ landed: ['headStart'], missed: ['headEnd'] });
+  });
+
+  it('reports every anchor as missed for a document that has neither head nor body', async () => {
+    // Measured in workerd: the parser never *creates* implied elements, so no
+    // head or body handler fires at all. The miss is a real outcome, not an
+    // error — the rewriter must not throw on a fragment.
+    const { out, report } = await inject('<p>fragment</p>', {
+      headStart: '<A>',
+      headEnd: '<B>',
+      bodyStart: '<C>',
+      bodyEnd: '<D>',
+    });
+    expect(out).toBe('<p>fragment</p>');
+    expect(report).toEqual({
+      landed: [],
+      missed: ['headStart', 'headEnd', 'bodyStart', 'bodyEnd'],
+    });
+  });
+
+  it('injects once per document even when an anchor is configured on both ends', async () => {
+    const { out } = await inject('<html><head></head><body></body></html>', {
+      headStart: '<A>',
+    });
+    expect(out).toBe('<html><head><A></head><body></body></html>');
+  });
+
+  it('leaves the injected markup out of the URL-attribute pass', async () => {
+    // Pinned after measuring in workerd: an element inserted by a handler is
+    // never visited by the same rewriter's other handlers, so the `.on('*')`
+    // pass cannot rewrite what the anchors put in. That is the contract, not a
+    // side effect — if a runtime ever starts re-visiting injected elements, this
+    // assertion is the one that catches it.
+    const { out, report } = await inject(
+      '<html><head></head><body><a href="https://origin.test/x">l</a></body></html>',
+      { headEnd: '<script src="https://origin.test/injected.js"></script>' },
+    );
+    // The document's own link is rewritten; the injected reference is not.
+    expect(out).toContain('href="https://p.dev/x"');
+    expect(out).toContain('<script src="https://origin.test/injected.js"></script>');
+    expect(report).toEqual({ landed: ['headEnd'], missed: [] });
+  });
+
+  it('injects into a document it is not otherwise rewriting', async () => {
+    // `rewriteLinks: false` reaches the HTML path for the injection alone, and
+    // the URL-attribute pass stays off with it.
+    const { out, report } = await inject(
+      '<html><head></head><body><a href="https://origin.test/x">l</a></body></html>',
+      { bodyStart: '<div class="mirror-banner">mirror</div>' },
+      false,
+    );
+    expect(out).toContain('href="https://origin.test/x"');
+    expect(out).toContain('<div class="mirror-banner">mirror</div>');
+    expect(report).toEqual({ landed: ['bodyStart'], missed: [] });
+  });
+
+  it('settles the verdict even when the client cancels the body', async () => {
+    const { rewriter, inject: stage } = htmlRewriter({
+      isUpstreamHost: upstreamHostMatcher('origin.test'),
+      proxyHost: 'p.dev',
+      base: 'https://origin.test/',
+      rewriteStyles: true,
+      rewriteLinks: true,
+      inject: { bodyStart: '<A>' },
+    });
+    const source = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode('<html><head></head><body><p>hi'));
+        // No close: the reader decides when this ends, as a hang-up does.
+      },
+      cancel() {
+        // Nothing to release; the source is memory.
+      },
+    });
+    const res = rewriter.transform(
+      new Response(source, { headers: { 'content-type': 'text/html' } }),
+    );
+    const reader = res.body!.pipeThrough(stage!.stream).getReader();
+    await reader.read();
+    await reader.cancel();
+    // A hang-up mid-document is exactly when "did it land" is worth asking, so
+    // the promise must settle there rather than hang forever. How far the
+    // rewriter got before the cancel is a scheduling detail, so the stable claim
+    // is the partition: every configured anchor is reported exactly once, as
+    // landed if the rewriter had reached it, missed otherwise.
+    const report = await stage!.report;
+    expect([...report.landed, ...report.missed]).toEqual(['bodyStart']);
+    expect(report.landed.some((a) => report.missed.includes(a))).toBe(false);
   });
 });
 
