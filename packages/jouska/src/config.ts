@@ -340,6 +340,72 @@ const headerName = z
   .regex(/^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/, 'expected a valid HTTP header name (RFC 9110 token)');
 
 /**
+ * What a split's weighted hash is taken over.
+ *
+ * The default is the caller's address, which is what the split has always
+ * hashed on. The content keys exist for the case that is not the question being
+ * asked: `path` and `url` pin a resource rather than a caller, so each upstream
+ * can hold its own cache of the same URL instead of every upstream caching
+ * everything, and the object forms branch on a header, cookie or query value —
+ * a tenant id that has no relationship to which address the caller sits behind.
+ *
+ * A content key that turns up absent on the request falls back to the address
+ * rather than to a constant: a constant would pile every such caller into one
+ * bucket, the exact flaw the addressless case already has. The fallback is
+ * reported in `Selection.scope` as `'ip'` — what was actually hashed, not what
+ * was configured — so a distribution skewing that way points at callers missing
+ * the key.
+ *
+ * Deliberately *not* a free-form variable expression like nginx's `hash $key`:
+ * every spelling here is a fixed field read, so the schema can name the key in
+ * a reviewable way and `Selection.scope` can report which one ran.
+ */
+const hashBy = z.discriminatedUnion('source', [
+  z.object({ source: z.literal('ip') }),
+  z.object({ source: z.literal('path') }),
+  z.object({ source: z.literal('url') }),
+  z.object({
+    source: z.literal('header'),
+    /** The header to read. Case-insensitive to `Headers.get` already. */
+    header: headerName,
+  }),
+  z.object({
+    source: z.literal('cookie'),
+    cookie: z
+      .string()
+      .min(1)
+      .regex(/^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/, 'expected a valid cookie name (RFC 6265 token)'),
+  }),
+  z.object({
+    source: z.literal('query'),
+    query: z
+      .string()
+      .min(1)
+      .refine(
+        (name) => !/[\s&=#]/.test(name),
+        'expected a query parameter name without whitespace, "&", "=" or "#" — those characters cannot survive in a name',
+      ),
+  }),
+]);
+
+/**
+ * How the hashed key is mapped onto the split's candidates.
+ *
+ * `modulo` is the original behaviour: the key's hash is taken modulo the sum of
+ * the weights, and the result walked down the weight space. Deterministic and
+ * proportional, but its bucket boundaries are functions of *all* the weights, so
+ * changing any one of them re-assigns every caller without a sticky cookie —
+ * adjusting a 95/5 canary to 9/1 re-shuffles the entire audience.
+ *
+ * `consistent` places each candidate on a virtual-node ring. Changing a weight
+ * (or removing a candidate) moves only the keys that land in the arc that
+ * candidate owned, and everything else keeps its assignment — the property a
+ * rolling canary adjustment needs. Costs a ring built once per configuration
+ * instead of one modulo.
+ */
+const hashType = z.enum(['modulo', 'consistent']);
+
+/**
  * Value operators for a `match` condition, shared by all three families.
  *
  * Deliberately three and not more. There is no regex: the route table is edited
@@ -1698,6 +1764,16 @@ const route = z.object({
   /** How a `trafficSplit` route keeps a caller on their assigned upstream. */
   stickyBy: stickyBy.optional(),
   /**
+   * What the split's weighted hash is taken over. Omitted means the caller's
+   * address, the behaviour this field was parameterised out of.
+   */
+  hashBy: hashBy.optional(),
+  /**
+   * How the hashed key is mapped onto candidates. Omitted means `modulo`, the
+   * behaviour this field was parameterised out of.
+   */
+  hashType: hashType.optional(),
+  /**
    * Permit a loopback, private or metadata upstream. Off by default: the
    * upstream is runtime-editable through KV, so an unconstrained value turns a
    * corrupted config into an internal network probe.
@@ -2243,6 +2319,46 @@ export const configSchema = z
           code: 'custom',
           path: ['routes', index, 'stickyBy'],
           message: 'stickyBy requires trafficSplit',
+        });
+      }
+      /**
+       * `hashBy` and `hashType` describe how a split maps requests onto its
+       * candidates, so without a split there is nothing to map — refused rather
+       * than silently ignored, like `failover` and `stickyBy` above.
+       */
+      if (entry.hashBy !== undefined && entry.trafficSplit === undefined) {
+        ctx.addIssue({
+          code: 'custom',
+          path: ['routes', index, 'hashBy'],
+          message: 'hashBy requires trafficSplit',
+        });
+      }
+      if (entry.hashType !== undefined && entry.trafficSplit === undefined) {
+        ctx.addIssue({
+          code: 'custom',
+          path: ['routes', index, 'hashType'],
+          message: 'hashType requires trafficSplit',
+        });
+      }
+      /**
+       * A content key and the sticky cookie are two contradictory intents:
+       * hashing on `path` wants "the same resource always lands on the same
+       * upstream", the cookie wants "the same caller always lands there". A
+       * route carrying both would run whichever the request satisfied first,
+       * leaving the other a silent no-op — so the contradiction is refused
+       * here rather than interpreted away downstream.
+       */
+      if (
+        entry.stickyBy === 'cookie' &&
+        entry.hashBy?.source !== undefined &&
+        entry.hashBy.source !== 'ip'
+      ) {
+        ctx.addIssue({
+          code: 'custom',
+          path: ['routes', index, 'hashBy'],
+          message:
+            'stickyBy: "cookie" pins a caller by who they are, which a content hash key ' +
+            'contradicts; hash on the caller address (drop hashBy) or drop stickyBy',
         });
       }
       if (entry.trafficSplit !== undefined) {

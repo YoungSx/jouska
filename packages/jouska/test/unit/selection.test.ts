@@ -14,6 +14,23 @@ const splitRoute = (weights: number[]): Route =>
 const req = (headers: Record<string, string> = {}): Request =>
   new Request('https://p.dev/x', { headers });
 
+/** A split route with a `hashBy` source and `hashType` set. */
+const hashRoute = (hashBy: Route['hashBy'], weights: number[]): Route =>
+  ({
+    ...splitRoute(weights),
+    hashBy,
+    hashType: 'consistent',
+  }) as unknown as Route;
+
+/** A consistent-hashed split naming its candidates explicitly. */
+const ringRoute = (upstreams: string[]): Route =>
+  ({
+    match: {},
+    trafficSplit: upstreams.map((upstream) => ({ upstream, weight: 1 })),
+    hashBy: { source: 'ip' },
+    hashType: 'consistent',
+  }) as unknown as Route;
+
 describe('selectUpstream', () => {
   it('returns the only candidate for a non-split route', () => {
     const route = { match: {}, upstream: 'a.test' } as unknown as Route;
@@ -89,6 +106,259 @@ describe('selectUpstream', () => {
       ],
     } as unknown as Route;
     expect(selectUpstream(route, req({ cookie: `${STICKY_COOKIE}=a.test` })).index).toBe(0);
+  });
+});
+
+describe('selectUpstream hash key (hashBy)', () => {
+  it('hashes on the configured header and ignores the address', () => {
+    const route = hashRoute({ source: 'header', header: 'x-tenant' }, [1, 1]);
+    const onA = selectUpstream(
+      route,
+      req({ 'x-tenant': 'acme', 'cf-connecting-ip': '203.0.113.1' }),
+    );
+    // A different caller address with the same header value must land together:
+    // the key is the tenant, not who is asking.
+    const onAagain = selectUpstream(
+      route,
+      req({ 'x-tenant': 'acme', 'cf-connecting-ip': '198.51.100.9' }),
+    );
+    expect(onA.index).toBe(onAagain.index);
+    expect(onA.scope).toBe('header');
+  });
+
+  it('falls back to the address when the header is absent, reported as ip', () => {
+    const route = hashRoute({ source: 'header', header: 'x-tenant' }, [1, 1]);
+    const selection = selectUpstream(route, req({ 'cf-connecting-ip': '203.0.113.7' }));
+    expect(selection.scope).toBe('ip');
+  });
+
+  it('reads a cookie value through the same reader the sticky branch uses', () => {
+    const route = hashRoute({ source: 'cookie', cookie: 'uid' }, [1, 1]);
+    const selection = selectUpstream(route, req({ cookie: 'other=1; uid=acme' }));
+    expect(selection.scope).toBe('cookie');
+    expect(selection.index).toBe(selectUpstream(route, req({ cookie: 'uid=acme' })).index);
+  });
+
+  it('falls back to the address when the cookie is absent, reported as ip', () => {
+    const route = hashRoute({ source: 'cookie', cookie: 'uid' }, [1, 1]);
+    expect(selectUpstream(route, req({ 'cf-connecting-ip': '203.0.113.7' })).scope).toBe('ip');
+  });
+
+  it('treats a present-but-empty value as a value, not an absence', () => {
+    const route = hashRoute({ source: 'header', header: 'x-tenant' }, [1, 1]);
+    const empty = selectUpstream(route, req({ 'x-tenant': '', 'cf-connecting-ip': '203.0.113.1' }));
+    expect(empty.scope).toBe('header');
+    expect(empty.index).toBe(
+      selectUpstream(route, req({ 'x-tenant': '', 'cf-connecting-ip': '198.51.100.1' })).index,
+    );
+  });
+
+  it('hashes on the pathname for source: path', () => {
+    const route = hashRoute({ source: 'path' }, [1, 1]);
+    const one = selectUpstream(
+      route,
+      new Request('https://p.dev/assets/a.png', { headers: { 'cf-connecting-ip': '203.0.113.1' } }),
+    );
+    expect(one.scope).toBe('path');
+    // The path decides, not the caller: the same URL from another address lands
+    // together with this one.
+    expect(one.index).toBe(
+      selectUpstream(
+        route,
+        new Request('https://p.dev/assets/a.png', {
+          headers: { 'cf-connecting-ip': '198.51.100.1' },
+        }),
+      ).index,
+    );
+    // And across a sweep of paths both candidates see traffic — two specific
+    // paths are free to collide on a two-way split, so a spread is the
+    // assertable claim.
+    const hits = new Set(
+      Array.from(
+        { length: 20 },
+        (_, i) =>
+          selectUpstream(
+            route,
+            new Request(`https://p.dev/assets/${i}.png`, {
+              headers: { 'cf-connecting-ip': '203.0.113.1' },
+            }),
+          ).index,
+      ),
+    );
+    expect(hits.size).toBe(2);
+  });
+
+  it('hashes on the whole URL for source: url, so the query discriminates', () => {
+    const route = hashRoute({ source: 'url' }, [1, 1]);
+    const selection = selectUpstream(
+      route,
+      new Request('https://p.dev/x?tenant=acme', {
+        headers: { 'cf-connecting-ip': '203.0.113.1' },
+      }),
+    );
+    expect(selection.scope).toBe('url');
+    expect(selection.index).toBe(
+      selectUpstream(
+        route,
+        new Request('https://p.dev/x?tenant=acme', {
+          headers: { 'cf-connecting-ip': '198.51.100.1' },
+        }),
+      ).index,
+    );
+  });
+
+  it('reads a named query parameter for source: query', () => {
+    const route = hashRoute({ source: 'query', query: 'tenant' }, [1, 1]);
+    const selection = selectUpstream(
+      route,
+      new Request('https://p.dev/x?tenant=acme&other=z', {
+        headers: { 'cf-connecting-ip': '203.0.113.1' },
+      }),
+    );
+    expect(selection.scope).toBe('query');
+    expect(selection.index).toBe(
+      selectUpstream(
+        route,
+        new Request('https://p.dev/x?other=z&tenant=acme', {
+          headers: { 'cf-connecting-ip': '198.51.100.1' },
+        }),
+      ).index,
+    );
+  });
+
+  it('keeps the addressless bucket at scope none for the default key', () => {
+    const route = splitRoute([1, 1]);
+    expect(selectUpstream(route, req()).scope).toBe('none');
+  });
+});
+
+describe('selectUpstream modulo mapping (the default, pinned)', () => {
+  /** The original behaviour, spelled out so a refactor cannot drift past it. */
+  const legacy = (routeId: string, weights: number[], key: string): number => {
+    const hash = (input: string): number => {
+      let h = 0x811c9dc5;
+      for (let i = 0; i < input.length; i += 1) {
+        h ^= input.charCodeAt(i);
+        h = Math.imul(h, 0x01000193);
+      }
+      return h >>> 0;
+    };
+    const total = weights.reduce((sum, w) => sum + w, 0);
+    let bucket = hash(`${routeId} ${key}`) % total;
+    for (let i = 0; i < weights.length; i += 1) {
+      bucket -= weights[i]!;
+      if (bucket < 0) {
+        return i;
+      }
+    }
+    throw new Error('unreachable');
+  };
+
+  it('matches the original modulo arithmetic bit for bit across a key sweep', () => {
+    const route = splitRoute([3, 2, 1]);
+    (route as unknown as { id: string }).id = 'canary';
+    const keys: string[] = [];
+    for (let i = 0; i < 300; i += 1) {
+      keys.push(`10.0.${Math.floor(i / 256)}.${i % 256}`);
+    }
+    keys.push(''); // the addressless caller
+    for (const key of keys) {
+      const request = key === '' ? req() : req({ 'cf-connecting-ip': key });
+      expect(selectUpstream(route, request).index).toBe(legacy('canary', [3, 2, 1], key));
+    }
+  });
+
+  it('is still modulo when hashType is named explicitly', () => {
+    const route = { ...splitRoute([1, 1]), hashType: 'modulo' } as unknown as Route;
+    (route as unknown as { id: string }).id = 'canary';
+    expect(selectUpstream(route, req({ 'cf-connecting-ip': '198.51.100.4' })).index).toBe(
+      legacy('canary', [1, 1], '198.51.100.4'),
+    );
+  });
+
+  it('routes every IP-less caller to one bucket rather than a random one', () => {
+    const route = splitRoute([1, 1]);
+    const first = selectUpstream(route, req());
+    for (let i = 0; i < 5; i += 1) {
+      expect(selectUpstream(route, req()).index).toBe(first.index);
+    }
+  });
+});
+
+describe('selectUpstream consistent ring', () => {
+  it('is deterministic and independent of the caller address for a content key', () => {
+    const route = hashRoute({ source: 'header', header: 'x-tenant' }, [1, 1]);
+    const first = selectUpstream(route, req({ 'x-tenant': 'acme' })).index;
+    for (let i = 0; i < 10; i += 1) {
+      expect(selectUpstream(route, req({ 'x-tenant': 'acme' })).index).toBe(first);
+    }
+  });
+
+  it('re-assigns only the removed candidate’s share, fixed key set', () => {
+    // The acceptance table: three equal candidates, remove the middle one, and
+    // every key that was on a or c keeps its assignment. The surviving route
+    // lists a and c — the ring is identified by authority, so dropping
+    // `b.test` leaves a's and c's points untouched, and deleting the middle
+    // *entry* must not re-derive the others' points from array position.
+    const three = ringRoute(['a.test', 'b.test', 'c.test']);
+    const two = ringRoute(['a.test', 'c.test']);
+    const keys = Array.from({ length: 60 }, (_, i) => `203.0.113.${i}`);
+    const before = keys.map((ip) => selectUpstream(three, req({ 'cf-connecting-ip': ip })).index);
+    // Sanity: the table really spans all three candidates, or the assertion
+    // below would be vacuous.
+    expect(new Set(before).size).toBe(3);
+
+    const after = keys.map((ip) => selectUpstream(two, req({ 'cf-connecting-ip': ip })).index);
+    keys.forEach((_, i) => {
+      if (before[i] === 1) {
+        expect([0, 1]).toContain(after[i]);
+      } else {
+        expect(after[i]).toBe(before[i] === 0 ? 0 : 1);
+      }
+    });
+  });
+
+  it('tracks the declared weights approximately, not exactly', () => {
+    // 160 virtual nodes per unit of weight gives a distribution that hovers
+    // around the declared share without landing on it — this is an
+    // approximation, and the bound here is the honest one.
+    const route = hashRoute({ source: 'ip' }, [3, 1]);
+    const counts = [0, 0];
+    for (let i = 0; i < 4000; i += 1) {
+      counts[
+        selectUpstream(
+          route,
+          req({ 'cf-connecting-ip': `10.0.${Math.floor(i / 256)}.${i % 256}` }),
+        )!.index
+      ] += 1;
+    }
+    const share = counts[0]! / (counts[0]! + counts[1]!);
+    expect(share).toBeGreaterThan(0.65);
+    expect(share).toBeLessThan(0.85);
+  });
+
+  it('caches the ring on the route object and rebuilds on a new one', () => {
+    const route = hashRoute({ source: 'ip' }, [1, 1]);
+    const keys = Array.from({ length: 40 }, (_, i) => `203.0.113.${i}`);
+    const first = keys.map((ip) => selectUpstream(route, req({ 'cf-connecting-ip': ip })).index);
+    // Same object: identical results, no rebuild.
+    const again = keys.map((ip) => selectUpstream(route, req({ 'cf-connecting-ip': ip })).index);
+    expect(again).toEqual(first);
+    // A fresh object with the same weights is a fresh ring build; same shape,
+    // because the ring is a function of the split alone.
+    const rebuilt = { ...route } as unknown as Route;
+    const fresh = keys.map((ip) => selectUpstream(rebuilt, req({ 'cf-connecting-ip': ip })).index);
+    expect(fresh).toEqual(first);
+  });
+
+  it('still honours the sticky cookie ahead of the ring', () => {
+    const route = hashRoute({ source: 'path' }, [1, 1]);
+    expect(
+      selectUpstream(
+        route,
+        new Request('https://p.dev/x', { headers: { cookie: `${STICKY_COOKIE}=b.test` } }),
+      ),
+    ).toEqual({ index: 1, reason: 'sticky', scope: 'none' });
   });
 });
 
