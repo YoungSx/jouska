@@ -16,6 +16,8 @@ import { BodyLimitError, forward } from '../internal/forward.js';
 import { checkRateLimit, corsMiddleware, ipMiddleware } from '../internal/guards.js';
 import { ledgerFor, outlierObserver } from '../internal/outlier.js';
 import { resolveRequestId, stampRequestId } from '../internal/request-id.js';
+import { limitsFor, limitsObserver } from '../internal/limits.js';
+import type { LimitsObserver } from '../internal/limits.js';
 import {
   applyResponseHeaderRules,
   rewriteResponseHeaders,
@@ -86,6 +88,15 @@ export type RewriteSkipReason =
   | 'streaming_media'
   | 'charset_undecodable'
   | 'served_from_cache';
+
+/**
+ * Why this request's walk made fewer attempts than `retries` would have allowed,
+ * or was refused at the in-flight gate. Absent when the route states no
+ * `limits`, and absent when nothing was held back — a degradation that cannot be
+ * told apart from `retries: 0` is the exact "config written but not in effect"
+ * silence this field exists to end.
+ */
+export type LimitReason = 'retry_budget' | 'in_flight';
 
 /** What happened to one proxied request. Passed to `onProxy`. */
 export interface ProxyEvent {
@@ -172,6 +183,25 @@ export interface ProxyEvent {
    * without an outlier policy.
    */
   ejected?: string[];
+  /**
+   * Why the route's `limits` held this request back, when it did.
+   *
+   * `retry_budget` — the route's retry share was spent, so the walk stopped
+   * after the attempts it had already made rather than taking the extras
+   * `retries` allowed. The request itself still went out, so `attempts` reads
+   * 1 or more; what is missing is the amplification, and only this field says
+   * the budget, not the upstream, is what cut it.
+   *
+   * `in_flight` — the route's in-flight fuse on the assigned upstream was full,
+   * so the request was refused with 503 before anything was forwarded and
+   * `attempts` reads 0. The one reason that means a client-visible refusal
+   * rather than a quieter walk.
+   *
+   * Absent on routes without a `limits` block, and whenever nothing was held
+   * back — so a field that is present is always an answer to "why did this
+   * request do less than its config said".
+   */
+  limitReason?: LimitReason;
   /**
    * How the response body stream ended, resolved once it has.
    *
@@ -318,6 +348,7 @@ export const jouska = ({
       ejected,
       stream,
       authMs,
+      limitReason,
     ): void => {
       if (onProxy === undefined) {
         return;
@@ -349,6 +380,7 @@ export const jouska = ({
           ...(ejected !== undefined && ejected.length > 0 ? { ejected } : {}),
           ...(stream !== undefined ? { stream } : {}),
           ...(authMs !== undefined ? { authDurationMs: authMs } : {}),
+          ...(limitReason !== undefined ? { limitReason } : {}),
         });
       } catch {
         // Observability must not be able to fail a request.
@@ -513,6 +545,16 @@ export const jouska = ({
       return answer;
     }
 
+    // The in-flight fuse, when the route has one, is checked inside
+    // `proxyRequest` — after the cache, so a hit is never turned into a 503 by
+    // a saturated origin, and before the walk, so a refusal costs nothing but
+    // the lookup. A `respond` route never reaches it: the answer above left
+    // before the walk existed, so the fuse has nothing to count.
+    const limits =
+      route.limits === undefined
+        ? undefined
+        : limitsObserver(limitsFor(routeId(route, match.index), route.limits));
+
     // CORS wraps the forward so preflights are answered without a round trip
     // and the response carries the negotiated headers.
     if (route.cors !== undefined) {
@@ -528,6 +570,7 @@ export const jouska = ({
           selection,
           authMs,
           authHeaders,
+          limits,
         );
       });
       // A preflight is answered by the CORS middleware itself — the one
@@ -547,6 +590,7 @@ export const jouska = ({
       selection,
       authMs,
       authHeaders,
+      limits,
     );
   };
 };
@@ -618,6 +662,7 @@ type Report = (
   ejected?: string[],
   stream?: Promise<StreamReport>,
   authMs?: number,
+  limitReason?: LimitReason,
 ) => void;
 
 /**
@@ -704,6 +749,7 @@ const proxyRequest = async (
   selection?: Selection,
   authMs?: number,
   authHeaders?: Headers,
+  limits?: LimitsObserver,
 ): Promise<Response> => {
   const { route } = match;
   // The bucket this caller was assigned to, as an authority. The cache key
@@ -868,17 +914,58 @@ const proxyRequest = async (
 
   let produced: Produced;
   try {
-    produced = await produceResponse({
-      match,
-      c,
-      url,
-      fetchImpl,
-      detached: false,
-      cacheState,
-      selection,
-      authHeaders,
-      requestId,
-    });
+    // The seat is taken as late as this — a hit or a joined flight above never
+    // reaches the upstream, so it never holds a seat — and released by the
+    // `finally` below, which is the only structure that covers every exit: a
+    // thrown walk, a client hang-up, a deadline, and the normal return alike.
+    // A seat leaked here is a fuse that never reopens, so this is the one
+    // placement that cannot be traded for a tidier-looking one.
+    if (limits !== undefined && !limits.tryEnter(assigned)) {
+      // Refused rather than queued: queueing would move the pile-up from the
+      // origin to the proxy, where the requests still cost the origin the
+      // moment a seat frees. 503 is the honest status — the service is
+      // temporarily unable to take this request.
+      report(
+        503,
+        'refused',
+        0,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        'in_flight',
+      );
+      settleFlight?.();
+      settleFlight = undefined;
+      // Stamped here rather than through the caller's `stamped` closure, which
+      // is out of scope: every response jouska builds itself carries the ID,
+      // so the 503 in the client's hand matches the `refused` line in the log.
+      // Built directly: `c.json` types only admit registered statuses.
+      const response = c.json({ error: 'in_flight_limit', upstream: assigned }, 503);
+      stampRequestId(response.headers, requestId);
+      return response;
+    }
+    try {
+      produced = await produceResponse({
+        match,
+        c,
+        url,
+        fetchImpl,
+        detached: false,
+        cacheState,
+        selection,
+        authHeaders,
+        requestId,
+        limits,
+      });
+    } finally {
+      // The seat names the response headers' arrival, not the body's: a stream
+      // that runs for minutes holds nothing after this. Released on every
+      // path, including the throw that `produceResponse` re-raises below.
+      limits?.leave();
+    }
   } catch (error) {
     // The fill died before it could decide anything about the cache: release
     // the waiters so they fetch on their own rather than hang until their bound.
@@ -934,6 +1021,7 @@ const proxyRequest = async (
     produced.ejected,
     produced.stream,
     authMs,
+    produced.limitReason,
   );
 
   const cacheableFill =
@@ -999,6 +1087,13 @@ interface ProduceOptions {
   authHeaders?: Headers;
   /** The request ID, carried onto the upstream request and the response. */
   requestId: string;
+  /**
+   * The route's retry budget, when it has one. Absent on the background-refresh
+   * path, which is bounded by `refreshOnce` already and must not be refused by
+   * a fuse the served request was admitted under — the refresh exists because
+   * that request asked for one.
+   */
+  limits?: LimitsObserver;
 }
 
 /** One trip to the upstream and the rewriting of what comes back. */
@@ -1013,6 +1108,12 @@ interface Produced {
    * walk — the skipping happened before the walk, not inside it.
    */
   ejected?: string[];
+  /**
+   * Why the retry budget held this walk back, when it did. Read from the
+   * observer after the walk — whether it returned or threw — so the fact is
+   * reported even when the budget cut the walk short mid-failure.
+   */
+  limitReason?: LimitReason;
   /**
    * The candidate that answered, as an authority — or, on a failure, the last
    * one tried. Rewrites and reports follow it: crediting the primary would
@@ -1053,6 +1154,7 @@ const produceResponse = async ({
   selection,
   authHeaders,
   requestId,
+  limits,
 }: ProduceOptions): Promise<Produced> => {
   const { route } = match;
   // The per-request view over the route's failure memory. Filtered targets
@@ -1088,6 +1190,7 @@ const produceResponse = async ({
       fetchImpl: counting,
       detached,
       outlier,
+      limits,
     });
   } catch (error) {
     // Attributed to the last candidate actually tried: with no response there is
@@ -1107,6 +1210,7 @@ const produceResponse = async ({
       ...(outlier !== undefined && outlier.ejected().length > 0
         ? { ejected: outlier.ejected() }
         : {}),
+      ...(limits?.retryDenied() === true ? { limitReason: 'retry_budget' as const } : {}),
     };
   }
 
@@ -1125,6 +1229,7 @@ const produceResponse = async ({
       ...(outlier !== undefined && outlier.ejected().length > 0
         ? { ejected: outlier.ejected() }
         : {}),
+      ...(limits?.retryDenied() === true ? { limitReason: 'retry_budget' as const } : {}),
     };
   }
 
@@ -1205,6 +1310,7 @@ const produceResponse = async ({
     ...(outlier !== undefined && outlier.ejected().length > 0
       ? { ejected: outlier.ejected() }
       : {}),
+    ...(limits?.retryDenied() === true ? { limitReason: 'retry_budget' as const } : {}),
     ...(watch !== undefined ? { stream: watch.report } : {}),
     rewrite: {
       bodyRewritten: decision.rewrite,
