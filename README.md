@@ -65,50 +65,49 @@ Routes are evaluated in order and the first match wins.
 
 ## Route options
 
-| Option                 | Default   | Meaning                                                                           |
-| ---------------------- | --------- | --------------------------------------------------------------------------------- |
-| `id`                   | —         | Stable handle. Used for `byId` merges and rate-limit buckets.                     |
-| `match.host`           | —         | Host to match. `*.example.com` matches subdomains, not the apex.                  |
-| `match.path`           | —         | Path prefix, matched on segment boundaries.                                       |
-| `match.methods`        | all       | Restrict the route to specific methods.                                           |
-| `match.headers`        | `[]`      | Request-header conditions; see Match conditions below.                            |
-| `match.query`          | `[]`      | Query-parameter conditions; see Match conditions below.                           |
-| `match.cookies`        | `[]`      | Cookie conditions; see Match conditions below.                                    |
-| `upstream`             | —         | `host`, `host:port` or `host/base/path`. No scheme.                               |
-| `upstreams`            | —         | Ordered candidates for failover; see Failover and traffic splitting.              |
-| `trafficSplit`         | —         | Weighted split entries; see Failover and traffic splitting.                       |
-| `respond`              | —         | Answer at the edge instead of forwarding; see Edge answers.                       |
-| `errorPages`           | —         | Replace the payload of an upstream failure; see Edge answers.                     |
-| `failover`             | see text  | Switch policy and attempt cap for the multi-candidate forms.                      |
-| `outlier`              | see text  | Passive ejection of failing candidates; see Outlier ejection.                     |
-| `stickyBy`             | —         | `'cookie'`: split-assigned callers keep their upstream via a cookie.              |
-| `hashBy`               | caller IP | What the split's weighted hash is taken over; see Failover and traffic splitting. |
-| `hashType`             | `modulo`  | How the hashed key maps onto candidates: `modulo`, or a `consistent` ring.        |
-| `scheme`               | `https`   | Scheme used to reach the upstream.                                                |
-| `allowPrivateUpstream` | off       | Permit a loopback, private or metadata upstream.                                  |
-| `stripPrefix`          | `false`   | Remove the matched prefix before forwarding.                                      |
-| `timeoutMs`            | `10000`   | Per-attempt deadline for **response headers**. Max 120s.                          |
-| `totalTimeoutMs`       | `30000`   | Ceiling on all attempts to headers, including backoff. Max 300s.                  |
-| `firstChunkTimeoutMs`  | `60000`   | Wait for the body's first byte after headers arrive.                              |
-| `streamIdleTimeoutMs`  | `60000`   | Longest silence between body bytes once it has started.                           |
-| `retries`              | `0`       | Extra attempts. Only idempotent methods retry.                                    |
-| `retryBackoffMs`       | `100`     | Delay before the first retry, doubled for each subsequent one.                    |
-| `rewriteHeaders`       | `true`    | Rewrite `Location`, `Refresh` and `Set-Cookie` onto the proxy.                    |
-| `manualRedirect`       | `true`    | Ask for the redirect instead of following it upstream.                            |
-| `websocket`            | `true`    | Forward WebSocket upgrades.                                                       |
-| `bodyRewrite`          | off       | Streaming body rewriting; see below.                                              |
-| `blockCountries`       | `[]`      | ISO 3166-1 alpha-2 codes refused with 403.                                        |
-| `allowCountries`       | —         | When set, only these are admitted. Fails closed on an unknown origin.             |
-| `upstreamHeaders`      | `{}`      | Alias for `requestHeaders.set`; see Header rules.                                 |
-| `requestHeaders`       | off       | Headers to write or delete on the way upstream; see Header rules.                 |
-| `responseHeaders`      | off       | Headers to write or delete on the way back; see Header rules.                     |
-| `cache`                | off       | Upstream response caching; see Response caching.                                  |
-| `requestPolicy`        | off       | Method allow-list and body size cap; see Guards.                                  |
-| `cors`                 | off       | CORS handling; see Guards.                                                        |
-| `ip`                   | off       | IP allow/deny rules; see Guards.                                                  |
-| `rateLimit`            | off       | Rate limiting via the native binding; see Guards.                                 |
-| `access`               | off       | Route-level identity checks (Cloudflare Access JWT, API keys); see Guards.        |
-| `requestId`            | off       | `trustInbound`: adopt the caller's `x-request-id`; see Request ID.                |
+| `id` | — | Stable handle. Used for `byId` merges and rate-limit buckets. |
+| `match.host` | — | Host to match. `*.example.com` matches subdomains, not the apex. |
+| `match.path` | — | Path prefix, matched on segment boundaries. |
+| `match.methods` | all | Restrict the route to specific methods. |
+| `match.headers` | `[]` | Request-header conditions; see Match conditions below. |
+| `match.query` | `[]` | Query-parameter conditions; see Match conditions below. |
+| `match.cookies` | `[]` | Cookie conditions; see Match conditions below. |
+| `upstream` | — | `host`, `host:port` or `host/base/path`. No scheme. |
+| `upstreams` | — | Ordered candidates for failover; see Failover and traffic splitting. |
+| `trafficSplit` | — | Weighted split entries; see Failover and traffic splitting. |
+| `respond` | — | Answer at the edge instead of forwarding; see Edge answers. |
+| `errorPages` | — | Replace the payload of an upstream failure; see Edge answers. |
+| `failover` | see text | Switch policy and attempt cap for the multi-candidate forms. |
+| `outlier` | see text | Passive ejection of failing candidates; see Outlier ejection. |
+| `stickyBy` | — | `'cookie'`: split-assigned callers keep their upstream via a cookie. |
+| `hashBy` | caller IP | What the split's weighted hash is taken over; see Failover and traffic splitting. |
+| `hashType` | `modulo` | How the hashed key maps onto candidates: `modulo`, or a `consistent` ring. |
+| `scheme` | `https` | Scheme used to reach the upstream. |
+| `allowPrivateUpstream` | off | Permit a loopback, private or metadata upstream. |
+| `stripPrefix` | `false` | Remove the matched prefix before forwarding. |
+| `timeoutMs` | `10000` | Per-attempt deadline for **response headers**. Max 120s. |
+| `totalTimeoutMs` | `30000` | Ceiling on all attempts to headers, including backoff. Max 300s. |
+| `firstChunkTimeoutMs` | `60000` | Wait for the body's first byte after headers arrive. |
+| `streamIdleTimeoutMs` | `60000` | Longest silence between body bytes once it has started. |
+| `retries` | `0` | Extra attempts. Only idempotent methods retry. |
+| `retryBackoffMs` | `100` | Delay before the first retry, doubled for each subsequent one. |
+| `rewriteHeaders` | `true` | Rewrite `Location`, `Refresh` and `Set-Cookie` onto the proxy. |
+| `manualRedirect` | `true` | Ask for the redirect instead of following it upstream. |
+| `websocket` | `true` | Forward WebSocket upgrades. |
+| `bodyRewrite` | off | Streaming body rewriting; see below. |
+| `blockCountries` | `[]` | ISO 3166-1 alpha-2 codes refused with 403. |
+| `allowCountries` | — | When set, only these are admitted. Fails closed on an unknown origin. |
+| `upstreamHeaders` | `{}` | Alias for `requestHeaders.set`; see Header rules. |
+| `requestHeaders` | off | Headers to write or delete on the way upstream; see Header rules. |
+| `responseHeaders` | off | Headers to write or delete on the way back; see Header rules. |
+| `cache` | off | Upstream response caching; see Response caching. |
+| `requestPolicy` | off | Method allow-list and body size cap; see Guards. |
+| `cors` | off | CORS handling; see Guards. |
+| `ip` | off | IP allow/deny rules; see Guards. |
+| `rateLimit` | off | Rate limiting via the native binding; see Guards. |
+| `access` | off | Route-level identity checks (Cloudflare Access JWT, API keys); see Guards. |
+| `requestId` | off | `trustInbound`: adopt the caller's `x-request-id`; see Request ID. |
+| `limits` | off | Cross-request fuses — a retry budget and an in-flight cap; see Load limits. |
 
 A `defaults` block at the top of the table supplies any of the behavioural
 fields for every route that does not state its own, so a table of twenty routes
@@ -554,6 +553,57 @@ is bounded by `ejectSeconds`.
 The `onProxy` event carries `ejected` — the candidates this request declined to
 try — which answers "why did this request go straight to B" for an operator
 watching a healthy backup answer first.
+
+### Load limits
+
+`retries` and `totalTimeoutMs` are per-request numbers: they bound what one request
+may do, not what a thousand of them do together. The `limits` block is the
+cross-request half — two fuses over how much load one route may add as a whole:
+
+```ts
+{
+  match: { path: '/api/' },
+  upstream: 'api.example.com',
+  retries: 2,
+  limits: { retryRatio: 0.2, maxInFlight: 100 },
+}
+```
+
+`retryRatio` (0–1) caps the share of recent requests this route may spend on
+retries. When the retries actually performed exceed that share of the requests
+seen over the last couple of seconds, further walks are denied their extra
+attempts — the first attempt still runs, so no request is refused, and the walk
+ends at its real failure instead of amplifying it. This is Envoy's `retry_budget`
+in the same shape: 0.2 changes nothing on a healthy route, and on a failing one
+it stops the route from tripling the pressure the origin is already under.
+
+`maxInFlight` caps the concurrent requests the route may hold against one
+upstream. When the count is reached, a further request is answered with `503` at
+once — `attempts: 0`, no queueing, no forwarding — because queueing would only
+move the pile-up from the origin to the proxy, where the requests still cost the
+origin the moment a seat frees. A seat is held until response headers come back,
+not for the body, so a stream that runs for minutes does not hold its seat while
+it streams. The check runs after the response cache: a hit never touches the
+upstream, so it never takes a seat, and a saturated origin cannot turn a cache
+hit into a 503.
+
+**Both counters are per isolate — a fuse, not a quota.** Nothing coordinates
+across isolates, and Cloudflare does not promise how many isolates a route's
+traffic lands on; a hundred isolates each admitting 100 can put ten thousand
+requests on the origin. Size `maxInFlight` as a single-instance backstop against
+one isolate's own runaway, never as the origin's global connection budget, and
+say it that way in runbooks. The same per-isolate reading applies to
+`retryRatio`: it bounds one instance's contribution, not the fleet's.
+
+The window is a pair of one-second counting buckets, not a per-request timestamp
+list — the memory is four numbers whatever the traffic, where a sliding window
+would allocate per request and scan on every verdict. A ratio sitting exactly on
+the limit is the operator's stated tolerance, not a breach, and the verdict is
+read before a retry is performed, so a `0` ratio still lets one retry through per
+window and refuses the next; the imprecision runs toward more retries, never
+fewer. Omit either field to leave that dimension unbounded.
+
+A route with no `limits` block behaves exactly as it did before the block existed.
 
 ### Body rewriting
 
@@ -1316,21 +1366,22 @@ app.use(
 );
 ```
 
-| Field        | Meaning                                                                                                                                                                                                                                                                                                                                                 |
-| ------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `routeId`    | The matched route, labelled the way rate-limit buckets are.                                                                                                                                                                                                                                                                                             |
-| `requestId`  | The ID on `x-request-id` this request was served under — the same value the client's response and the upstream request carried.                                                                                                                                                                                                                         |
-| `upstream`   | Authority the request was sent to. Empty on an edge answer — there is no upstream to blame.                                                                                                                                                                                                                                                             |
-| `method`     | Request method.                                                                                                                                                                                                                                                                                                                                         |
-| `path`       | Path as the client wrote it, before normalisation.                                                                                                                                                                                                                                                                                                      |
-| `status`     | Status returned to the client, including jouska's own 4xx and 5xx.                                                                                                                                                                                                                                                                                      |
-| `durationMs` | Wall-clock milliseconds from match to response.                                                                                                                                                                                                                                                                                                         |
-| `attempts`   | Upstream attempts, including the first — so a retry is visible.                                                                                                                                                                                                                                                                                         |
-| `outcome`    | `ok`, `refused`, `timeout`, `unreachable`, `client_closed`, or `responded` — an edge answer from a `respond` route, which produced a response without one upstream attempt.                                                                                                                                                                             |
-| `cache`      | `hit`, `stale`, `miss`, `bypass` or `stale_error`; absent without a `cache` block.                                                                                                                                                                                                                                                                      |
-| `selection`  | How a split route picked its upstream — present only on `trafficSplit` routes, with the winning entry's `index`, whether a `sticky` cookie or the `weighted` hash decided, and the `scope` the weighted hash was taken over: `ip` (the default and any fallback), `path`, `url`, `header`, `cookie`, `query`, or `none` when there was nothing to hash. |
-| `ejected`    | Candidates the outlier memory removed from the walk before the first attempt. Absent when nothing was skipped, and on routes without an `outlier` policy.                                                                                                                                                                                               |
-| `stream`     | Promise of how the body stream ended, resolved once it has. Absent when nothing streamed from an upstream — a refusal, a 101, a bodyless response, a cache hit.                                                                                                                                                                                         |
+| Field         | Meaning                                                                                                                                                                                                                                                                                                                                                 |
+| ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `routeId`     | The matched route, labelled the way rate-limit buckets are.                                                                                                                                                                                                                                                                                             |
+| `requestId`   | The ID on `x-request-id` this request was served under — the same value the client's response and the upstream request carried.                                                                                                                                                                                                                         |
+| `upstream`    | Authority the request was sent to. Empty on an edge answer — there is no upstream to blame.                                                                                                                                                                                                                                                             |
+| `method`      | Request method.                                                                                                                                                                                                                                                                                                                                         |
+| `path`        | Path as the client wrote it, before normalisation.                                                                                                                                                                                                                                                                                                      |
+| `status`      | Status returned to the client, including jouska's own 4xx and 5xx.                                                                                                                                                                                                                                                                                      |
+| `durationMs`  | Wall-clock milliseconds from match to response.                                                                                                                                                                                                                                                                                                         |
+| `attempts`    | Upstream attempts, including the first — so a retry is visible.                                                                                                                                                                                                                                                                                         |
+| `outcome`     | `ok`, `refused`, `timeout`, `unreachable`, `client_closed`, or `responded` — an edge answer from a `respond` route, which produced a response without one upstream attempt.                                                                                                                                                                             |
+| `cache`       | `hit`, `stale`, `miss`, `bypass` or `stale_error`; absent without a `cache` block.                                                                                                                                                                                                                                                                      |
+| `selection`   | How a split route picked its upstream — present only on `trafficSplit` routes, with the winning entry's `index`, whether a `sticky` cookie or the `weighted` hash decided, and the `scope` the weighted hash was taken over: `ip` (the default and any fallback), `path`, `url`, `header`, `cookie`, `query`, or `none` when there was nothing to hash. |
+| `ejected`     | Candidates the outlier memory removed from the walk before the first attempt. Absent when nothing was skipped, and on routes without an `outlier` policy.                                                                                                                                                                                               |
+| `stream`      | Promise of how the body stream ended, resolved once it has. Absent when nothing streamed from an upstream — a refusal, a 101, a bodyless response, a cache hit.                                                                                                                                                                                         |
+| `limitReason` | Why a `limits` fuse held this request back: `retry_budget` when a walk was denied its extra attempts, `in_flight` when it was refused at the cap with `attempts: 0`. Absent when nothing was held back, and on routes without a `limits` block.                                                                                                         |
 
 Three more report what happened to the response body, which is what a mirrored
 site is judged by:
@@ -1395,7 +1446,11 @@ something the host already has. Errors thrown from it are swallowed —
 observability must not be able to fail a request.
 
 A guard refusal is reported with `attempts: 0`, so the share of traffic turned
-away before costing a round trip is visible without inferring it.
+away before costing a round trip is visible without inferring it. The `limits`
+fuses report the same way, and name themselves: `limitReason` says `retry_budget`
+or `in_flight` on every request a fuse held back, and is absent — not false — on a
+healthy one, so a limited route reads exactly as an unlimited one did before the
+block existed.
 
 ### Reference receivers
 

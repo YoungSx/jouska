@@ -282,6 +282,74 @@ const outlier = z.object({
 
 const DEFAULT_OUTLIER: z.output<typeof outlier> = outlier.parse({});
 
+/**
+ * Isolate-level fuses over how much load one route may add.
+ *
+ * `retries` and `totalTimeoutMs` are per-request numbers: they bound what one
+ * request may do, not what a thousand of them do together. On a route taking a
+ * thousand concurrent requests, `retries: 2` is up to three thousand attempts
+ * against an upstream that is already struggling — the classic way a proxy
+ * turns a slow origin into a dead one. These two fields are the cross-request
+ * half: a ceiling on the retries the route performs as a whole, and a ceiling
+ * on how much of the origin's attention one route may hold at once.
+ *
+ * Both are counted per isolate, like `outlier` — a fuse, not a quota. Nothing
+ * here coordinates across isolates, and the docs on each field say what that
+ * means for sizing, because an operator who reads them as global limits will
+ * compute capacity wrong in exactly the dangerous direction.
+ */
+const limits = z.object({
+  /**
+   * The share of recent requests this route may spend on retries.
+   *
+   * Retries are load. When the retries actually performed exceed this share of
+   * the requests seen over the last couple of seconds, further walks are denied
+   * their extra attempts — the first attempt still runs, so no request is
+   * refused, and the walk ends at its real failure instead of amplifying it.
+   * This is Envoy's `retry_budget` in the same shape: a 0.2 budget on a healthy
+   * route changes nothing, and on a failing one it stops the route from
+   * tripling the pressure the origin is already under.
+   *
+   * The window is a pair of one-second counting buckets, not a per-request
+   * timestamp list — the memory is four numbers whatever the traffic, where a
+   * sliding window would allocate per request and scan on every verdict.
+   * Counted per isolate: it bounds one instance's contribution, not the fleet's.
+   *
+   * The verdict is read before a retry is performed, so a `0` ratio still lets
+   * one retry through per window and refuses the next; the imprecision runs
+   * toward more retries, never fewer. Omit the field to leave `retries`
+   * unbounded.
+   */
+  retryRatio: z.number().min(0).max(1).optional(),
+  /**
+   * Concurrent requests this route may hold against one upstream, per isolate.
+   *
+   * When the count is reached, a further request is answered with 503 at once
+   * rather than queued or forwarded. Traefik's `InFlightReq` with `limit`
+   * capacity and no queue: the fuse exists to keep a struggling upstream from
+   * being pushed over, and queueing would only move the pile-up from the origin
+   * to the proxy, where the requests still cost the origin the moment a seat
+   * frees.
+   *
+   * **Per isolate, deliberately — say it that way in runbooks.** A hundred
+   * isolates each admitting 100 can put ten thousand requests on the origin.
+   * Size the number as a single-instance backstop against one isolate's own
+   * runaway, never as the origin's global connection budget; nothing here
+   * coordinates across isolates, and Cloudflare does not promise how many
+   * isolates a route's traffic lands on.
+   *
+   * A seat is held from the check until response headers come back — not for
+   * the body, so a stream that runs for minutes does not hold its seat while it
+   * streams. The check runs after the response cache: a hit never touches the
+   * upstream, so it never takes a seat, and a saturated origin cannot turn a
+   * cache hit into a 503.
+   *
+   * The ceiling exists to catch a mistyped unit (`1e9`), not to name a platform
+   * limit: the useful values are three digits at most.
+   */
+  maxInFlight: z.number().int().min(1).max(10_000).optional(),
+});
+
 /** One weighted candidate of a `trafficSplit`. */
 const trafficSplitEntry = z.object({
   upstream,
@@ -1805,6 +1873,14 @@ const route = z.object({
    * nothing to skip; candidate routes are normalised to always carry one.
    */
   outlier: outlier.optional(),
+  /**
+   * Isolate-level fuses over the load this route may add: a ceiling on the
+   * share of requests spent on retries, and a ceiling on concurrent in-flight
+   * requests per upstream. Optional because both default to off — a route that
+   * states no `limits` behaves exactly as it did before the block existed.
+   * See {@link limits}.
+   */
+  limits: limits.optional(),
   /** How a `trafficSplit` route keeps a caller on their assigned upstream. */
   stickyBy: stickyBy.optional(),
   /**

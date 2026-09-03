@@ -1,5 +1,6 @@
 import type { Route } from '../config.js';
 import { HOP_BY_HOP, stripConnectionNamed } from './hop.js';
+import type { LimitsObserver } from './limits.js';
 import type { OutlierObserver } from './outlier.js';
 import { REQUEST_ID_HEADER } from './request-id.js';
 
@@ -197,6 +198,13 @@ export interface ForwardOptions {
    * single-upstream routes, where there is no backup to prefer.
    */
   outlier?: OutlierObserver;
+  /**
+   * Cross-request retry budget, when the route has one. Consulted before every
+   * attempt at an upstream this walk has already tried, and told of every such
+   * attempt actually made — the ledger lives with the caller, this file stays
+   * stateless. Absent when the route states no `limits`.
+   */
+  limits?: LimitsObserver;
 }
 
 export interface ForwardResult {
@@ -292,6 +300,15 @@ const attemptPlan = (route: Route, targets: readonly URL[], walkable: boolean): 
  * removed from the plan before the walk, and every counted failure and every
  * healthy answer is reported back to it — the memory lives with the caller,
  * this file stays stateless.
+ *
+ * When a `limits` observer is supplied, every attempt at a candidate the walk
+ * has already tried is a retry, and the budget is consulted before each one.
+ * Checked per attempt rather than once up front: a walk that starts inside its
+ * budget can drain the rest of it with its own retries, and the verdict has to
+ * reflect what the window holds when the attempt is actually due. The budget
+ * only ever says "stop after this" — the first attempt at every candidate is
+ * never gated, so a spent budget degrades the walk to one attempt, never to a
+ * refusal.
  */
 export const forward = async ({
   route,
@@ -303,6 +320,7 @@ export const forward = async ({
   fetchImpl,
   detached = false,
   outlier,
+  limits,
 }: ForwardOptions): Promise<ForwardResult> => {
   const fetcher = fetchImpl ?? fetch;
   const upgrade = route.websocket && isWebSocketUpgrade(request);
@@ -333,6 +351,14 @@ export const forward = async ({
   const switching = walkable && targets.length > 1;
 
   const startedAt = Date.now();
+  // The hosts this walk has already tried, so a return to one of them reads as
+  // the retry the retry budget governs — including a non-adjacent return, which
+  // the backoff check below cannot see because it only compares neighbours.
+  const attempted = new Set<string>();
+  // This request counts toward the retry budget whether or not it ever needs a
+  // retry: the ratio is retries over requests, and only the walked ones belong
+  // in the denominator.
+  limits?.onRequest();
   const remaining = (): number => route.totalTimeoutMs - (Date.now() - startedAt);
   let lastError: unknown;
   let held: ForwardResult | undefined;
@@ -361,6 +387,19 @@ export const forward = async ({
 
   for (let attempt = 0; attempt < live.length; attempt += 1) {
     const target = live[attempt]!;
+    // An attempt at a candidate this walk has already tried is the retry the
+    // budget governs. Gated before the backoff, so a spent budget neither waits
+    // nor spends the attempt; the walk then ends at the failure it already has,
+    // which is what the client would have seen with `retries: 0`.
+    let retrying = false;
+    if (attempted.has(target.host)) {
+      retrying = true;
+      if (limits !== undefined && !limits.retryAllowed()) {
+        break;
+      }
+    } else {
+      attempted.add(target.host);
+    }
     if (attempt > 0 && target.host === live[attempt - 1]!.host) {
       // Exponential backoff, and only when the previous attempt hit the same
       // origin: that is the case where "whatever failed is still failing" was
@@ -375,6 +414,13 @@ export const forward = async ({
         // oxlint-disable-next-line no-await-in-loop
         await sleep(delay);
       }
+    }
+
+    if (retrying) {
+      // Counted only when the attempt is actually due, after the backoff and
+      // the remaining budget have admitted it: a walk that stops here never
+      // performed the retry it planned.
+      limits?.onRetry();
     }
 
     const budget = Math.min(route.timeoutMs, remaining());
