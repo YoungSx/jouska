@@ -106,6 +106,8 @@ Routes are evaluated in order and the first match wins.
 | `cors` | off | CORS handling; see Guards. |
 | `ip` | off | IP allow/deny rules; see Guards. |
 | `rateLimit` | off | Rate limiting via the native binding; see Guards. |
+| `referer` | off | Referer allow-list for hotlink protection; see Guards. |
+| `signedLink` | off | Signed-link verification for shared/expiring URLs; see Guards. |
 | `access` | off | Route-level identity checks (Cloudflare Access JWT, API keys); see Guards. |
 | `requestId` | off | `trustInbound`: adopt the caller's `x-request-id`; see Request ID. |
 | `limits` | off | Cross-request fuses — a retry budget and an in-flight cap; see Load limits. |
@@ -1002,9 +1004,12 @@ allowance — it runs out sooner than KV does.
 ## Guards
 
 Guards run cheapest-first, so a request that will be refused never reaches the
-upstream: country and IP checks are local, rate limiting costs one binding call,
-access control costs crypto (and, on a cold JWKS, a fetch), forwarding costs a
-network round trip.
+upstream: the referer check is local string work, country and IP checks are
+local, rate limiting costs one binding call, a signed link costs one HMAC
+verification, access control costs crypto (and, on a cold JWKS, a fetch),
+forwarding costs a network round trip. A guard refusal is visible in `onProxy`
+as `outcome: 'refused'` with `attempts: 0`, and the `guardReason` field names
+the guard that answered.
 
 `cors` accepts `origins`, `allowMethods`, `allowHeaders`, `exposeHeaders`,
 `credentials`, and `maxAge`. Omitting `origins` reflects whatever origin the
@@ -1117,6 +1122,92 @@ count passes the limit; the client receives 413. Bytes already handed to
 size is refused earlier, before anything is sent. Counting only ever delays
 bytes through a pass-through transform, so the memory cost is one chunk either
 way — the 128MB ceiling is never approached by body size.
+
+### Hotlink protection (referer)
+
+`referer` admits only requests whose `Referer` names a host on the allow-list —
+a fence against other sites embedding your assets, not an access control: the
+header is forgeable by any non-browser client.
+
+```ts
+{
+  match: { host: 'cdn.example.com', path: '/img/*' },
+  upstream: 'origin.example.com',
+  referer: {
+    allow: ['example.com', '*.example.com'],
+    // Admit a missing referer — direct navigation has none.
+    allowEmpty: true,
+    // 403 (default) or 404.
+    onRefuse: 403,
+  },
+}
+```
+
+Entries use the same host grammar as `match.host`: a literal host matches
+exactly, and `*.example.com` matches subdomains but never the apex — write both
+when the apex should pass. The comparison is deliberately the one matcher
+`match.host` runs, against the hostname alone — the port is not part of the
+claim, and a lookalike suffix like `evilexample.com` or
+`c.example.com.evil.test` matches neither. Absence and unattributability are
+different things: a missing header, or a blank one, is direct navigation and
+falls to `allowEmpty`, while a value that is there but cannot be attributed —
+`Referer: blocked` from a privacy extension, gibberish, `about:blank` — carries
+a claim nothing on the list could satisfy and is refused regardless of
+`allowEmpty`. Admitting it would mean an unparseable referer is worth more than
+no referer at all. Matching a repeated header compares the combined
+comma-joined value, the same rule `match.headers` follows.
+
+A route carrying `referer` and `signedLink` passes both: `allowEmpty: false`
+alongside `signedLink` also shuts out the direct visitor who opened a signed
+link with no referer at all.
+
+### Signed links
+
+`signedLink` turns a route into a URL gate: a request is forwarded only when it
+carries a valid HMAC signature over its own path and an expiry.
+
+```ts
+{
+  match: { host: 'files.example.com', path: '/dl/*' },
+  upstream: 'origin.example.com',
+  signedLink: { secretBinding: 'LINK_SECRET', param: 'sig', expiresParam: 'exp' },
+}
+```
+
+The secret is a Worker secret, not a config value:
+
+```sh
+npx wrangler secret put LINK_SECRET
+```
+
+To issue a link, sign `<path>\n<exp>` — the raw path bytes, a newline, then the
+Unix expiry in seconds — with HMAC-SHA256, and append `?exp=<exp>&sig=<sig>`,
+both base64url-unpadded:
+
+```js
+const key = await crypto.subtle.importKey(
+  'raw',
+  new TextEncoder().encode(secret),
+  { name: 'HMAC', hash: 'SHA-256' },
+  false,
+  ['sign'],
+);
+const message = new TextEncoder().encode(`${path}\n${exp}`);
+const sig = btoa(
+  String.fromCharCode(...new Uint8Array(await crypto.subtle.sign('HMAC', key, message))),
+)
+  .replaceAll('+', '-')
+  .replaceAll('/', '_')
+  .replace(/=+$/, '');
+```
+
+A signature is accepted for 60 seconds past its expiry — a one-way grace window
+that absorbs clock skew between the issuer and the edge, never an early pass.
+The signature covers the path and the expiry and nothing else: other query
+parameters ride along unverified, which is what lets a shared link carry a
+download token or a campaign tag. Both parameter names are configurable for
+upstreams that own a `sig` or `exp` of their own; the message always uses the
+raw request path as the client sent it, so `%20` stays `%20`.
 
 ### Access control
 
@@ -1326,6 +1417,14 @@ never change. The refusals above are the upstream's veto; the window is the
 operator's. A client's own `Cache-Control` is ignored entirely, since honouring
 `no-cache` from a request would let anyone aim the full load at the upstream.
 
+A caching route that also verifies signed links deserves one thought: the cache
+key folds the whole URL by default, so every `exp` a link ever carried becomes
+its own entry and the hit rate collapses to however long visitors reuse one
+exact link. `key.query.ignore: ['sig', 'exp']` folds both out — correct, because
+the signature gate runs before the cache is ever consulted — and the panel
+flags the default spelling as an advisory rather than an error, since an
+operator who has already priced the hit rate can publish as is.
+
 ### Freshness, and staleness
 
 Freshness is TTL and nothing else. A body jouska rewrote has no `ETag` or
@@ -1490,6 +1589,7 @@ app.use(
 | `ejected`     | Candidates the outlier memory removed from the walk before the first attempt. Absent when nothing was skipped, and on routes without an `outlier` policy.                                                                                                                                                                                                     |
 | `stream`      | Promise of how the body stream ended, resolved once it has. Absent when nothing streamed from an upstream — a refusal, a 101, a bodyless response, a cache hit.                                                                                                                                                                                               |
 | `limitReason` | Why a `limits` fuse held this request back: `retry_budget` when a walk was denied its extra attempts, `in_flight` when it was refused at the cap with `attempts: 0`. Absent when nothing was held back, and on routes without a `limits` block.                                                                                                               |
+| `guardReason` | Which guard answered a refusal — `method`, `body_size`, `geo`, `ip`, `referer`, `rate_limit`, `signed_link`, `access` or `forward_auth`. Present only when `outcome` is `refused`.                                                                                                                                                                            |
 | `mirror`      | Promise of how the background copy fared — `answered`, `timeout`, `unreachable` or `body_over_limit`, with the target and duration. Absent when nothing was mirrored: no `mirror` block, method outside `mirror.methods`, a WebSocket upgrade, or outside the sampled `percent`. No body or query fields, for the same reason the rest of the event has none. |
 
 Three more report what happened to the response body, which is what a mirrored

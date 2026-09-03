@@ -201,6 +201,7 @@ const PreviewOk = ({
   const shadowWarnings = preview.shadowWarnings ?? [];
   const mirrorWarnings = preview.mirrorWarnings ?? [];
   const cacheVaryWarnings = preview.cacheVaryWarnings ?? [];
+  const signedLinkCacheWarnings = preview.signedLinkCacheWarnings ?? [];
   // ok 的响应按契约不该带 issues；带着就照实列出来，而不是静默吞掉。
   const issues = preview.issues ?? [];
   const routeCount = preview.routeCount ?? 0;
@@ -287,6 +288,34 @@ const PreviewOk = ({
             ))}
           </ul>
           <p className="text-muted-foreground text-xs">{t.preview.cacheVaryScope}</p>
+        </section>
+      )}
+
+      {/*
+        签名链接 + 缓存提示，放在 mirror / cacheVary 之后、issues 之前，同为
+        advisory：签名本来就在 URL 里，键里带它不影响正确性，塌掉的是命中率。
+      */}
+      {signedLinkCacheWarnings.length > 0 && (
+        <section className="flex flex-col gap-2">
+          <SectionHeader
+            title={t.preview.signedLinkCacheTitle}
+            hint={t.preview.signedLinkCacheHint}
+          />
+          <ul className="flex flex-col gap-2">
+            {signedLinkCacheWarnings.map((warning) => (
+              <li key={warning.routeId}>
+                <p className="text-sm">
+                  {t.preview.signedLinkCacheLine(
+                    warning.routeId,
+                    warning.param,
+                    warning.expiresParam,
+                  )}
+                </p>
+              </li>
+            ))}
+          </ul>
+          {/* 文案如实给出修法：ignore 折出去就恢复，发布本身不拦。 */}
+          <p className="text-muted-foreground text-xs">{t.preview.signedLinkCacheScope}</p>
         </section>
       )}
 

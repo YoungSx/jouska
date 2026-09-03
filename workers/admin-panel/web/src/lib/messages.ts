@@ -658,6 +658,13 @@ export const t = {
       `${routeId} 的缓存键会随 ${names} 的取值变化`,
     cacheVaryScope:
       '正确性不受影响——键里折进请求值，就是为了不让一个分支的缓存发给另一个分支；代价是命中率。查询参数不在此列，它本来就在 URL 里。',
+    signedLinkCacheTitle: '缓存键里留着签名参数',
+    signedLinkCacheHint:
+      '这些路由开了缓存、又验签名链接，但缓存键没有把 sig/exp 折出去——过期时间一变就是一个新键。',
+    signedLinkCacheLine: (routeId: string, param: string, expiresParam: string) =>
+      `${routeId} 的缓存键包含 ${param} 与 ${expiresParam}，每个过期时间各存一条`,
+    signedLinkCacheScope:
+      '缓存结果是对的——签名本来就在 URL 里，一个链接的缓存不会发给另一个；塌掉的是命中率。修法：在那条路由的 cache.key.query 里配 ignore，把两个参数都折出去。',
     dangerTitle: '危险开关',
     dangerHint: '这些字段都有正当用途，但每次发布都需要你亲手确认一次。',
     dangerHigh: '高',

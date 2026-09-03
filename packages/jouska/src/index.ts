@@ -61,3 +61,6 @@ export type { MirrorReport } from './internal/traffic-mirror.js';
 // `ProxyEvent.inject` resolves to one of these, so a host that watches whether
 // an injection actually landed needs the report shape and the anchor names.
 export type { InjectAnchor, InjectReport } from './internal/body.js';
+// `ProxyEvent.guardReason` references it, so a host watching which guard turned
+// a request away needs the name list even though the guards stay internal.
+export type { GuardReason } from './internal/guards.js';

@@ -42,8 +42,12 @@ export interface Match {
  * The schema already lowercases the pattern and requires `*.` for wildcards,
  * so a bare `*example.com` that would match `evilexample.com` cannot reach
  * this function. The request host is lowercased by the caller.
+ *
+ * Exported because it is the only host matcher in this repo: `match.host` uses
+ * it, and the `referer` guard must compare against exactly the same rules, so
+ * an allow-list entry and a match entry mean the same thing.
  */
-const hostMatches = (pattern: string, host: string): boolean => {
+export const hostMatches = (pattern: string, host: string): boolean => {
   if (pattern.startsWith('*.')) {
     // '*.example.com' matches any subdomain, but not the apex: the suffix
     // includes the leading dot, so 'example.com'.endsWith('.example.com')

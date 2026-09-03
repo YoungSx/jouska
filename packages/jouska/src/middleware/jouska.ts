@@ -14,7 +14,14 @@ import {
 import { checkAccess } from '../internal/access.js';
 import { routeAuthenticates, runAuthGuards } from '../internal/auth.js';
 import { BodyLimitError, forward } from '../internal/forward.js';
-import { checkRateLimit, corsMiddleware, ipMiddleware } from '../internal/guards.js';
+import {
+  checkRateLimit,
+  checkReferer,
+  corsMiddleware,
+  ipMiddleware,
+  type GuardReason,
+} from '../internal/guards.js';
+import { checkSignedLink } from '../internal/signed-link.js';
 import { ledgerFor, outlierObserver } from '../internal/outlier.js';
 import { resolveRequestId, stampRequestId } from '../internal/request-id.js';
 import { limitsFor, limitsObserver } from '../internal/limits.js';
@@ -272,6 +279,18 @@ export interface ProxyEvent {
    * endpoint shows up here whether it admitted or refused.
    */
   authDurationMs?: number;
+  /**
+   * Which guard refused this request, when one did.
+   *
+   * A refusal is already visible as `attempts: 0` beside `outcome: 'refused'`,
+   * but a count of refusals is not an answer: a route with four active guards
+   * that suddenly starts refusing everything could be any one of them, and the
+   * difference between "the rate limiter is burning" and "someone rotated the
+   * key header" is the difference between a tuning task and an incident.
+   * Absent whenever nothing was refused — the same shape `limitReason` uses,
+   * so a healthy request reads as a bare absence rather than a field to check.
+   */
+  guardReason?: GuardReason;
 }
 
 export interface JouskaOptions {
@@ -390,6 +409,7 @@ export const jouska = ({
       limitReason,
       mirror,
       inject,
+      guardReason,
     ): void => {
       if (onProxy === undefined) {
         return;
@@ -424,11 +444,36 @@ export const jouska = ({
           ...(inject !== undefined ? { inject } : {}),
           ...(authMs !== undefined ? { authDurationMs: authMs } : {}),
           ...(limitReason !== undefined ? { limitReason } : {}),
+          ...(guardReason !== undefined ? { guardReason } : {}),
         });
       } catch {
         // Observability must not be able to fail a request.
       }
     };
+
+    // Refusals before any forward share one shape — status, `attempts: 0`, the
+    // guard that fired. A helper rather than eight restatements of it: the
+    // accounting has drifted once already (a refusal that forgot `attempts: 0`
+    // would read as a spent attempt), and one place is what keeps the next
+    // guard from repeating that. The delegated-auth site is the deliberate
+    // exception — it carries an upstream and spent milliseconds, so it calls
+    // `report` directly with the reason as its thirteenth argument.
+    const reportGuardRefusal = (status: number, guardReason: GuardReason): void =>
+      report(
+        status,
+        'refused',
+        0,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        guardReason,
+      );
 
     // Method refusal is the cheapest guard there is — a set lookup, no header
     // reads, no I/O — so it runs before the guards below. `match.methods` chose
@@ -452,7 +497,7 @@ export const jouska = ({
       !preflightExempt &&
       !policy.allowedMethods.includes(c.req.method)
     ) {
-      report(405, 'refused', 0);
+      reportGuardRefusal(405, 'method');
       // RFC 9110 §15.5.5: the response to a refused method names what is
       // allowed. Empty allow-lists cannot occur — the schema requires nonempty.
       c.header('allow', policy.allowedMethods.join(', '));
@@ -466,22 +511,35 @@ export const jouska = ({
     if (maxBody !== undefined) {
       const declared = contentLength(c.req.raw);
       if (declared !== undefined && declared > maxBody) {
-        report(413, 'refused', 0);
+        reportGuardRefusal(413, 'body_size');
         return stamped(c.json({ error: 'payload_too_large', maxBodyBytes: maxBody }, 413));
       }
     }
 
     const geo = checkGeo(route, c.req.raw);
     if (geo !== undefined) {
-      report(403, 'refused', 0);
+      reportGuardRefusal(403, 'geo');
       return stamped(c.text(geo, 403));
     }
 
     if (route.ip !== undefined) {
       const refused = await runGuard(ipMiddleware(route.ip), c);
       if (refused !== undefined) {
-        report(refused.status, 'refused', 0);
+        reportGuardRefusal(refused.status, 'ip');
         return stamped(refused);
+      }
+    }
+
+    // Hotlink protection sits here because it is a header read and a string
+    // compare — cheaper than the rate limiter's binding call, more useful than
+    // geo for the routes that use it. Preflights are exempt like the method
+    // guard: a browser sends no `Referer` on an OPTIONS, so refusing one would
+    // break exactly the cross-origin calls the `cors` block exists to allow.
+    if (route.referer !== undefined && !preflightExempt) {
+      const verdict = checkReferer(route.referer, c.req.raw);
+      if (!verdict.ok) {
+        reportGuardRefusal(verdict.status, 'referer');
+        return stamped(c.json({ error: 'referer_forbidden' }, verdict.status));
       }
     }
 
@@ -496,18 +554,43 @@ export const jouska = ({
       );
       if (!verdict.ok) {
         if (verdict.reason === 'exceeded') {
-          report(429, 'refused', 0);
+          reportGuardRefusal(429, 'rate_limit');
           return stamped(c.json({ error: 'rate_limited' }, 429));
         }
         if (verdict.reason === 'unidentifiable') {
           // Fail closed: see checkRateLimit for why one shared bucket is worse.
-          report(403, 'refused', 0);
+          reportGuardRefusal(403, 'rate_limit');
           return stamped(c.json({ error: 'rate_limit_unidentifiable' }, 403));
         }
-        report(500, 'refused', 0);
+        reportGuardRefusal(500, 'rate_limit');
         return stamped(
           c.json({ error: 'rate_limit_misconfigured', binding: route.rateLimit.binding }, 500),
         );
+      }
+    }
+
+    // Signed links come after rate limiting even though an HMAC costs
+    // microseconds: the rate limiter is the one guard that prices a request,
+    // so an unsigned flood is billed a 429 by a counter rather than a 403 by a
+    // WebCrypto call — the same argument that puts `access` last. Preflights
+    // carry no query the link was minted for, and are answered by `cors` or
+    // forwarded verbatim below, so they skip the guard like the method one.
+    if (route.signedLink !== undefined && !preflightExempt) {
+      const verdict = await checkSignedLink(route.signedLink, url, c.env);
+      if (!verdict.ok) {
+        if (verdict.reason === 'misconfigured') {
+          // Fail closed: with no secret nothing can be verified, and admitting
+          // would turn a missing binding into "no links needed here".
+          reportGuardRefusal(500, 'signed_link');
+          return stamped(
+            c.json(
+              { error: 'signed_link_misconfigured', binding: route.signedLink.secretBinding },
+              500,
+            ),
+          );
+        }
+        reportGuardRefusal(403, 'signed_link');
+        return stamped(c.json({ error: 'signed_link_invalid' }, 403));
       }
     }
 
@@ -522,7 +605,7 @@ export const jouska = ({
       const verdict = await checkAccess(route.access, c.req.raw, fetchImpl ?? fetch);
       if (!verdict.ok) {
         const status = verdict.status;
-        report(status, 'refused', 0);
+        reportGuardRefusal(status, 'access');
         return stamped(c.json({ error: `access_${verdict.reason}` }, status));
       }
     }
@@ -556,6 +639,10 @@ export const jouska = ({
             undefined,
             undefined,
             auth.authMs,
+            undefined,
+            undefined,
+            undefined,
+            'forward_auth',
           );
           return stamped(auth.refusal);
         }
@@ -730,6 +817,7 @@ type Report = (
   limitReason?: LimitReason,
   mirror?: Promise<MirrorReport>,
   inject?: Promise<InjectReport>,
+  guardReason?: GuardReason,
 ) => void;
 
 /**

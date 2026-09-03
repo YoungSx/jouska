@@ -2,12 +2,14 @@ import { cors as honoCors } from 'hono/cors';
 import { getConnInfo } from 'hono/cloudflare-workers';
 import { ipRestriction } from 'hono/ip-restriction';
 import type { Context, MiddlewareHandler } from 'hono';
-import type { CorsConfig, RateLimitConfig, Route } from '../config.js';
+import type { CorsConfig, RateLimitConfig, RefererConfig, Route } from '../config.js';
+import { hostMatches } from '../router.js';
 
 /**
- * Thin adapters that translate route config into Hono's own middleware.
- * No policy logic lives here: CORS, CIDR matching and rate limiting are all
- * solved elsewhere, so this only wires arguments through.
+ * Thin adapters that translate route config into Hono's own middleware, plus
+ * the guards that have no library behind them. CORS, CIDR matching and rate
+ * limiting are solved elsewhere, so those only wire arguments through; the
+ * referer check is this repo's own logic, so it lives here whole.
  */
 
 /**
@@ -90,4 +92,62 @@ export const checkRateLimit = async (
   }
   const { success } = await binding.limit({ key: rateLimitKey(config, c, routeId, clientIp) });
   return success ? { ok: true } : { ok: false, reason: 'exceeded' };
+};
+
+export type RefererVerdict = { ok: true } | { ok: false; status: 403 | 404 };
+
+/**
+ * Which guard refused a request, reported on `ProxyEvent.guardReason`. A guard
+ * refusal is already visible as `attempts: 0`; the name is what turns a count
+ * of refusals into an answer to "which one".
+ */
+export type GuardReason =
+  | 'method'
+  | 'body_size'
+  | 'geo'
+  | 'ip'
+  | 'referer'
+  | 'rate_limit'
+  | 'signed_link'
+  | 'access'
+  | 'forward_auth';
+
+/**
+ * Checks the `Referer` allow-list.
+ *
+ * The comparison reuses `hostMatches`, the same matcher `match.host` runs, so
+ * an allow-list entry means exactly what the same string means as a match
+ * entry — including the `*.` rule that never admits the apex and never matches
+ * a merely similar suffix like `evilexample.com`. Only the hostname is read:
+ * the port, scheme and path are not part of the claim, and `match.host` does
+ * not consult them either.
+ *
+ * Absence and unattributability are different things. A missing header — or a
+ * blank one — is direct navigation, and `allowEmpty` answers it. A value that
+ * is there but cannot be attributed (`Referer: blocked` from a privacy
+ * extension, gibberish, `about:blank`, whose hostname parses to the empty
+ * string) carries a claim that nothing on the list could satisfy, and is
+ * refused regardless of `allowEmpty`: admitting it would mean an unparseable
+ * referer is worth more than no referer at all.
+ *
+ * The header is forgeable by any non-browser client, so this is a fence
+ * against other sites embedding assets, not an access control.
+ */
+export const checkReferer = (config: RefererConfig, request: Request): RefererVerdict => {
+  const raw = request.headers.get('referer');
+  if (raw === null || raw === '') {
+    return config.allowEmpty ? { ok: true } : { ok: false, status: config.onRefuse };
+  }
+  let referer: URL;
+  try {
+    referer = new URL(raw);
+  } catch {
+    return { ok: false, status: config.onRefuse };
+  }
+  if (referer.protocol !== 'http:' && referer.protocol !== 'https:') {
+    return { ok: false, status: config.onRefuse };
+  }
+  const hostname = referer.hostname.toLowerCase();
+  const matched = config.allow.some((pattern) => hostMatches(pattern, hostname));
+  return matched ? { ok: true } : { ok: false, status: config.onRefuse };
 };

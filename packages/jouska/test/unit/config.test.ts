@@ -429,6 +429,179 @@ describe('guard config', () => {
   });
 });
 
+describe('referer config', () => {
+  it('defaults allowEmpty to true and onRefuse to 403', () => {
+    const config = defineConfig({
+      routes: [{ match: { path: '/a' }, upstream: 'o.test', referer: { allow: ['c.test'] } }],
+    });
+    expect(config.routes[0]!.referer).toEqual({
+      allow: ['c.test'],
+      allowEmpty: true,
+      onRefuse: 403,
+    });
+  });
+
+  it('lowercases a wildcard entry like the host matcher expects', () => {
+    const config = defineConfig({
+      routes: [
+        { match: { path: '/a' }, upstream: 'o.test', referer: { allow: ['*.Assets.test'] } },
+      ],
+    });
+    expect(config.routes[0]!.referer?.allow).toEqual(['*.assets.test']);
+  });
+
+  it('rejects an empty allow-list', () => {
+    expect(() =>
+      defineConfig({
+        routes: [{ match: { path: '/a' }, upstream: 'o.test', referer: { allow: [] } }],
+      }),
+    ).toThrow();
+  });
+
+  it('rejects a referer block with no allow field', () => {
+    expect(() =>
+      defineConfig({
+        // @ts-expect-error exercising runtime validation with a missing field
+        routes: [{ match: { path: '/a' }, upstream: 'o.test', referer: {} }],
+      }),
+    ).toThrow();
+  });
+
+  it('rejects an allow entry that is not a hostname', () => {
+    expect(() =>
+      defineConfig({
+        routes: [
+          { match: { path: '/a' }, upstream: 'o.test', referer: { allow: ['https://c.test'] } },
+        ],
+      }),
+    ).toThrow();
+  });
+
+  it('rejects a bare wildcard that would match lookalike domains', () => {
+    expect(() =>
+      defineConfig({
+        routes: [
+          // The dot is mandatory: '*example.com' would admit 'evilexample.com'.
+          { match: { path: '/a' }, upstream: 'o.test', referer: { allow: ['*example.com'] } },
+        ],
+      }),
+    ).toThrow();
+  });
+
+  it('rejects an onRefuse status outside the two offered', () => {
+    expect(() =>
+      defineConfig({
+        routes: [
+          {
+            match: { path: '/a' },
+            upstream: 'o.test',
+            // @ts-expect-error exercising runtime validation with an invalid value
+            referer: { allow: ['c.test'], onRefuse: 401 },
+          },
+        ],
+      }),
+    ).toThrow();
+  });
+
+  it('accepts 404 as the refusal status', () => {
+    const config = defineConfig({
+      routes: [
+        {
+          match: { path: '/a' },
+          upstream: 'o.test',
+          referer: { allow: ['c.test'], onRefuse: 404 },
+        },
+      ],
+    });
+    expect(config.routes[0]!.referer?.onRefuse).toBe(404);
+  });
+});
+
+describe('signed link config', () => {
+  it('defaults the parameter names to sig and exp', () => {
+    const config = defineConfig({
+      routes: [{ match: { path: '/a' }, upstream: 'o.test', signedLink: { secretBinding: 'K' } }],
+    });
+    expect(config.routes[0]!.signedLink).toEqual({
+      secretBinding: 'K',
+      param: 'sig',
+      expiresParam: 'exp',
+    });
+  });
+
+  it('accepts custom parameter names', () => {
+    const config = defineConfig({
+      routes: [
+        {
+          match: { path: '/a' },
+          upstream: 'o.test',
+          signedLink: { secretBinding: 'K', param: 'token', expiresParam: 'until' },
+        },
+      ],
+    });
+    expect(config.routes[0]!.signedLink?.param).toBe('token');
+    expect(config.routes[0]!.signedLink?.expiresParam).toBe('until');
+  });
+
+  it('rejects an empty binding name', () => {
+    expect(() =>
+      defineConfig({
+        routes: [{ match: { path: '/a' }, upstream: 'o.test', signedLink: { secretBinding: '' } }],
+      }),
+    ).toThrow();
+  });
+
+  it('rejects a parameter name a URL cannot carry', () => {
+    expect(() =>
+      defineConfig({
+        // '&' ends the name, so a signature there could never be read back.
+        routes: [
+          {
+            match: { path: '/a' },
+            upstream: 'o.test',
+            signedLink: { secretBinding: 'K', param: 's&ig' },
+          },
+        ],
+      }),
+    ).toThrow();
+  });
+
+  it('rejects a parameter name with whitespace', () => {
+    expect(() =>
+      defineConfig({
+        routes: [
+          {
+            match: { path: '/a' },
+            upstream: 'o.test',
+            signedLink: { secretBinding: 'K', expiresParam: 'ex p' },
+          },
+        ],
+      }),
+    ).toThrow();
+  });
+
+  it('rejects a parameter name that is empty', () => {
+    expect(() =>
+      defineConfig({
+        routes: [
+          {
+            match: { path: '/a' },
+            upstream: 'o.test',
+            signedLink: { secretBinding: 'K', param: '' },
+          },
+        ],
+      }),
+    ).toThrow();
+  });
+
+  it('leaves both blocks undefined when not configured', () => {
+    const route = defineConfig({ routes: [{ match: { path: '/a' }, upstream: 'o.test' }] })
+      .routes[0]!;
+    expect(route.referer).toBeUndefined();
+    expect(route.signedLink).toBeUndefined();
+  });
+});
+
 describe('multiple upstream strategies', () => {
   it('keeps the ordered list and the failover policy', () => {
     const config = defineConfig({

@@ -726,6 +726,24 @@ const ipRules = z
   });
 
 /**
+ * Hotlink protection: an allow-list of sites whose links are honoured.
+ *
+ * The entries reuse the hostname schema, so a pattern may be `*.`-prefixed to
+ * cover every subdomain at once. An absent or non-HTTP(S) `Referer` is the
+ * "empty" case governed by `allowEmpty` — typed URLs, bookmarks and privacy
+ * strips all arrive without one, so the default admits them; the guard exists
+ * to stop another site embedding assets, not to wall off direct navigation.
+ */
+const referer = z.object({
+  /** Hostnames admitted, each optionally `*.`-prefixed to match subdomains. */
+  allow: z.array(hostnameOrWildcard).nonempty(),
+  /** Whether a request with no usable Referer is admitted. */
+  allowEmpty: z.boolean().default(true),
+  /** Status returned to a refused request; 404 hides that a guard fired. */
+  onRefuse: z.union([z.literal(403), z.literal(404)]).default(403),
+});
+
+/**
  * Rate limiting uses Cloudflare's native binding, so no KV or Durable Object is
  * involved. Counting is per-location rather than globally exact, which is the
  * documented trade-off and is adequate for abuse control.
@@ -741,6 +759,36 @@ const rateLimit = z.object({
    * limit for exactly the callers who are behaving correctly.
    */
   countPreflight: z.boolean().default(false),
+});
+
+/**
+ * A single query-parameter name. URL syntax is the constraint: `&`, `=` and `#`
+ * end a name, and whitespace makes one unparsable, so any of them in a
+ * configured name would produce a signature no issuer could ever emit.
+ */
+const queryParamName = z
+  .string()
+  .min(1)
+  .refine(
+    (name) => !/[\s&=#]/.test(name),
+    'expected a query parameter name without whitespace, "&", "=" or "#" — those characters cannot survive in a name',
+  );
+
+/**
+ * Signed links: requests must carry a valid HMAC over the path and expiry, so
+ * the URL itself is the credential and cannot be circulated beyond its `exp`.
+ *
+ * The signature is computed over bytes the issuer and this verifier both see
+ * verbatim — the request path and the raw expiry digits — rather than anything
+ * re-serialised, so a URL produced by one survives the other's parsing.
+ */
+const signedLink = z.object({
+  /** Name of the secret binding; resolved from the environment per request. */
+  secretBinding: z.string().min(1),
+  /** Query parameter holding the base64url signature. */
+  param: queryParamName.default('sig'),
+  /** Query parameter holding the Unix-expiry seconds. */
+  expiresParam: queryParamName.default('exp'),
 });
 
 /**
@@ -1964,8 +2012,12 @@ const routeBehaviour = {
   requestPolicy: requestPolicy.optional(),
   /** IP allow/deny rules. Omit to admit every address. */
   ip: ipRules.optional(),
+  /** Hotlink protection: an allow-list of honoured referring sites. Omit to admit all. */
+  referer: referer.optional(),
   /** Rate limiting via the native Cloudflare binding. Omit to disable. */
   rateLimit: rateLimit.optional(),
+  /** Signed links: the URL must carry a valid HMAC over path and expiry. Omit to admit all. */
+  signedLink: signedLink.optional(),
   /** Identity checks: Cloudflare Access JWT and/or API key. Omit to admit every caller. */
   access: access.optional(),
   /**
@@ -2138,7 +2190,9 @@ const defaults = z
     cors: routeBehaviour.cors,
     requestPolicy: routeBehaviour.requestPolicy,
     ip: routeBehaviour.ip,
+    referer: routeBehaviour.referer,
     rateLimit: routeBehaviour.rateLimit,
+    signedLink: routeBehaviour.signedLink,
     access: routeBehaviour.access,
     // Optional block, applied whole-replace: a table-wide auth policy that a
     // route does not override is what a route not listing any means. Per-key
@@ -2696,6 +2750,8 @@ export type Route = RouteOutput;
 export type ConfigMeta = z.output<typeof meta>;
 export type CorsConfig = z.output<typeof cors>;
 export type RateLimitConfig = z.output<typeof rateLimit>;
+export type RefererConfig = z.output<typeof referer>;
+export type SignedLinkConfig = z.output<typeof signedLink>;
 export type AccessConfig = z.output<typeof access>;
 export type BodyRewriteConfig = z.output<typeof bodyRewrite>;
 export type CacheConfig = z.output<typeof cache>;

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { defineConfig } from '../../src/config';
-import { matchRoute, resolveUpstreamUrl, upstreamCandidates } from '../../src/router';
+import { hostMatches, matchRoute, resolveUpstreamUrl, upstreamCandidates } from '../../src/router';
 
 const req = (url: string, init?: RequestInit) => new Request(url, init);
 
@@ -378,5 +378,32 @@ describe('match conditions (headers / query / cookies)', () => {
         req('https://p.dev/a?v=2', { headers: { 'x-env': 'prod', Cookie: 'beta=1' } }),
       ),
     ).toBeUndefined();
+  });
+});
+
+describe('hostMatches', () => {
+  // The referer guard compares against this same matcher, so its rules are
+  // asserted here directly rather than only through route matching.
+  it('matches a wildcard on subdomains but not the apex', () => {
+    expect(hostMatches('*.example.com', 'a.example.com')).toBe(true);
+    expect(hostMatches('*.example.com', 'example.com')).toBe(false);
+  });
+
+  it('never matches a merely similar suffix', () => {
+    expect(hostMatches('*.example.com', 'evilexample.com')).toBe(false);
+    expect(hostMatches('example.com', 'evilexample.com')).toBe(false);
+  });
+
+  it('refuses the empty-label host a wildcard route appears to cover', () => {
+    expect(hostMatches('*.example.com', '..example.com')).toBe(false);
+  });
+
+  it('compares exactly against a literal pattern', () => {
+    expect(hostMatches('example.com', 'example.com')).toBe(true);
+    expect(hostMatches('example.com', 'a.example.com')).toBe(false);
+  });
+
+  it('matches case-insensitively on the caller-lowered host', () => {
+    expect(hostMatches('*.example.com', 'A.Example.com'.toLowerCase())).toBe(true);
   });
 });

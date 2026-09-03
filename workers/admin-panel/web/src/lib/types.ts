@@ -200,6 +200,22 @@ export interface CacheVaryWarning {
 }
 
 /**
+ * 签名链接 + 缓存提示：这条路由开了缓存、又验签名链接，但缓存键没把 sig/exp
+ * 折出去 —— 每个 exp 都是一个键，命中率塌掉。
+ *
+ * 来自服务端 signed-link-advisory.ts。它是提示不是错误 —— 键里带签名不影响正确
+ * 性（一个链接的缓存响应不会发给另一个链接），这里说的是命中率。修法是给
+ * cache.key.query 配 ignore: ['sig', 'exp']。
+ */
+export interface SignedLinkCacheWarning {
+  readonly routeId: string;
+  /** 路由 signedLink 块声明的签名参数名。 */
+  readonly param: string;
+  /** 路由 signedLink 块声明的过期参数名。 */
+  readonly expiresParam: string;
+}
+
+/**
  * 整站镜像提示：这条路由把整站代理过来，但没开正文改写。
  *
  * 来自服务端 mirror.ts。它是提示不是错误 —— 整站不改写完全合法（纯 API 网关、

@@ -1,6 +1,7 @@
 import { CONFIG_VERSION, configSchema, type ConfigInput, type RouteInput } from 'jouska';
 import { cacheVaryWarnings, type CacheVaryWarning } from './cache-advisory.js';
 import { mirrorWarnings, type MirrorWarning } from './mirror.js';
+import { signedLinkCacheWarnings, type SignedLinkCacheWarning } from './signed-link-advisory.js';
 import { shadowWarnings, type ShadowWarning } from './shadow.js';
 import { CORRUPT } from './validate.js';
 
@@ -48,6 +49,12 @@ export type CompileResult =
        * one is legitimate, the operator only has to know what it costs.
        */
       readonly cacheVaryWarnings: readonly CacheVaryWarning[];
+      /**
+       * Caching routes that verify signed links without folding the link's own
+       * parameters out of the cache key. Same advisory tier as the two above:
+       * the key folding is what keeps it correct, this is about hit rate.
+       */
+      readonly signedLinkCacheWarnings: readonly SignedLinkCacheWarning[];
       /** Parsed output, for previews: defaults folded in, stated keys resolved. */
       readonly parsed: ReturnType<typeof configSchema.parse>;
     }
@@ -237,5 +244,6 @@ export const compileConfig = (rows: readonly RouteRow[], defaults: unknown): Com
     shadowWarnings: shadowWarnings(result.data),
     mirrorWarnings: mirrorWarnings(result.data),
     cacheVaryWarnings: cacheVaryWarnings(result.data),
+    signedLinkCacheWarnings: signedLinkCacheWarnings(result.data),
   };
 };
