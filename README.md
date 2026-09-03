@@ -1690,6 +1690,22 @@ These are Workers limits, not choices, and they shape the architecture:
   deterministic from the request alone, no shared state — and the honest
   alternatives to that are recorded here rather than behind a flag that
   overstates itself.
+- **The edge compresses the response on the way out.** A Worker that returns
+  plaintext and nothing else — no `setBatchedCompression`, no manual
+  `CompressionStream` — gets automatic content negotiation at the edge: with
+  `Accept-Encoding: gzip, br, zstd`, a 3082-byte HTML body arrived as 439 bytes
+  labelled `zstd`, 436 as `gzip`, 377 as `br`; `gzip`-only and `br`-only
+  clients each got exactly what they asked for. The three shapes this proxy
+  produces were measured separately and none is excluded: a stream with no
+  `Content-Length` (chunked on HTTP/1.1) compressed to 448 bytes and still
+  flushed progressively — a 5-chunk, 1.2-second stream grew from 344 to 448
+  bytes mid-transfer rather than buffering to close — and a `caches.default`
+  hit re-wrapped as `new Response(stored.body)` compressed to 407 bytes, the
+  best ratio of the three. Measured on a real deployment across rotating
+  colos, not in workerd, which has no such layer. The gzip-at-the-proxy layer
+  nginx and Caddy carry is therefore not a component this design needs; the
+  no-`accept-encoding` on the way _in_ remains the load-bearing half, because
+  compressed upstream bytes would still defeat the streaming rewrite.
 
 ## Admin panel
 
