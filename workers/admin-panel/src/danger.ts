@@ -150,6 +150,33 @@ const RULES: readonly Rule[] = [
     reason:
       'the redirect may name any host — one corrupted value turns the route into an open redirect to a host nobody vetted',
   },
+  {
+    // Mirroring a non-idempotent method executes it twice: the visitor's POST
+    // charges once and the copy charges again. The schema defaults the list to
+    // GET and HEAD for exactly this reason, so anything else here is a
+    // deliberate widening and deserves the double ask.
+    path: 'mirror.methods',
+    level: 'high',
+    guard: (node) =>
+      Array.isArray(node) &&
+      node.some(
+        (method) =>
+          typeof method === 'string' &&
+          !['GET', 'HEAD', 'OPTIONS', 'TRACE'].includes(method.toUpperCase()),
+      ),
+    reason:
+      'the copy re-runs the request at the mirror target — a non-idempotent method means two emails, two charges, two records from one visitor action',
+  },
+  {
+    // Mirroring a body means buffering it in memory (bounded, but real) and
+    // replaying credentials it may carry at a second host. Off by default; on
+    // means the operator accepted both.
+    path: 'mirror.includeBody',
+    level: 'high',
+    guard: (node) => node === true,
+    reason:
+      'the request body is copied to the mirror target — whatever it carries (credentials, personal data) now reaches a second host, and the buffer holding it counts against the isolate memory',
+  },
 ];
 
 /**

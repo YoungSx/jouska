@@ -808,6 +808,12 @@ const RESERVED_REQUEST_HEADERS: ReadonlySet<string> = new Set([
   'x-forwarded-proto',
   'x-forwarded-for',
   'x-request-id',
+  // The mirror marker: the proxy stamps it onto every background copy it sends,
+  // so an upstream can tell the duplicate from the real request. Reserved for
+  // the same reason the forwarding headers are — a route that could write it
+  // could disguise a real request as a copy, and whatever an operator's
+  // analysis excludes because "it is only the mirror" would be lying.
+  'x-jouska-mirror',
   ...HOP_BY_HOP,
   'content-length',
   'accept-encoding',
@@ -1218,6 +1224,60 @@ const authBlocks = (url: typeof authUrl) =>
 
 const authBehaviour = authBlocks(authUrl);
 const authBehaviourPrivate = authBlocks(authUrlAllowingPrivate);
+
+/**
+ * Traffic mirroring: a background copy of a matched request sent to a second
+ * upstream whose response is discarded.
+ *
+ * A split moves risk onto visitors — five percent of them really do run on v2. A
+ * mirror moves none: the visitor's request goes to the route's upstream as
+ * always, and v2 sees a duplicate it cannot influence. That difference decides
+ * every default here. `methods` names only the idempotent ones, because a
+ * mirrored POST executes twice and the double is the failure (two emails, two
+ * charges); widening it is a statement the panel flags as high-danger.
+ * `includeBody` is off because copying a body means buffering it in memory
+ * against a 128MB isolate, and the cap that bounds that buffering abandons the
+ * copy, never the request.
+ *
+ * `percent` is a sample, not a toggle, and it is hashed rather than drawn: the
+ * same deterministic hash a traffic split uses, so "was this request mirrored"
+ * is recomputable from the request itself. A `Math.random()` draw answers no
+ * such question after the fact.
+ *
+ * `timeoutMs` is this block's own short deadline rather than the route's
+ * `timeoutMs`, which the visitor is waiting on and a mirror has nobody waiting
+ * for it at all — a slow mirror target must burn `waitUntil` budget, not
+ * response time.
+ */
+const mirrorShape = (target: typeof upstream) =>
+  z.object({
+    /** Where the copy goes, validated by the same per-value SSRF screen. */
+    upstream: target,
+    /** Percentage of matching requests mirrored, hashed per request. */
+    percent: z.number().int().min(1).max(100).default(100),
+    /**
+     * Copy the request body too. The copy is buffered in memory up to
+     * `MIRROR_BODY_MAX_BYTES`; beyond it the mirror is abandoned and the
+     * request carries on untouched.
+     */
+    includeBody: z.boolean().default(false),
+    /**
+     * Methods eligible for mirroring, uppercased like every method list.
+     * Defaults to the idempotent set: mirroring anything else runs it twice.
+     */
+    methods: methods.default(['GET', 'HEAD']),
+    /** Own deadline for the copy, shorter than any upstream attempt default. */
+    timeoutMs: z.number().int().positive().max(5_000).default(2_000),
+  });
+
+/**
+ * Written as a function of the upstream schema for the same reason
+ * {@link authBlocks} is: the private variant must inherit every check the strict
+ * one gains, and a restated object is a way for the two to drift until
+ * `allowPrivateUpstream` becomes a way around the SSRF refusal.
+ */
+const mirror = mirrorShape(upstream);
+const mirrorAllowingPrivate = mirrorShape(upstreamAllowingPrivate);
 
 /**
  * Upstream response caching, served from the Cloudflare Cache API.
@@ -1911,6 +1971,16 @@ const route = z.object({
    */
   respond: respond.optional(),
   /**
+   * A background copy of matching requests to a second upstream, whose response
+   * is discarded. Not a `defaults` field, like `respond` and `errorPages`: a
+   * table-wide mirror would send a copy of everything to one address, which is
+   * a statement about the whole table rather than a default. Requires an
+   * upstream strategy and is refused on a `respond` route — checked in the
+   * table refine beside the pairing above, because a mirror on a route that
+   * answers at the edge has no request to copy.
+   */
+  mirror: mirror.optional(),
+  /**
    * Replacement pages for the upstream failures jouska answers itself. See
    * {@link errorPages}; requires an upstream strategy, and never replaces the
    * failure's status code.
@@ -1951,6 +2021,11 @@ const privateRoute = route.extend({
   // declared `allowPrivateUpstream` means in-network auth services are the
   // point, and the strict branch would refuse the URL the same config blessed.
   forwardAuth: authBehaviourPrivate.forwardAuth,
+  // The mirror target inherits the exemption with them, for the same reason: a
+  // route blessed for in-network upstreams is blessed for copying to one, and
+  // refusing the copy there would make the strict branch refuse config the
+  // route already declared its intent for.
+  mirror: mirrorAllowingPrivate.optional(),
 });
 
 /**
@@ -2418,6 +2493,23 @@ export const configSchema = z
       }
 
       /**
+       * A mirror copies a request the proxy forwards, so it needs an upstream on
+       * the same route — which the exactly-one-strategy check above already
+       * guarantees for every non-`respond` route. The one hole is `respond`:
+       * a route that answers at the edge has no upstream to copy the request
+       * to, and the check above returned before a mirror would have been
+       * noticed, so it is refused here.
+       */
+      if (entry.mirror !== undefined && entry.respond !== undefined) {
+        ctx.addIssue({
+          code: 'custom',
+          path: ['routes', index, 'mirror'],
+          message:
+            'mirror requires an upstream — a route that answers at the edge has no request to copy',
+        });
+      }
+
+      /**
        * `failover` is meaningless without candidates to walk over, `outlier`
        * has nothing to remember failures about, and `stickyBy` without a
        * split has nothing to be sticky about. All are refused rather than
@@ -2534,6 +2626,7 @@ export type CacheConfig = z.output<typeof cache>;
 export type RequestPolicyConfig = z.output<typeof requestPolicy>;
 export type RequestIdConfig = z.output<typeof requestId>;
 export type ForwardAuthConfig = z.output<typeof forwardAuthSchema>;
+export type MirrorConfig = z.output<typeof mirror>;
 export type HeaderRulesConfig = HeaderRules;
 export type RouteInput = z.input<typeof anyRoute>;
 /** Input shape, minus the internal bookkeeping field preprocessing supplies. */

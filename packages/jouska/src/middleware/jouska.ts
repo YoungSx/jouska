@@ -43,6 +43,7 @@ import {
 } from '../internal/response-cache.js';
 import { stickyCookie, selectUpstream, type Selection } from '../internal/selection.js';
 import { watchStream, type StreamReport } from '../internal/stream-watch.js';
+import { planMirror, startMirror, type MirrorReport } from '../internal/traffic-mirror.js';
 import {
   matchUrl,
   resolveUpstreamUrl,
@@ -227,6 +228,23 @@ export interface ProxyEvent {
    */
   stream?: Promise<StreamReport>;
   /**
+   * How the background copy fared, when the route mirrors and this request was
+   * sampled in. Resolved, never rejected — the same discipline as `stream`.
+   *
+   * Absent when the route has no `mirror` block and when the request was not
+   * sampled, so presence is itself the statement "a copy was sent, or tried".
+   * `body_over_limit` and `unreachable` are the two to watch: the first means
+   * the operator is mirroring bodies larger than the buffer admits and seeing
+   * only some of them, the second means the mirror target has been down longer
+   * than whoever set the field up knows.
+   *
+   * Names the copy's target and nothing about its content — no body, no query —
+   * because the mirror is a debugging instrument and an event that copies the
+   * request's secrets into telemetry would be the mirror adding a leak the
+   * route never had.
+   */
+  mirror?: Promise<MirrorReport>;
+  /**
    * Wall-clock milliseconds the access-control stage spent, when the route has
    * auth fields configured. Absent on routes without them, and on preflights,
    * which skip the stage. Includes a refusal's own latency: a slow auth
@@ -349,6 +367,7 @@ export const jouska = ({
       stream,
       authMs,
       limitReason,
+      mirror,
     ): void => {
       if (onProxy === undefined) {
         return;
@@ -379,6 +398,7 @@ export const jouska = ({
           ...(selection !== undefined ? { selection } : {}),
           ...(ejected !== undefined && ejected.length > 0 ? { ejected } : {}),
           ...(stream !== undefined ? { stream } : {}),
+          ...(mirror !== undefined ? { mirror } : {}),
           ...(authMs !== undefined ? { authDurationMs: authMs } : {}),
           ...(limitReason !== undefined ? { limitReason } : {}),
         });
@@ -555,6 +575,22 @@ export const jouska = ({
         ? undefined
         : limitsObserver(limitsFor(routeId(route, match.index), route.limits));
 
+    // The mirror is planned here, after every guard and before the cache: a
+    // hit must still be mirrored (the copy answers "what would v2 have made of
+    // this request", not "what would v2 have made of this cache miss"), and a
+    // tee'd body has to happen before the primary walk consumes the stream.
+    // Nothing below can fail because of it — the copy runs detached and its
+    // report is carried on the event rather than awaited.
+    const mirrorPlan = planMirror(match, c.req.raw, requestId, fetchImpl);
+    let mirror: Promise<MirrorReport> | undefined;
+    if (mirrorPlan !== undefined) {
+      // Runs from this point regardless of how the primary walk ends: a copy
+      // is most interesting precisely when v1 is down, which is the one case a
+      // plan gated on the walk's success would never cover.
+      mirror = startMirror(mirrorPlan.plan);
+      inBackground(c, mirror);
+    }
+
     // CORS wraps the forward so preflights are answered without a round trip
     // and the response carries the negotiated headers.
     if (route.cors !== undefined) {
@@ -571,6 +607,8 @@ export const jouska = ({
           authMs,
           authHeaders,
           limits,
+          mirrorPlan?.request,
+          mirror,
         );
       });
       // A preflight is answered by the CORS middleware itself — the one
@@ -591,6 +629,8 @@ export const jouska = ({
       authMs,
       authHeaders,
       limits,
+      mirrorPlan?.request,
+      mirror,
     );
   };
 };
@@ -663,6 +703,7 @@ type Report = (
   stream?: Promise<StreamReport>,
   authMs?: number,
   limitReason?: LimitReason,
+  mirror?: Promise<MirrorReport>,
 ) => void;
 
 /**
@@ -750,6 +791,14 @@ const proxyRequest = async (
   authMs?: number,
   authHeaders?: Headers,
   limits?: LimitsObserver,
+  /**
+   * The request to forward, already tee'd when the route mirrors bodies.
+   * Absent means forward `c.req.raw` — the overwhelming case, and the reason
+   * this sits last rather than beside `authHeaders`.
+   */
+  forwardRequest?: Request,
+  /** The running mirror copy, carried onto the event. Absent when not mirrored. */
+  mirror?: Promise<MirrorReport>,
 ): Promise<Response> => {
   const { route } = match;
   // The bucket this caller was assigned to, as an authority. The cache key
@@ -782,7 +831,11 @@ const proxyRequest = async (
             route.match,
             c.req.raw.headers,
           )}`,
-          c.req.raw,
+          // The tee'd branch, when mirroring is copying a body: the cache
+          // records cacheability from the request's method and headers, which
+          // the tee does not change, but the body itself belongs to whichever
+          // branch the walk will read.
+          forwardRequest ?? c.req.raw,
           url,
           c.req.method,
           cacheImpl,
@@ -832,6 +885,14 @@ const proxyRequest = async (
         redirectRewritten: false,
       },
       cached.state,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      // The copy ran whether the bytes came from the store or the wire — "what
+      // would v2 have made of this request" is precisely the question a mirror
+      // exists to answer, and a hit is not an excuse to stop asking it.
+      mirror,
     );
     if (cached.state === 'stale') {
       inBackground(
@@ -936,6 +997,7 @@ const proxyRequest = async (
         undefined,
         undefined,
         'in_flight',
+        mirror,
       );
       settleFlight?.();
       settleFlight = undefined;
@@ -959,6 +1021,7 @@ const proxyRequest = async (
         authHeaders,
         requestId,
         limits,
+        ...(forwardRequest !== undefined ? { request: forwardRequest } : {}),
       });
     } finally {
       // The seat names the response headers' arrival, not the body's: a stream
@@ -1022,6 +1085,7 @@ const proxyRequest = async (
     produced.stream,
     authMs,
     produced.limitReason,
+    mirror,
   );
 
   const cacheableFill =
@@ -1094,6 +1158,14 @@ interface ProduceOptions {
    * that request asked for one.
    */
   limits?: LimitsObserver;
+  /**
+   * The request to forward, when it differs from `c.req.raw` — which happens
+   * for exactly one reason: a mirroring route teed the body, and the walk must
+   * consume the tee'd main branch rather than the original stream. Absent on
+   * the background-refresh path by construction, since a refresh re-reads its
+   * own request and never mirrors.
+   */
+  request?: Request;
 }
 
 /** One trip to the upstream and the rewriting of what comes back. */
@@ -1155,6 +1227,7 @@ const produceResponse = async ({
   authHeaders,
   requestId,
   limits,
+  request = c.req.raw,
 }: ProduceOptions): Promise<Produced> => {
   const { route } = match;
   // The per-request view over the route's failure memory. Filtered targets
@@ -1183,7 +1256,7 @@ const produceResponse = async ({
     result = await forward({
       route,
       targets,
-      request: c.req.raw,
+      request,
       requestUrl: url,
       requestId,
       authHeaders,

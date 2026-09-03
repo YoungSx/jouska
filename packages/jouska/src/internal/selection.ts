@@ -162,6 +162,20 @@ const ringLookup = (points: readonly RingPoint[], key: string): number => {
 };
 
 /**
+ * Deterministic sampling over the same hash the split assignment uses.
+ *
+ * True when `key` falls in the first `percent` percent of the 32-bit hash
+ * space. A `Math.random()` draw would be uniform too, but nothing could answer
+ * "why was this request mirrored" afterwards; a hashed draw answers it from the
+ * request alone, which is the property #35 archived for splits and what a
+ * sampled mirror inherits here. `percent` is validated 1–100, and 100 exceeds
+ * every hash value, so the full sample is exact rather than a rounding away
+ * from it.
+ */
+export const inSample = (key: string, percent: number): boolean =>
+  hash(key) < (percent / 100) * 0x1_0000_0000;
+
+/**
  * The stickiness cookie the proxy sets when a caller without one is assigned.
  *
  * Host-only (no `Domain`): stickiness is a property of this proxy host, and

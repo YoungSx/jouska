@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import type { Route } from '../../src/config';
-import { STICKY_COOKIE, selectUpstream, stickyCookie } from '../../src/internal/selection';
+import {
+  inSample,
+  STICKY_COOKIE,
+  selectUpstream,
+  stickyCookie,
+} from '../../src/internal/selection';
 
 const splitRoute = (weights: number[]): Route =>
   ({
@@ -390,5 +395,32 @@ describe('stickyCookie', () => {
     const cookie = stickyCookie('b.test');
     expect(cookie).toBe(`${STICKY_COOKIE}=b.test; Path=/; HttpOnly; SameSite=Lax`);
     expect(cookie).not.toContain('Domain');
+  });
+});
+
+describe('inSample (mirror sampling)', () => {
+  it('is deterministic: the same request ID samples the same way every time', () => {
+    // The property mirroring inherits from the split hash: "why was this request
+    // mirrored" is answerable from the request alone, after the fact.
+    for (const id of ['req-a', 'req-b', 'req-c', 'req-d']) {
+      expect(inSample(id, 25)).toBe(inSample(id, 25));
+    }
+  });
+
+  it('puts 100 percent of everything in, and keeps the empty key in too', () => {
+    for (const id of ['req-a', 'req-b', 'req-c', 'req-d', '']) {
+      expect(inSample(id, 100)).toBe(true);
+    }
+  });
+
+  it('admits a share that tracks the percent and never exceeds it', () => {
+    // Not a distribution guarantee over four keys — the assertion is the
+    // monotonicity: a wider sample contains the narrower one, because the
+    // boundary moves one way through the hash space.
+    for (const id of ['req-a', 'req-b', 'req-c', 'req-d']) {
+      const decisions = [1, 10, 25, 50, 75, 99].map((percent) => inSample(id, percent));
+      expect(decisions).toEqual(decisions.toSorted());
+      expect(inSample(id, 1)).toBe(false);
+    }
   });
 });
