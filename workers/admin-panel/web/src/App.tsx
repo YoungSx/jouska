@@ -488,6 +488,13 @@ const App = () => {
             setEditor(null);
             reloadQuietly();
           }}
+          // 保存成功的 toast 带一扇「去发布」的门：草稿写完的下一步就是发布。
+          onGoPublish={() => {
+            setEditorOpen(false);
+            setEditor(null);
+            reloadQuietly();
+            setPublishOpen(true);
+          }}
         />
       )}
 

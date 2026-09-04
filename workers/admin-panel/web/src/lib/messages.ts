@@ -229,7 +229,16 @@ export const t = {
     tabJson: 'JSON',
     jsonLabel: '路由定义',
     jsonHint: '表单覆盖不到的字段可以直接在这里写。两个视图共享同一份数据。',
-    jsonInvalid: 'JSON 格式不对，先修好才能切回表单',
+    jsonInvalid: 'JSON 格式不对',
+    /** jsonc-parser 只给 offset，行号在这里换算；两个数字都是 1 起始。 */
+    jsonErrorAt: (line: number, column: number) => `第 ${line} 行第 ${column} 列附近`,
+    jsonEscape: '放弃 JSON 里的改动，回到表单那份定义',
+    /** 保存被拦时，页脚摘要引用 collectErrors 的第一条错误原文。 */
+    saveBlocked: (reason: string) => `保存还差一步：${reason}`,
+    /** 常驻草稿条：编辑器开着 ≠ 会改变线上。 */
+    draftBanner: '草稿中 · 线上不受影响',
+    draftBannerHint: '保存进的是草稿；发布之后线上才会变。',
+    goPublish: '去发布',
     save: '保存到草稿',
     saving: '保存中…',
     cancel: '取消',
@@ -252,12 +261,29 @@ export const t = {
   /** 表单化编辑器的字段文案。help 直接对齐 README 的路由选项表。 */
   fields: {
     sections: {
-      identity: '标识',
+      identity: '是什么',
       identityHint: '这条路由的名字，以及它要不要进入发布的配置。',
-      match: '匹配',
-      matchHint: '决定哪些请求走这条路由。三个条件同时满足才算匹配。',
-      upstream: '上游',
-      upstreamHint: '请求转发到哪里。',
+      destination: '去哪里',
+      destinationHint: '什么样的请求进来，转发到哪里去。',
+      guards: '谁能来',
+      /**
+       * guards 的关键决策是「要不要管」。留空是安全且常见的——大多数反代场景
+       * 恰恰需要公开访问，所以第一句就要把焦虑拆掉，再告诉用户去哪里配。
+       */
+      guardsHint: '什么都不设置 = 任何人都能访问，这对很多场景是安全的。要限谁，展开下面的卡片。',
+      /**
+       * 卡片头部的状态徽章。needsFix 盖过一切；守卫卡（kind="guard"）配置过
+       * 读「已启用」（守卫生效），高级卡配置过读「已设置」（自定义值生效）；
+       * 都没配读「默认」——对所有卡都真实：没配 = 默认行为生效。
+       */
+      sectionSet: '已设置',
+      sectionEnabled: '已启用',
+      sectionEmpty: '默认',
+      sectionNeedsFix: '需修正',
+      /** countries 卡的卡名：两张国家码单合起来算一张卡。 */
+      countries: '国家/地区限制',
+      advanced: '高级',
+      advancedHint: '默认值已经够用。需要精调再展开。',
       timing: '超时与重试',
       timingHint: '每次尝试的时限，以及失败后要不要再试。',
       /**
@@ -276,8 +302,6 @@ export const t = {
       presetClearDesc: '把这六个框全清空，回到各自的默认值。',
       rewrite: '响应改写',
       rewriteHint: '让访客感觉自己没有离开代理。',
-      guards: '访问控制',
-      guardsHint: '在转发之前拦掉不该进来的请求：从哪来、来多快、你是谁。',
       headers: '注入请求头',
       headersHint: '发给上游时额外带上的头。',
     },
@@ -325,6 +349,8 @@ export const t = {
       label: 'upstream',
       placeholder: 'origin.example.com',
       help: '`host`、`host:port` 或 `host/base/path`。不要写协议。',
+      /** collectErrors 的缺失错误；也进页脚摘要，所以要自报家门且不带反引号。 */
+      error: 'upstream 要写 host、host:port 或 host/base/path，不要写协议',
     },
     scheme: {
       label: 'scheme',
@@ -412,11 +438,14 @@ export const t = {
     blockCountries: {
       label: '拒绝这些国家',
       help: 'ISO 3166-1 alpha-2 代码，逗号分隔。命中的请求返回 403。',
+      /** 术语 tooltip：ISO 国家码是两字母缩写，第一次见的人需要两个例子的锚。 */
+      tip: 'ISO 3166-1 alpha-2 是两位字母的国家码，如 CN=中国、SG=新加坡、US=美国。',
       placeholder: 'CU, IR',
     },
     allowCountries: {
       label: '只允许这些国家',
       help: '一旦填写，其余国家全部拒绝；来源国未知时按拒绝处理。',
+      tip: 'ISO 3166-1 alpha-2 是两位字母的国家码，如 CN=中国、SG=新加坡、US=美国。',
       placeholder: 'CN, SG',
     },
     cors: {
@@ -441,6 +470,8 @@ export const t = {
       allowHelp: 'allow 列表写错一个字符，就会放进本想排除的地址。',
       deny: 'deny（CIDR 或地址）',
       denyHelp: 'deny 列表写错一个字符，就会挡掉正常的调用方。',
+      /** 术语 tooltip：CIDR 记法第一次见的人需要「前缀位数」的白话解释。 */
+      tip: 'CIDR 用「地址/前缀位数」表示一段 IP，如 10.0.0.0/8 覆盖 10.x.x.x 全部；单个地址不带斜杠。',
     },
     access: {
       label: '身份验证（你是谁）',
@@ -450,6 +481,9 @@ export const t = {
       teamHelp: '即 https://{team}.cloudflareaccess.com，只能是小写字母、数字和连字符。',
       audience: 'audience（AUD tag）',
       audienceHelp: 'JWT 的 aud 必须等于它，不等于按身份不符拒绝（403）。',
+      /** 术语 tooltip：AUD tag 是 Cloudflare Access 控制台里能直接复制的应用标识。 */
+      audienceTip:
+        'AUD tag 是 Cloudflare Access 给每个应用发的一串标识，在 Access 控制台的应用详情里复制。',
       emails: '邮箱白名单',
       emailsHelp: '逗号分隔。留空则认 audience；填了则 JWT 里的邮箱也必须在列。',
       emailsPlaceholder: 'alice@example.com',
