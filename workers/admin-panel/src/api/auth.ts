@@ -4,8 +4,9 @@
  * Authentication is Cloudflare Access, and only Cloudflare Access. Nothing here
  * accepts a credential: `/logout` hands back the same-origin path a browser has to
  * visit for the edge to revoke, because that navigation is the only logout there
- * is, and `/me` reports the verdict the middleware would reach. The very first caller through Access provisions the sole admin row
- * (see `provisionFirstAdmin`); everyone after that is added from the users screen.
+ * is, and `/me` reports the verdict the middleware would reach. Whether an
+ * unknown-but-vouched address gets a row is the standing policy in
+ * `ACCESS_PROVISION_ROLE` (see `provisionAccessUser`); it is off by default.
  */
 import { Hono } from 'hono';
 import type { AppEnv } from '../env.js';
@@ -53,10 +54,12 @@ authRoutes.get('/me', async (c) => {
     return c.json({ user: outcome.user });
   }
 
-  // Access vouched for someone the panel has never heard of, and past first run
-  // nothing this caller does will change that — the row has to be created by
-  // somebody who already has one. The SPA is told the address so it can name who
-  // needs adding instead of offering a form that cannot help.
+  // Access vouched for someone the panel has never heard of. Whether that can
+  // ever change depends on the standing policy: with `ACCESS_PROVISION_ROLE`
+  // set the caller would have been provisioned a line above, so reaching here
+  // means the policy is off (or typo'd) and the row must come from somebody who
+  // already has one. The SPA is told the address so it can name who needs
+  // adding instead of offering a form that cannot help.
   if (outcome.error === 'no_panel_account') {
     return c.json({ user: null, accessEmail: outcome.accessEmail }, 200);
   }

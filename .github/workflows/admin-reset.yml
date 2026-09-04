@@ -1,11 +1,16 @@
 name: Reset admin panel accounts
 
-# Locked-out recovery: the panel's bootstrap endpoint opens only while `users`
-# is empty, so clearing that table is the documented way back in. Manual only,
-# and guarded by a typed confirmation — this deletes production credentials.
+# Locked-out recovery: under the Cloudflare Access model the panel admits its
+# first caller through an empty `users` table as admin, whatever the provision
+# policy says — so clearing that table is the documented way back in. Manual
+# only, and guarded by a typed confirmation — this deletes production accounts.
 #
 # Routes, settings, the audit log and the published KV document are untouched,
 # so the reverse proxy keeps serving traffic throughout.
+#
+# mcp_tokens is deleted first, on purpose: its user columns are
+# ON DELETE RESTRICT, so a leftover token would refuse the users wipe rather
+# than cascade. Tokens do not survive the accounts they were minted by.
 on:
   workflow_dispatch:
     inputs:
@@ -48,43 +53,38 @@ jobs:
         working-directory: workers/admin-panel
         run: |
           npx wrangler d1 execute jouska-admin --remote --json \
-            --command "SELECT subject, role, disabled, failed_attempts FROM users;"
+            --command "SELECT u.subject, u.role, u.disabled, COUNT(t.id) AS tokens
+                       FROM users u LEFT JOIN mcp_tokens t ON t.user_id = u.id
+                       GROUP BY u.id;"
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
 
-      # Sessions go too: a stale cookie must not outlive the account it names.
-      - name: Clear accounts and sessions
+      - name: Clear accounts and their tokens
         working-directory: workers/admin-panel
         run: |
           npx wrangler d1 execute jouska-admin --remote \
-            --command "DELETE FROM sessions; DELETE FROM users;"
+            --command "DELETE FROM mcp_tokens; DELETE FROM users;"
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
 
-      # Proof the reset took effect, read from the panel itself rather than from
-      # the delete's own exit code. The URL is not hardcoded: every account has
-      # a different workers.dev subdomain, so it is derived from the deployment.
-      - name: Confirm the panel reports itself bootstrappable
+      # Proof the reset took effect, read back from D1 rather than from the
+      # delete's own exit code. Not from the panel over HTTP: under Access the
+      # unauthenticated /api/auth/me reports nothing about table state, and
+      # curling an Access-fronted hostname from CI would only get the login page.
+      - name: Confirm the table is empty
         working-directory: workers/admin-panel
         run: |
-          url=$(npx wrangler deployments list --json 2>/dev/null \
-            | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{
-                try { const u = JSON.stringify(JSON.parse(s)).match(/https:\/\/[a-z0-9-]+\.[a-z0-9-]+\.workers\.dev/);
-                      if (u) console.log(u[0]); } catch {}
-              })')
-          if [ -z "$url" ]; then
-            echo "::notice::Could not derive the panel URL; skipping the readback. Accounts were cleared — open the panel and create a new admin."
-            exit 0
-          fi
-          body=$(curl -fsS --max-time 15 "$url/api/auth/me")
-          echo "GET $url/api/auth/me -> $body"
-          echo "$body" | grep -q '"bootstrapable":true' || {
-            echo "::error::panel still reports bootstrapable:false — accounts were not cleared"
+          out=$(npx wrangler d1 execute jouska-admin --remote --json \
+            --command "SELECT COUNT(*) AS n FROM users;" 2>/dev/null)
+          echo "$out"
+          n=$(echo "$out" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{
+              try { const r=JSON.parse(s);
+                    console.log(r[0].results[0].n); } catch { console.log("parse-failed"); }
+            })')
+          if [ "$n" != "0" ]; then
+            echo "::error::users still has $n row(s) — the delete did not take effect"
             exit 1
-          }
-          echo "::notice::Reset complete. Open $url and create a new admin."
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          fi
+          echo "::notice::Reset complete. The next address Cloudflare Access admits becomes the panel admin; sign in normally."

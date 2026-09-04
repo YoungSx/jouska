@@ -17,7 +17,7 @@ import type { Context } from 'hono';
 import { createMiddleware } from 'hono/factory';
 import type { AppEnv, Vars } from './env.js';
 import { resolveIdentity, type AccessIdentity, type AccessOverrides } from './identity.js';
-import { findUserBySubject, provisionFirstAdmin, touchLastSeen, type UserRecord } from './store.js';
+import { findUserBySubject, provisionAccessUser, touchLastSeen, type UserRecord } from './store.js';
 
 /** Same-origin enforcement for mutating requests; GET/HEAD pass through. */
 export const requireSameOrigin = createMiddleware<AppEnv>(async (c, next) => {
@@ -62,19 +62,52 @@ const executionCtxOf = (c: Context<AppEnv>): unknown => {
 };
 
 /**
- * The panel account behind an Access identity, provisioning it only on first
- * run. `provisionFirstAdmin` refuses once the table is non-empty, so an unknown
- * caller past that point stays unknown here. That split is deliberate: Access
- * answers *who*, the users table answers *what they may do*, and folding the
- * second into the first would silently make every address an Access policy
- * admits into a panel admin.
+ * What `ACCESS_PROVISION_ROLE` says, strictly. Unset means the founding
+ * posture: unknown addresses stay unknown. A set-but-unrecognised value — a
+ * typo — must not soften into the widest role, so it is reported and treated
+ * as unset: admission closes rather than opens.
+ */
+const provisionRoleOf = (value: string | undefined): 'admin' | 'viewer' | undefined => {
+  if (value === undefined) {
+    return undefined;
+  }
+  const trimmed = value.trim().toLowerCase();
+  if (trimmed === 'admin' || trimmed === 'viewer') {
+    return trimmed;
+  }
+  console.error(
+    `ACCESS_PROVISION_ROLE=${JSON.stringify(value)} is not 'admin' or 'viewer'; treating as unset (admission closed).`,
+  );
+  return undefined;
+};
+
+/**
+ * The panel account behind an Access identity, provisioning it only when the
+ * standing policy says to. Access answers *who*; the users table still answers
+ * *what they may do* — but now the gap between the two is an explicit,
+ * reviewed knob (`ACCESS_PROVISION_ROLE` in wrangler.jsonc) rather than a
+ * silent one. Whatever the knob says, an empty table bootstraps its first
+ * caller as admin: that is the operator's recovery path, not a policy leak.
  */
 const accountFor = async (
   db: D1Database,
+  env: Pick<AppEnv['Bindings'], 'ACCESS_PROVISION_ROLE'>,
   identity: AccessIdentity,
-): Promise<UserRecord | undefined> =>
-  (await findUserBySubject(db, identity.email)) ??
-  (await provisionFirstAdmin(db, { subject: identity.email, email: identity.email }));
+): Promise<UserRecord | undefined> => {
+  const role = provisionRoleOf(env.ACCESS_PROVISION_ROLE);
+  return (
+    (await findUserBySubject(db, identity.email)) ??
+    // role is conditionally present rather than explicitly undefined: the
+    // signature declares `role?: 'admin' | 'viewer'`, and under
+    // exactOptionalPropertyTypes an explicit undefined is a type error, not a
+    // synonym for omitting the key.
+    (await provisionAccessUser(db, {
+      subject: identity.email,
+      email: identity.email,
+      ...(role === undefined ? {} : { role }),
+    }))
+  );
+};
 
 export type AuthOutcome =
   | { readonly ok: true; readonly user: Vars['user'] }
@@ -114,11 +147,11 @@ export const authenticate = async (c: Context<AppEnv>): Promise<AuthOutcome> => 
   );
 
   if (access.ok) {
-    const record = await accountFor(c.env.DB, access.identity);
+    const record = await accountFor(c.env.DB, c.env, access.identity);
     if (record === undefined) {
-      // Through the door, but not on the list. Access policies are often
-      // written wider than the panel's intent, so this is a 403 to be granted
-      // deliberately, not a row to create automatically.
+      // Through the door, but not on the list. With the founding posture (or a
+      // typo'd policy value) this is how unknown addresses are refused: a 403
+      // to be granted deliberately, never a row created automatically.
       return {
         ok: false,
         status: 403,

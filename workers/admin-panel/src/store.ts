@@ -343,37 +343,41 @@ export const findUserBySubject = async (
 };
 
 /**
- * First-run provisioning for a caller Cloudflare Access already vouched for.
+ * Account for a caller Cloudflare Access already vouched for.
  *
- * This is now the only way the first account comes into being — there is no
- * `/auth/bootstrap` form behind it — and it is closed the same way that form
- * was: the guard is inside the statement, so the INSERT only fires while
- * `users` is empty and two concurrent first requests cannot both mint an admin.
- * The unique index on `subject` closes what is left.
+ * The row's role follows `ACCESS_PROVISION_ROLE`: with the variable set to a
+ * recognised role, anyone the Access policy admits gets a row at that role —
+ * the deliberate equal-footing posture for a team with no delegation story yet.
+ * Unset, admission stays closed: an unknown address is added from the users
+ * screen, the founding posture. Flipping the variable is the entire changeover
+ * between the two — same table, same rows, no migration.
  *
- * Deliberately only the *first* caller. Access policies are frequently written
- * wider than the panel's intent — a whole email domain, a whole Cloudflare
- * account — so auto-creating a row for everyone who passes the door would hand
- * the route table to a group the operator never enumerated. Everybody after the
- * first is added on purpose, through the users screen.
+ * The empty table outranks the variable, and loudly: a wiped `users` is an
+ * operator recovering access, so the next caller founds the panel as admin
+ * whatever the variable says. An unknown value fails closed into the closed
+ * posture, not into admin.
  */
-export const provisionFirstAdmin = async (
+export const provisionAccessUser = async (
   db: D1Database,
-  args: { readonly subject: string; readonly email?: string },
+  args: { readonly subject: string; readonly email?: string; readonly role?: 'admin' | 'viewer' },
 ): Promise<UserRecord | undefined> => {
-  try {
-    await db
-      .prepare(
-        `INSERT INTO users (subject, email, role, created_at)
-         SELECT ?, ?, 'admin', ?
-         WHERE NOT EXISTS (SELECT 1 FROM users)`,
-      )
-      .bind(args.subject, args.email ?? null, nowSeconds())
-      .run();
-  } catch {
-    // Lost the race: the unique index means the table is no longer empty.
+  const tableEmpty = (await db.prepare('SELECT 1 FROM users LIMIT 1').first()) === null;
+  const role = tableEmpty ? 'admin' : args.role;
+  if (role === undefined) {
     return undefined;
   }
+  // ON CONFLICT, not a WHERE guard: two concurrent first requests race here,
+  // and the loser must see the winner's row on the read-back below rather than
+  // a refusal — for the same subject the unique index resolves it, and for two
+  // racing empty-table founders both deserve the founding role they read.
+  await db
+    .prepare(
+      `INSERT INTO users (subject, email, role, created_at)
+       VALUES (?, ?, ?, ?)
+       ON CONFLICT (subject) DO NOTHING`,
+    )
+    .bind(args.subject, args.email ?? null, role, nowSeconds())
+    .run();
   return await findUserBySubject(db, args.subject);
 };
 

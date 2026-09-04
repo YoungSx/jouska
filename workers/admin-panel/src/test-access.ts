@@ -148,7 +148,12 @@ export const openAccessDoor = async (label: string): Promise<AccessDoor> => {
     jwksCalls: calls,
     env: (overrides: Record<string, unknown> = {}) =>
       ({
+        // wrangler.jsonc's own vars ride into `env` through the Workers pool, so
+        // the repo-level provision policy would arrive in every test. Stripped
+        // here: a case that wants a posture states it, so flipping the
+        // deployment's policy cannot silently rewrite what these suites prove.
         ...testEnv,
+        ACCESS_PROVISION_ROLE: undefined,
         ACCESS_TEAM: team,
         ACCESS_AUD: ACCESS_AUD,
         ACCESS_JWKS_FETCH: impl,
