@@ -43,7 +43,7 @@ export type {
 // populated, so verifying this header is the only way it learns who called.
 // The proxy's route-level guard is built on the same function — a second,
 // approximate verifier next to this one is exactly what sharing prevents.
-export { accessLogoutUrl, verifyAccessJwt } from './internal/access.js';
+export { verifyAccessJwt } from './internal/access.js';
 export type { AccessClaims, AccessJwtRefusal, AccessJwtResult } from './internal/access.js';
 // Response-cache surface a host needs: the state names that appear on
 // `ProxyEvent.cache` and in the `x-jouska-cache` header, and the store shape for

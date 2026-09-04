@@ -346,12 +346,13 @@ describe('admin panel end-to-end', () => {
     expect(out.status).toBe(200);
     expect((await out.json()) as unknown).toEqual({
       ok: true,
-      accessLogout: `https://${door.team}.cloudflareaccess.com/cdn-cgi/access/logout`,
+      accessLogout: '/cdn-cgi/access/logout',
     });
 
-    // And the token still works, which is the honest part: this panel cannot end
-    // an Access session, so it must not pretend the call did. Only visiting that
-    // URL ends it — until then `CF_Authorization` is still on the team domain.
+    // And the token still works after the call, which is the honest part. Ending
+    // the session is a browser navigation to that path — the edge is what revokes,
+    // and it needs the request to arrive with the user's cookie. A `fetch` from
+    // this handler is not that, so the endpoint must not pretend the call did it.
     expect((await get('/api/routes', auth)).status).toBe(200);
   });
 });

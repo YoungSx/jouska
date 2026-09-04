@@ -250,24 +250,11 @@ export type AccessJwtResult =
  * The config schema pins this for the proxy's own `access` block, but this
  * function is also reached from the admin panel, where the name arrives from a
  * wrangler var. Checking it here means the JWKS URL can only ever name a
- * `cloudflareaccess.com` host regardless of which caller got it wrong.
+ * `cloudflareaccess.com` host regardless of which caller got it wrong — a
+ * malformed name has to fail as a refused fetch, never as a request to a host
+ * somebody else controls.
  */
 const TEAM_NAME_PATTERN = /^[a-z0-9][a-z0-9-]{0,62}[a-z0-9]$/;
-
-/**
- * The team's own sign-out URL, or undefined when the name could not be one.
- *
- * Exported because clearing a session cookie does not end an Access session:
- * `CF_Authorization` lives on the team domain, and a panel that only dropped
- * its own cookie would put the operator straight back in on the next reload.
- * The shape check is the same one the JWKS URL relies on, and it matters more
- * here — this string is handed to a browser to navigate to, so a malformed team
- * name would be an open redirect rather than a failed fetch.
- */
-export const accessLogoutUrl = (team: string | undefined): string | undefined =>
-  team !== undefined && TEAM_NAME_PATTERN.test(team)
-    ? `https://${team}.cloudflareaccess.com/cdn-cgi/access/logout`
-    : undefined;
 
 const audienceMatches = (claims: AccessClaims, audience: string): boolean =>
   Array.isArray(claims.aud) ? claims.aud.includes(audience) : claims.aud === audience;

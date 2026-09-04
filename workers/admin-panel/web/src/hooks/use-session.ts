@@ -55,8 +55,9 @@ export const useSession = (): Session => {
     try {
       const { accessLogout } = await api.logout();
       if (accessLogout !== undefined) {
-        // 平台那扇门只有平台关得掉：本地 Cookie 已经清了，但 CF_Authorization
-        // 在 team 域上，不去那儿退出的话下一次刷新又被放进来。
+        // 真正的退出是这一跳：撤销发生在边缘，要浏览器带着 CF_Authorization 走一趟。
+        // 服务端替你 fetch 一下是不算的。注意它是**全局**的——Access 不支持只退出
+        // 单个应用，所以这一跳会把这个人从组织里所有 Access 应用退出。
         globalThis.location.assign(accessLogout);
         return;
       }
@@ -67,7 +68,7 @@ export const useSession = (): Session => {
         return;
       }
     }
-    // 没有 accessLogout（ACCESS_TEAM 没配或团队名不合法）时至少把状态问回来，
+    // 没有 accessLogout（Access 没配，也就没有会话可退）时至少把状态问回来，
     // 让界面停在「需要 Access」而不是假装还登录着。
     await refresh();
   }, [refresh]);
