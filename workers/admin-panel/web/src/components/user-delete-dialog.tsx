@@ -36,6 +36,9 @@ const UserDeleteDialog = ({
       {target !== null && target.subject === selfSubject && (
         <p className="text-muted-foreground text-sm">{t.users.deleteSelfNote}</p>
       )}
+      {target !== null && target.tokenCount > 0 && (
+        <p className="text-sm">{t.users.deleteTokenWarning(target.tokenCount)}</p>
+      )}
       <DialogFooter>
         <Button variant="outline" onClick={onDismiss}>
           {t.common.cancel}

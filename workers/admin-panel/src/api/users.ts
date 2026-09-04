@@ -113,15 +113,16 @@ userRoutes.delete('/users/:id', requireAdmin, async (c) => {
     return c.json({ error: 'not_found' }, 404);
   }
   // Read first only to tell 404 from 409 and to name the audit line; the guard
-  // in the DELETE itself is the decision that matters.
+  // inside the batch is the decision that matters. Revoking as the caller —
+  // not the target — keeps the audit trail nameable after the row is gone.
   const target = await c.env.DB.prepare('SELECT subject, role FROM users WHERE id = ?')
     .bind(id)
     .first<{ subject: string; role: string }>();
   if (target === null) {
     return c.json({ error: 'not_found' }, 404);
   }
-  const changes = await deleteUserGuarded(c.env.DB, id);
-  if (changes === 0) {
+  const result = await deleteUserGuarded(c.env.DB, id, c.get('user').userId);
+  if (!result.deleted) {
     // Guard refused, row still there. Name which wall was hit: emptying the
     // table would reopen first-run provisioning to whatever address Access
     // admits next, which is a different emergency than "no admin left".
@@ -130,6 +131,7 @@ userRoutes.delete('/users/:id', requireAdmin, async (c) => {
   }
   await audit(c.env.DB, c.get('user').subject, 'user.delete', target.subject, {
     role: target.role,
+    ...(result.tokensRevoked > 0 ? { tokensRevoked: result.tokensRevoked } : {}),
   });
-  return c.json({ ok: true });
+  return c.json({ ok: true, tokensRevoked: result.tokensRevoked });
 });

@@ -250,6 +250,8 @@ export interface UserListEntry {
   readonly disabled: boolean;
   readonly createdAt: number;
   readonly lastSeen: number | null;
+  /** Live (unrevoked) MCP tokens the user owns — the delete confirmation pre-announces their revocation. */
+  readonly tokenCount: number;
 }
 
 /**
@@ -262,7 +264,8 @@ export interface UserListEntry {
 export const listUsers = async (db: D1Database): Promise<UserListEntry[]> => {
   const { results } = await db
     .prepare(
-      `SELECT u.id, u.subject, u.email, u.role, u.disabled, u.created_at, u.last_seen
+      `SELECT u.id, u.subject, u.email, u.role, u.disabled, u.created_at, u.last_seen,
+              (SELECT COUNT(*) FROM mcp_tokens t WHERE t.owner_user_id = u.id AND t.revoked_at IS NULL) AS token_count
        FROM users u
        ORDER BY u.id`,
     )
@@ -274,6 +277,7 @@ export const listUsers = async (db: D1Database): Promise<UserListEntry[]> => {
       disabled: number;
       created_at: number;
       last_seen: number | null;
+      token_count: number;
     }>();
   return results.map((r) => ({
     id: r.id,
@@ -283,6 +287,7 @@ export const listUsers = async (db: D1Database): Promise<UserListEntry[]> => {
     disabled: r.disabled === 1,
     createdAt: r.created_at,
     lastSeen: r.last_seen,
+    tokenCount: r.token_count,
   }));
 };
 
@@ -340,6 +345,88 @@ export const findUserBySubject = async (
   return row === null
     ? undefined
     : { id: row.id, subject: row.subject, role: asRole(row.role), disabled: row.disabled !== 0 };
+};
+
+/**
+ * Reads the deploy-generated provision window, fail-closed.
+ *
+ * The row is written by the deploy pipeline (settings key `provision_window`,
+ * value `{"deadline": <epoch seconds>}`) only while the panel has no enabled
+ * admin, so it is a recovery credential as much as a knob: absent, malformed,
+ * expired, or implausibly far in the future all read as closed. The cap exists
+ * because a deadline further out than any MCP token's maximum life would make
+ * this row outlive every other credential in the system.
+ */
+export const PROVISION_WINDOW_KEY = 'provision_window';
+const PROVISION_WINDOW_MAX_SECONDS = 30 * 24 * 60 * 60;
+
+export const readProvisionWindow = async (db: D1Database): Promise<number | undefined> => {
+  const value = await getSetting(db, PROVISION_WINDOW_KEY);
+  if (typeof value !== 'object' || value === null) {
+    return undefined;
+  }
+  const deadline = (value as { deadline?: unknown }).deadline;
+  if (typeof deadline !== 'number' || !Number.isFinite(deadline)) {
+    console.error(
+      `settings.${PROVISION_WINDOW_KEY} has a non-numeric deadline; treating as closed.`,
+    );
+    return undefined;
+  }
+  const now = nowSeconds();
+  if (deadline <= now) {
+    return undefined;
+  }
+  if (deadline > now + PROVISION_WINDOW_MAX_SECONDS) {
+    console.error(
+      `settings.${PROVISION_WINDOW_KEY} deadline is over ${PROVISION_WINDOW_MAX_SECONDS / 86400} days out; treating as closed.`,
+    );
+    return undefined;
+  }
+  return deadline;
+};
+
+/**
+ * Provisions a caller through the open provision window.
+ *
+ * The window has two gates, and both are the lockout state — the row is only
+ * its persistence. Deploy arms the row while no usable admin exists; the grant
+ * fires only while that is still true, re-checked here. A row that outlived
+ * its state (a hygiene step that warned instead of clearing, a restored
+ * backup) can sit there for weeks without ever minting a second boss.
+ *
+ * The grant is always admin: the window exists to end a lockout, and
+ * provisioning at viewer would recreate it. The insert and the row's deletion
+ * share one batch — the fuse burns with the grant, not after it, so a second
+ * stranger a moment later finds the window closed and falls through to the
+ * standing policy (usually a 403). Two simultaneous first arrivals both land
+ * inside their own gates and both become admin; that is the window's meaning,
+ * not a race to defend against.
+ */
+export const provisionViaWindow = async (
+  db: D1Database,
+  args: { readonly subject: string; readonly email: string | undefined },
+): Promise<UserRecord | undefined> => {
+  const deadline = await readProvisionWindow(db);
+  if (deadline === undefined) {
+    return undefined;
+  }
+  const liveAdmins = await db
+    .prepare("SELECT COUNT(*) AS n FROM users WHERE role = 'admin' AND disabled = 0")
+    .first<{ n: number }>();
+  if ((liveAdmins?.n ?? 0) > 0) {
+    return undefined;
+  }
+  await db.batch([
+    db
+      .prepare(
+        `INSERT INTO users (subject, email, role, created_at)
+         VALUES (?, ?, 'admin', ?)
+         ON CONFLICT (subject) DO NOTHING`,
+      )
+      .bind(args.subject, args.email ?? null, nowSeconds()),
+    db.prepare('DELETE FROM settings WHERE key = ?').bind(PROVISION_WINDOW_KEY),
+  ]);
+  return await findUserBySubject(db, args.subject);
 };
 
 /**
@@ -441,29 +528,63 @@ export const updateUserGuarded = async (
 };
 
 /**
- * Deletes one user, guarded on both invariants plus a floor of one row.
+ * Deletes one user and revokes their MCP tokens in the same transaction.
+ *
+ * Order inside the batch is forced: the DELETE's ON DELETE SET NULL would
+ * erase the owner link the revocation is supposed to record, so the revocation
+ * must run while the link still exists. Both statements carry the same guard —
+ * the last-admin/last-row invariants — so a delete the guard refuses revokes
+ * nothing either: neither statement touches `users`, meaning the guard reads
+ * the identical state at both evaluation points and cannot half-fire.
+ *
+ * The self-delete case passes `revokedByUserId = null`: recording the deleted
+ * user as their own revoker would be erased by the FK's ON DELETE SET NULL a
+ * statement later, so the revocation is recorded as system-initiated instead.
  *
  * The row floor is not sentiment: emptying `users` reopens bootstrap, which
  * would let anyone on the public internet create the next admin. The guard is
- * part of the DELETE itself, so re-running it after the state has changed
+ * part of the statements themselves, so re-running after a state change
  * re-evaluates it — the second attempt finds the guard no longer satisfied and
  * writes nothing.
- *
- * Sessions of the deleted user go via ON DELETE CASCADE.
  */
-export const deleteUserGuarded = async (db: D1Database, id: number): Promise<number> => {
-  const res = await db
-    .prepare(
-      `DELETE FROM users
-       WHERE id = ?
-         AND (SELECT COUNT(*) FROM users) > 1
-         AND ( role != 'admin'
-               OR (disabled = 1 AND (SELECT COUNT(*) FROM users a WHERE a.role = 'admin') > 1)
-               OR (SELECT COUNT(*) FROM users a WHERE a.role = 'admin' AND a.disabled = 0) > 1 )`,
-    )
-    .bind(id)
-    .run();
-  return res.meta.changes;
+export interface UserDeletion {
+  readonly deleted: boolean;
+  readonly tokensRevoked: number;
+}
+
+export const deleteUserGuarded = async (
+  db: D1Database,
+  id: number,
+  revokedByUserId: number | null,
+): Promise<UserDeletion> => {
+  const guard = `(SELECT COUNT(*) FROM users) > 1
+                 AND ( (SELECT role FROM users WHERE id = ?) != 'admin'
+                       OR ( (SELECT disabled FROM users WHERE id = ?) = 1
+                            AND (SELECT COUNT(*) FROM users a WHERE a.role = 'admin') > 1 )
+                       OR (SELECT COUNT(*) FROM users a WHERE a.role = 'admin' AND a.disabled = 0) > 1 )`;
+  const [revokeResult, deletionResult] = await db.batch([
+    db
+      .prepare(
+        `UPDATE mcp_tokens
+         SET revoked_at = ?, revoked_by_user_id = ?, revoke_reason = 'owner_deleted'
+         WHERE owner_user_id = ? AND revoked_at IS NULL AND ${guard}`,
+      )
+      .bind(nowSeconds(), revokedByUserId, id, id, id),
+    db
+      .prepare(
+        `DELETE FROM users
+         WHERE id = ? AND ${guard}`,
+      )
+      .bind(id, id, id),
+  ]);
+  // db.batch returns exactly one D1Result per statement — the pair is never
+  // absent; only the type's array indexing says otherwise.
+  const revoke = revokeResult!;
+  const deletion = deletionResult!;
+  return {
+    deleted: deletion.meta.changes > 0,
+    tokensRevoked: revoke.meta.changes,
+  };
 };
 
 /* ---------- Revisions: the snapshot of every publish. ---------- */
@@ -671,8 +792,10 @@ export interface McpTokenListEntry {
   readonly id: string;
   readonly name: string;
   readonly tokenPrefix: string;
-  readonly ownerUserId: number;
-  readonly issuedByUserId: number;
+  readonly ownerUserId: number | null;
+  readonly issuedByUserId: number | null;
+  /** Owner's subject, via JOIN — null once the owning account is gone. */
+  readonly ownerSubject: string | null;
   readonly scopes: readonly McpScope[];
   readonly createdAt: number;
   readonly expiresAt: number;
@@ -708,16 +831,18 @@ const parseScopesColumn = (raw: string): McpScope[] => {
 export const listMcpTokens = async (db: D1Database): Promise<McpTokenListEntry[]> => {
   const { results } = await db
     .prepare(
-      `SELECT id, name, token_prefix, owner_user_id, issued_by_user_id, scopes,
-              created_at, expires_at, revoked_at, revoke_reason, last_used_at
-       FROM mcp_tokens ORDER BY created_at DESC, id DESC`,
+      `SELECT t.id, t.name, t.token_prefix, t.owner_user_id, t.issued_by_user_id, u.subject AS owner_subject, t.scopes,
+              t.created_at, t.expires_at, t.revoked_at, t.revoke_reason, t.last_used_at
+       FROM mcp_tokens t LEFT JOIN users u ON u.id = t.owner_user_id
+       ORDER BY t.created_at DESC, t.id DESC`,
     )
     .all<{
       id: string;
       name: string;
       token_prefix: string;
-      owner_user_id: number;
-      issued_by_user_id: number;
+      owner_user_id: number | null;
+      issued_by_user_id: number | null;
+      owner_subject: string | null;
       scopes: string;
       created_at: number;
       expires_at: number;
@@ -731,6 +856,7 @@ export const listMcpTokens = async (db: D1Database): Promise<McpTokenListEntry[]
     tokenPrefix: row.token_prefix,
     ownerUserId: row.owner_user_id,
     issuedByUserId: row.issued_by_user_id,
+    ownerSubject: row.owner_subject,
     scopes: parseScopesColumn(row.scopes),
     createdAt: row.created_at,
     expiresAt: row.expires_at,

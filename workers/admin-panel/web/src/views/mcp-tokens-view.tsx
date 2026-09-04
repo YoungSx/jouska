@@ -206,9 +206,26 @@ export const McpTokensView = ({ onUnauthenticated }: McpTokensViewProps) => {
   );
 };
 
-const statusOf = (token: McpTokenEntry): 'active' | 'revoked' | 'expired' => {
-  if (token.revokedAt != null) return 'revoked';
+/**
+ * 状态徽标。`owner_deleted` 是删除主人账号时的连带吊销，普通「已撤销」看不出
+ * 钥匙为什么死了——单独给一行文案，归属列的「主人已删除」配合着读才完整。
+ */
+const statusOf = (token: McpTokenEntry): 'active' | 'revoked' | 'owner_deleted' | 'expired' => {
+  if (token.revokedAt != null) {
+    return token.revokeReason === 'owner_deleted' ? 'owner_deleted' : 'revoked';
+  }
   return token.expiresAt <= Date.now() / 1000 ? 'expired' : 'active';
+};
+
+const statusLabel = (token: McpTokenEntry): string => {
+  const status = statusOf(token);
+  return status === 'active'
+    ? t.mcp.active
+    : status === 'revoked'
+      ? t.mcp.revoked
+      : status === 'owner_deleted'
+        ? t.mcp.revokedOwnerDeleted
+        : t.mcp.expired;
 };
 
 const TokenTable = ({
@@ -224,6 +241,7 @@ const TokenTable = ({
         <TableRow>
           <TableHead>{t.mcp.columns.name}</TableHead>
           <TableHead>{t.mcp.columns.prefix}</TableHead>
+          <TableHead>{t.mcp.columns.owner}</TableHead>
           <TableHead>{t.mcp.columns.scopes}</TableHead>
           <TableHead>{t.mcp.columns.expires}</TableHead>
           <TableHead>{t.mcp.columns.lastUsed}</TableHead>
@@ -240,6 +258,7 @@ const TokenTable = ({
             <TableRow key={token.id} className={status === 'active' ? undefined : 'opacity-60'}>
               <TableCell className="font-medium">{token.name}</TableCell>
               <TableCell className="font-mono text-xs">{token.tokenPrefix}…</TableCell>
+              <TableCell className="text-xs">{token.ownerSubject ?? t.mcp.ownerDeleted}</TableCell>
               <TableCell>
                 <div className="flex max-w-64 flex-wrap gap-1">
                   {token.scopes.map((scope) => (
@@ -261,11 +280,7 @@ const TokenTable = ({
               </TableCell>
               <TableCell>
                 <Badge variant={status === 'active' ? 'default' : 'secondary'}>
-                  {status === 'active'
-                    ? t.mcp.active
-                    : status === 'revoked'
-                      ? t.mcp.revoked
-                      : t.mcp.expired}
+                  {statusLabel(token)}
                 </Badge>
               </TableCell>
               <TableCell>

@@ -356,6 +356,8 @@ export interface UserEntry {
   readonly createdAt: number;
   /** null = 从未登录过（只创建还没用过的账号）。 */
   readonly lastSeen: number | null;
+  /** 名下未撤销的 MCP 令牌数——删除确认框用它预告连带吊销。 */
+  readonly tokenCount: number;
 }
 
 /* ---------- 发布历史与回滚 ---------- */
@@ -471,8 +473,10 @@ export interface McpTokenEntry {
   readonly id: string;
   readonly name: string;
   readonly tokenPrefix: string;
-  readonly ownerUserId?: number;
-  readonly issuedByUserId?: number;
+  /** 主人账号删除后三者皆空——令牌行保留（置灰），归属显示为「主人已删除」。 */
+  readonly ownerUserId: number | null;
+  readonly issuedByUserId: number | null;
+  readonly ownerSubject: string | null;
   readonly scopes: readonly McpScope[];
   readonly createdAt: number;
   readonly expiresAt: number;

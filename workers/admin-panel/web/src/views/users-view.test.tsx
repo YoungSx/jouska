@@ -20,6 +20,7 @@ const makeUser = (over: Partial<UserEntry>): UserEntry => ({
   disabled: false,
   createdAt: NOW - 86400,
   lastSeen: NOW - 60,
+  tokenCount: 0,
   ...over,
 });
 

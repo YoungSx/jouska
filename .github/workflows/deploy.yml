@@ -101,6 +101,49 @@ jobs:
           echo "health check failed at $url/api/health (last status: $code)" >&2
           exit 1
 
+      # 建号窗口：按面板的状态自动开合，不是每次部署都开。
+      #
+      # 判据是状态（没有可用的管理员）而不是事件（部署发生了）：有管理员在，
+      # 这一步把可能残留的窗口行清掉（卫生）；没有，才写入一个 7 天截止时间。
+      # 面板的登录中间件只在陌生人敲门时读它——放进来一次就整行删除（一次性
+      # 熔断），所以它不是常开的门，是留给「管理员没了」的应急钥匙。
+      #
+      # 失败不阻断部署：面板照常上线，只是应急钥匙没挂上去。最坏情况等于本
+      # commit 之前的行为——锁死时走 admin-reset.yml 清表重来。
+      - name: Open or clear the provision window
+        working-directory: workers/admin-panel
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          out=$(npx wrangler d1 execute jouska-admin --remote --json \
+            --command "SELECT COUNT(*) AS n FROM users WHERE role = 'admin' AND disabled = 0;" 2>/dev/null)
+          admins=$(echo "$out" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{
+              try { console.log(JSON.parse(s)[0].results[0].n); } catch { console.log("parse-failed"); }
+            })')
+          if [ "$admins" = "parse-failed" ]; then
+            echo "::warning::could not count enabled admins — provision window left untouched"
+            exit 0
+          fi
+          if [ "$admins" != "0" ]; then
+            npx wrangler d1 execute jouska-admin --remote --json \
+              --command "DELETE FROM settings WHERE key = 'provision_window';" >/dev/null 2>&1 || true
+            echo "::notice::panel has $admins enabled admin(s) — provision window cleared/closed"
+            exit 0
+          fi
+          # d1 execute has no --params flag, and the value needs none: the
+          # deadline is a bare integer out of node, so inlining it into the
+          # SQL text carries no injection surface. Interpolation, not binding,
+          # is therefore the honest form here — verified against a local D1.
+          deadline=$(node -e 'console.log(Math.floor(Date.now()/1000) + 7*86400)')
+          if npx wrangler d1 execute jouska-admin --remote --json \
+            --command "INSERT INTO settings (key, value) VALUES ('provision_window', '{\"deadline\": $deadline}')
+                       ON CONFLICT (key) DO UPDATE SET value = excluded.value" >/dev/null 2>&1; then
+            echo "::notice::no enabled admin — provision window open for 7 days (burns on first use)"
+          else
+            echo "::warning::no enabled admin, but the window write failed — use admin-reset.yml if locked out"
+          fi
+
       # 「域名」页要调 Cloudflare API，凭据复用部署用的这一个。
       #
       # 权限：三个来源都靠这一个 token。Cloudflare 的 Edit 含 Read，所以部署

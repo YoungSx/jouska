@@ -91,9 +91,12 @@
   // Anything else — a typo — fails closed like absent, logged loudly. Whatever
   // this says, the first caller through an empty table always bootstraps as
   // admin: an out-of-band wipe is recovery, never a lockout.
-  "vars": {
-    "ACCESS_PROVISION_ROLE": "admin",
-  },
+  //
+  // Currently absent: recovery is the deploy pipeline's provision window (a
+  // 7-day, single-use grant opened only while no enabled admin exists — see
+  // deploy.yml), not a standing equal-footing policy. Anyone new is added from
+  // the users screen.
+  "vars": {},
 
   "observability": {
     "enabled": true,
