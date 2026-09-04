@@ -778,7 +778,14 @@ describe('signed links', () => {
     ]);
     // The signature is base64url, so both ends of the alphabet are real
     // characters; flipping either must fail the verify, not crash on decode.
-    for (const tampered of [`A${sig.slice(1)}`, `${sig.slice(0, -1)}A`]) {
+    // The flip must actually change the character — overwriting with 'A' is a
+    // no-op when that char is already 'A' (~3% of HMAC rolls), and the test
+    // would then verify a perfectly valid signature.
+    const flip = (s: string, i: number) => {
+      const c = s[i] === 'A' ? 'B' : 'A';
+      return s.slice(0, i) + c + s.slice(i + 1);
+    };
+    for (const tampered of [flip(sig, 0), flip(sig, sig.length - 1)]) {
       const res = await app.fetch(new Request(`https://p.dev/x?sig=${tampered}&exp=${farFuture}`), {
         KEY: secret,
       });
