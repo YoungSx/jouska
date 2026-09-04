@@ -102,6 +102,11 @@ export interface MeResult {
    * 登录了——所以界面要说「找管理员把这个地址加进来」，而不是再给一张登录表单。
    */
   readonly accessEmail?: string;
+  /**
+   * 这次部署根本没接上 Access（两个变量没配齐）。它不描述这次请求，只描述这次
+   * 部署——所以界面给部署者指路，而不是假装是请求的问题。
+   */
+  readonly identityNotConfigured?: boolean;
 }
 
 const asUser = (raw: unknown): User | null => {
@@ -122,9 +127,11 @@ export const api = {
   me: async (): Promise<MeResult> => {
     const data = await request('GET', '/api/auth/me');
     const accessEmail = typeof data.accessEmail === 'string' ? data.accessEmail : undefined;
+    const notConfigured = data.identity === 'not_configured';
     return {
       user: asUser(data.user),
       ...(accessEmail === undefined ? {} : { accessEmail }),
+      ...(notConfigured ? { identityNotConfigured: true } : {}),
     };
   },
 

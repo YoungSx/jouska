@@ -18,6 +18,8 @@ export type SessionState =
        * 这个状态只有别人的账号能解开。
        */
       readonly accessEmail?: string;
+      /** 这次部署没接上 Access（变量没配齐）。要改的是部署配置，不是这个人。 */
+      readonly identityNotConfigured?: boolean;
     }
   /** 连不上服务器 —— 区别于"未登录"，因为该给的是重试而不是登录表单。 */
   | { readonly status: 'offline' };
@@ -35,10 +37,14 @@ export const useSession = (): Session => {
 
   const refresh = React.useCallback(async () => {
     try {
-      const { user, accessEmail } = await api.me();
+      const { user, accessEmail, identityNotConfigured } = await api.me();
       setState(
         user === null
-          ? { status: 'anonymous', ...(accessEmail === undefined ? {} : { accessEmail }) }
+          ? {
+              status: 'anonymous',
+              ...(accessEmail === undefined ? {} : { accessEmail }),
+              ...(identityNotConfigured === true ? { identityNotConfigured: true } : {}),
+            }
           : { status: 'authed', user },
       );
     } catch (error) {

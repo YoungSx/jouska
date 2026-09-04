@@ -114,6 +114,23 @@ describe('Access off', () => {
     expect(await userCount()).toBe(0);
   });
 
+  it('tells /me the deployment is unwired, so the SPA can address the deployer', async () => {
+    const res = await request('GET', '/api/auth/me', envWith({}));
+    expect(res.status).toBe(200);
+    expect((await res.json()) as unknown).toMatchObject({
+      user: null,
+      identity: 'not_configured',
+    });
+  });
+
+  it('keeps /me nameless when Access is wired but this request carried nothing', async () => {
+    // Vars present, no header: the refusal is about the caller, so the only
+    // thing a stranger learns is what any 401 would have said.
+    const res = await request('GET', '/api/auth/me', accessEnv('acme-silent', deadFetch));
+    expect(res.status).toBe(200);
+    expect((await res.json()) as unknown).toStrictEqual({ user: null });
+  });
+
   it('does not provision anybody on the way past', async () => {
     await request('GET', '/api/routes', envWith({}));
     expect(await userCount()).toBe(0);

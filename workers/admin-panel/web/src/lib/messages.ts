@@ -107,15 +107,28 @@ export const t = {
   },
 
   /**
-   * 请求身上连 Access 身份都没有。
+   * 401 拒绝页现在是两张卡，不再共用一段话。
    *
-   * 两种成因说的是同一句话：这一页给不出任何能改变现状的动作。所以文案不提「重
-   * 试」，也不提凭据 —— 要动的是 Access 应用的配置，不在这个浏览器里。
+   * 服务端把「这次部署没接线」单独告诉了前端（/api/auth/me 的 identity 字段）。
+   * 没接线时看到这页的人多半就是部署的人，卡片给接线步骤；接了线但这条请求没带
+   * 上身份时，看到这页的可能是任何一个扫到这个域名的陌生人，卡片只剩一句这个
+   * 面板要什么 —— 不解释 Access 应用、不指路「找部署的人」。
    */
+  accessSetup: {
+    title: '面板的门还没接上',
+    lead: '面板只认 Cloudflare Access 的身份，而这次部署还没把门接上，所以谁都进不来，包括你。',
+    steps: [
+      '在 Cloudflare 仪表盘打开这个 Worker 的 Access 开关：Settings → Access policy → Restrict access。',
+      '在 GitHub secrets 里配 ACCESS_TEAM 和 ACCESS_AUD——启用开关时的弹窗会给出这两个值。',
+      '重新部署一次，门就接上了。',
+    ],
+    hint: '两个值都不是机密，但缺一个就不行：少了它们，面板没法证明一张 Access 凭据真是签给这个面板的。',
+  },
+
   accessRequired: {
-    title: '这个面板走 Cloudflare Access',
-    lead: '请求里没有 Access 身份，所以面板不知道你是谁，也没有登录表单可以给你。',
-    hint: '要么这个部署还没接上 Access 应用，要么这条路径绕过了它。请找部署的人确认。',
+    title: '没有可用的入口',
+    lead: '这个面板只对通过 Cloudflare Access 认证的人开放。',
+    hint: '没有登录表单，也没有可以在这里做的事。',
   },
 
   /**
