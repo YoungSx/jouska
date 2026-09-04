@@ -1,6 +1,7 @@
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { toast } from 'sonner';
 import { RouteEditor } from './route-editor';
 import { api, type DomainsResponse, type HostBinding } from '@/lib/api';
 import type { RouteDefinition } from '@/lib/types';
@@ -30,6 +31,20 @@ const saveDraft = async (user: ReturnType<typeof userEvent.setup>) => {
   await user.click(screen.getByRole('button', { name: '保存到草稿' }));
   await waitFor(() => expect(api.putRoute).toHaveBeenCalledTimes(before + 1));
   return calls.at(-1)?.[1];
+};
+
+/**
+ * 手风琴收起的卡里控件是隐藏的（keepMounted + aria-hidden），getByRole 默认过滤
+ * 隐藏元素，userEvent 也点不到。操作卡内控件前先把卡展开。
+ * 卡头的 accessible name 是「卡名 + 状态徽章」串联，用前缀正则匹配；
+ * Base UI 的 multiple 手风琴重复点同一卡头会把它收回去，所以只在收起时才点。
+ */
+const ensureOpen = async (user: ReturnType<typeof userEvent.setup>, label: string) => {
+  const pattern = new RegExp(`^${label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`);
+  const trigger = screen.getByRole('button', { name: pattern });
+  if (trigger.getAttribute('aria-expanded') === 'false') {
+    await user.click(trigger);
+  }
 };
 
 const renderEditor = (
@@ -203,6 +218,7 @@ describe('RouteEditor 正文改写（issue #29）', () => {
   it('打开改写：两个子开关出现，且都显示为 schema 默认的开', async () => {
     const user = userEvent.setup();
     renderEditor();
+    await ensureOpen(user, '响应改写');
 
     expect(screen.queryByRole('switch', { name: '改写链接' })).not.toBeInTheDocument();
     await user.click(screen.getByRole('switch', { name: '改写响应体' }));
@@ -214,6 +230,7 @@ describe('RouteEditor 正文改写（issue #29）', () => {
   it('打开改写就摊开代价：剥掉验证器与 CSP 这件事不能等出问题才发现', async () => {
     const user = userEvent.setup();
     renderEditor();
+    await ensureOpen(user, '响应改写');
     await user.click(screen.getByRole('switch', { name: '改写响应体' }));
 
     const note = screen.getByRole('alert');
@@ -225,6 +242,7 @@ describe('RouteEditor 正文改写（issue #29）', () => {
   it('关掉样式改写只落那一个 false，段壳留着', async () => {
     const user = userEvent.setup();
     renderEditor();
+    await ensureOpen(user, '响应改写');
     await user.click(screen.getByRole('switch', { name: '改写响应体' }));
     await user.click(screen.getByRole('switch', { name: '改写样式里的地址' }));
 
@@ -273,6 +291,7 @@ describe('RouteEditor 注入请求头', () => {
   it('点「加一行」就出现一行空输入 —— 第一行也不例外', async () => {
     const user = userEvent.setup();
     renderEditor();
+    await ensureOpen(user, '注入请求头');
 
     expect(screen.queryByLabelText('头名 1')).not.toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: '加一行' }));
@@ -284,6 +303,7 @@ describe('RouteEditor 注入请求头', () => {
   it('连点两次就是两行，第二行不吃掉第一行', async () => {
     const user = userEvent.setup();
     renderEditor();
+    await ensureOpen(user, '注入请求头');
 
     const addRow = screen.getByRole('button', { name: '加一行' });
     await user.click(addRow);
@@ -297,6 +317,7 @@ describe('RouteEditor 注入请求头', () => {
   it('加行后打的字落进草稿', async () => {
     const user = userEvent.setup();
     renderEditor();
+    await ensureOpen(user, '注入请求头');
     await user.click(screen.getByRole('button', { name: '加一行' }));
     await user.type(screen.getByLabelText('头名 1'), 'x-api-key');
     await user.type(screen.getByLabelText('值 1'), 'secret');
@@ -307,6 +328,7 @@ describe('RouteEditor 注入请求头', () => {
   it('只写了头名的行照样落盘，值是空串 —— 先写名再补值是正常输入顺序', async () => {
     const user = userEvent.setup();
     renderEditor();
+    await ensureOpen(user, '注入请求头');
     await user.click(screen.getByRole('button', { name: '加一行' }));
     await user.type(screen.getByLabelText('头名 1'), 'x-trace');
 
@@ -335,6 +357,7 @@ describe('RouteEditor 注入请求头', () => {
       upstream: 'origin.example.com',
       upstreamHeaders: { 'x-api-key': 'secret' },
     });
+    await ensureOpen(user, '注入请求头');
 
     await user.click(screen.getByRole('button', { name: '删掉这一行' }));
     expect(screen.queryByLabelText('头名 1')).not.toBeInTheDocument();
@@ -433,6 +456,7 @@ describe('RouteEditor 字面替换（issue #38）', () => {
   it('加一行写好查找与替换，落进草稿', async () => {
     const user = userEvent.setup();
     renderEditor();
+    await ensureOpen(user, '响应改写');
     await user.click(screen.getByRole('switch', { name: '改写响应体' }));
     await user.click(screen.getByRole('button', { name: '加一行替换' }));
     await user.type(screen.getByLabelText('查找 1'), 'cdn.origin.dev');
@@ -448,6 +472,7 @@ describe('RouteEditor 字面替换（issue #38）', () => {
   it('查找为空的行不发出去，行也不消失 —— 先写查找再补替换是正常顺序', async () => {
     const user = userEvent.setup();
     renderEditor();
+    await ensureOpen(user, '响应改写');
     await user.click(screen.getByRole('switch', { name: '改写响应体' }));
     await user.click(screen.getByRole('button', { name: '加一行替换' }));
 
@@ -525,6 +550,7 @@ describe('RouteEditor 访问控制（issue #34）', () => {
   it('开启 CF 校验：team 与 audience 落进草稿', async () => {
     const user = userEvent.setup();
     renderEditor();
+    await ensureOpen(user, '身份验证（你是谁）');
 
     await user.click(screen.getByRole('switch', { name: '身份验证（你是谁）' }));
     await user.click(screen.getByRole('switch', { name: '校验 Cloudflare Access 的 JWT' }));
@@ -539,6 +565,7 @@ describe('RouteEditor 访问控制（issue #34）', () => {
   it('粘哈希进 keys：警示就地出现，草稿存的就是这串哈希', async () => {
     const user = userEvent.setup();
     renderEditor();
+    await ensureOpen(user, '身份验证（你是谁）');
 
     await user.click(screen.getByRole('switch', { name: '身份验证（你是谁）' }));
     await user.type(screen.getByLabelText('API key 的 SHA-256 哈希'), DIGEST);
@@ -572,6 +599,7 @@ describe('RouteEditor 委托鉴权段（#53）', () => {
   it('forwardAuth：开关与 url、failOpen 进 definition', async () => {
     const user = userEvent.setup();
     renderEditor(true, { upstream: 'origin.example.com' });
+    await ensureOpen(user, '委托鉴权');
 
     await user.click(screen.getByRole('switch', { name: '委托鉴权' }));
     await user.type(screen.getByLabelText('鉴权端点 URL'), 'https://sso.example.com/check');
@@ -596,6 +624,7 @@ describe('RouteEditor 超时预设', () => {
   it('点 LLM 上游：三个框填上库里的数字，其余框不动', async () => {
     const user = userEvent.setup();
     renderEditor(true, { upstream: 'origin.example.com' });
+    await ensureOpen(user, '超时与重试');
 
     await user.click(screen.getByRole('button', { name: 'LLM 上游' }));
 
@@ -615,6 +644,7 @@ describe('RouteEditor 超时预设', () => {
   it('点长流式响应：只动正文两个框，响应头时限留在默认', async () => {
     const user = userEvent.setup();
     renderEditor(true, { upstream: 'origin.example.com' });
+    await ensureOpen(user, '超时与重试');
 
     await user.click(screen.getByRole('button', { name: '长流式响应' }));
 
@@ -626,6 +656,7 @@ describe('RouteEditor 超时预设', () => {
   it('预设是一锤子买卖：填完之后手改数字照常生效', async () => {
     const user = userEvent.setup();
     renderEditor(true, { upstream: 'origin.example.com' });
+    await ensureOpen(user, '超时与重试');
 
     await user.click(screen.getByRole('button', { name: 'LLM 上游' }));
     const total = screen.getByLabelText('重试总时限（毫秒）');
@@ -649,5 +680,260 @@ describe('RouteEditor 超时预设', () => {
     expect(await saveDraft(user)).not.toHaveProperty('timeoutMs');
     expect(await saveDraft(user)).not.toHaveProperty('retries');
     expect(await saveDraft(user)).not.toHaveProperty('streamIdleTimeoutMs');
+  });
+});
+
+/**
+ * 手风琴的自动展开与状态徽章（重设计 #redesign-route-editor）。
+ *
+ * 焊的是新信息架构的承诺：已有内容的卡自动展开——已有键的区块藏起来等于把数据
+ * 藏起来；没配过的收着，页面才不吓人。徽章则让收起的卡不丢状态：收起不丢数据。
+ */
+describe('RouteEditor 手风琴初始展开（重设计）', () => {
+  beforeEach(() => {
+    vi.spyOn(api, 'domains').mockResolvedValue(configured([]));
+    vi.spyOn(api, 'putRoute').mockResolvedValue(undefined);
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('definition 里已有 bodyRewrite：改写卡挂载即展开，其余卡收着', async () => {
+    renderEditor(true, {
+      upstream: 'origin.example.com',
+      bodyRewrite: { rewriteLinks: true },
+    });
+
+    const rewrite = screen.getByRole('button', { name: /响应改写/ });
+    expect(rewrite).toHaveAttribute('aria-expanded', 'true');
+    expect(screen.getByRole('switch', { name: '改写链接' })).toBeChecked();
+
+    const timing = screen.getByRole('button', { name: /超时与重试/ });
+    expect(timing).toHaveAttribute('aria-expanded', 'false');
+  });
+
+  it('definition 里已有 upstreamHeaders：头卡自动展开，点过一次的卡头能再收回去', async () => {
+    renderEditor(true, {
+      upstream: 'origin.example.com',
+      upstreamHeaders: { 'x-api-key': 'secret' },
+    });
+
+    const headers = screen.getByRole('button', { name: /注入请求头/ });
+    expect(headers).toHaveAttribute('aria-expanded', 'true');
+    expect(screen.getByLabelText('头名 1')).toHaveValue('x-api-key');
+
+    const user = userEvent.setup();
+    await user.click(headers);
+    expect(headers).toHaveAttribute('aria-expanded', 'false');
+  });
+
+  it('空定义全部收着；点卡头展开，能直接操作卡内控件', async () => {
+    const user = userEvent.setup();
+    renderEditor();
+
+    const trigger = screen.getByRole('button', { name: /委托鉴权/ });
+    expect(trigger).toHaveAttribute('aria-expanded', 'false');
+    await user.click(trigger);
+
+    expect(screen.getByRole('switch', { name: '委托鉴权' })).toBeInTheDocument();
+  });
+});
+
+/**
+ * JSON 逃生门（重设计）。JSON 改坏了不必手工逐字修：放弃 JSON 里的改动，
+ * JSON 文本退回最后一次成功解析的定义。焊住三点——报错带行列位置、按钮只在坏的时候出现、
+ * 按下后 JSON 文本与表单重新共享同一份数据。
+ */
+describe('RouteEditor JSON 逃生门（重设计）', () => {
+  beforeEach(() => {
+    vi.spyOn(api, 'domains').mockResolvedValue(configured([]));
+    vi.spyOn(api, 'putRoute').mockResolvedValue(undefined);
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('写坏 JSON：报错带行列位置，出现逃生门按钮', async () => {
+    const user = userEvent.setup();
+    renderEditor();
+    await user.click(screen.getByRole('tab', { name: 'JSON' }));
+
+    await user.type(screen.getByLabelText('路由定义'), '}');
+    await waitFor(() =>
+      expect(screen.getByRole('alert')).toHaveTextContent(/第 \d+ 行第 \d+ 列附近/),
+    );
+    expect(
+      screen.getByRole('button', { name: '放弃 JSON 里的改动，回到表单那份定义' }),
+    ).toBeInTheDocument();
+  });
+
+  it('按下逃生门：JSON 文本回到表单那份定义，错误消失，还能接着保存', async () => {
+    const user = userEvent.setup();
+    renderEditor();
+    await user.click(screen.getByRole('tab', { name: 'JSON' }));
+
+    await user.type(screen.getByLabelText('路由定义'), '}');
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: '放弃 JSON 里的改动，回到表单那份定义' })),
+    );
+
+    await user.click(screen.getByRole('button', { name: '放弃 JSON 里的改动，回到表单那份定义' }));
+
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    // 文本回到最后一次成功解析的定义 —— 与表单视图重新共享同一份数据。
+    expect(screen.getByLabelText('路由定义')).toHaveValue(
+      '{\n  "upstream": "origin.example.com"\n}',
+    );
+    // 逃生门不是死胡同：回到表单后保存照常工作。
+    expect(await saveDraft(user)).toMatchObject({ upstream: 'origin.example.com' });
+  });
+});
+
+/**
+ * 错误的可见性（critique P0/P3）。拦不拦是规则（blocked 用全量 errors），
+ * 亮不亮是展示（展示层用 shownErrors）。焊四点——
+ *
+ * 1. 越界数字在收起卡里也要能被看见：timing 卡亮「需修正」徽章 + 页脚摘要点
+ *    第一条错误的名。只给一个灰按钮等于让人翻五张卡找原因。
+ * 2. 新建第一屏不判红：upstream 必填的「还没写」在用户动手前先静音。
+ * 3. 静音只在 pristine：动过一次手（哪怕又清空）错误就见人，且不回头。
+ * 4. 卡头状态字分层：守卫卡配置过读「已启用」，高级卡读「已设置」，都没配读「默认」。
+ */
+describe('RouteEditor 错误可见性（重设计）', () => {
+  beforeEach(() => {
+    vi.spyOn(api, 'domains').mockResolvedValue(configured([]));
+    vi.spyOn(api, 'putRoute').mockResolvedValue(undefined);
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('越界数字：timing 卡亮需修正徽章，页脚摘要点名第一条错误，保存禁用', async () => {
+    const user = userEvent.setup();
+    renderEditor();
+    await ensureOpen(user, '超时与重试');
+
+    // retries 的上界是 100（给「重试总时限」打 1 反而是合法值）。
+    const retries = screen.getByLabelText('额外重试次数');
+    await user.clear(retries);
+    await user.type(retries, '500');
+
+    const timingCard = screen.getByRole('button', { name: /^超时与重试/ });
+    expect(timingCard).toHaveTextContent('需修正');
+    // 卡展开时内联 FieldError 也是 alert，页脚摘要按完整文案精确点名。
+    expect(screen.getByText('保存还差一步：额外重试次数：0 – 100')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '保存到草稿' })).toBeDisabled();
+  });
+
+  it('新建第一屏不判红：upstream 必填错误先静音', () => {
+    renderEditor(true, {});
+    const upstream = screen.getByLabelText('upstream');
+    expect(upstream).not.toBeInvalid();
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  });
+
+  it('动过手错误就见人：打一个字再清空，upstream 红框与页脚摘要出现且不回头', async () => {
+    const user = userEvent.setup();
+    renderEditor(true, {});
+    const upstream = screen.getByLabelText('upstream');
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+
+    await user.type(upstream, 'x');
+    await user.clear(upstream);
+
+    expect(upstream).toBeInvalid();
+    // 内联 FieldError + 页脚摘要都是 alert；按文案精确断言页脚。
+    expect(
+      screen.getByText('保存还差一步：upstream 要写 host、host:port 或 host/base/path，不要写协议'),
+    ).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '保存到草稿' })).toBeDisabled();
+  });
+
+  it('卡头状态字分层：CORS 配置过读已启用，没配过的卡读默认', () => {
+    renderEditor(true, { upstream: 'origin.example.com', cors: {} });
+
+    expect(screen.getByRole('button', { name: /^CORS/ })).toHaveTextContent('已启用');
+    expect(screen.getByRole('button', { name: /^IP 规则/ })).toHaveTextContent('默认');
+    expect(screen.getByRole('button', { name: /^超时与重试/ })).toHaveTextContent('默认');
+  });
+
+  it('写坏 JSON 切回表单：页脚摘要接住，JSON 页自己不复读', async () => {
+    const user = userEvent.setup();
+    renderEditor();
+    await user.click(screen.getByRole('tab', { name: 'JSON' }));
+    await user.type(screen.getByLabelText('路由定义'), '}');
+
+    // JSON 页有自己的行列 alert，页脚摘要不重复。
+    expect(screen.getByRole('alert')).toHaveTextContent(/第 \d+ 行第 \d+ 列附近/);
+    expect(screen.queryByRole('alert', { name: /保存还差一步/ })).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole('tab', { name: '表单' }));
+
+    expect(screen.getByRole('alert')).toHaveTextContent('保存还差一步');
+    expect(screen.getByRole('alert')).toHaveTextContent('JSON 格式不对');
+    expect(screen.getByRole('button', { name: '保存到草稿' })).toBeDisabled();
+  });
+});
+
+/**
+ * 保存 toast 的「去发布」动作（重设计）。草稿写完的下一步就是发布，
+ * 把这扇门递到手上——但门只是顺手递，不接也不会丢：onSaved 照常触发。
+ */
+describe('RouteEditor 保存后的去发布引导（重设计）', () => {
+  beforeEach(() => {
+    vi.spyOn(api, 'domains').mockResolvedValue(configured([]));
+    vi.spyOn(api, 'putRoute').mockResolvedValue(undefined);
+    vi.spyOn(toast, 'success').mockImplementation(() => 1);
+    vi.spyOn(toast, 'error').mockImplementation(() => 1);
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('带 onGoPublish：toast 带动作按钮，且 onSaved 与 onGoPublish 都会触发', async () => {
+    const onSaved = vi.fn();
+    const onGoPublish = vi.fn();
+    const user = userEvent.setup();
+    render(
+      <RouteEditor
+        open
+        onOpenChange={() => {}}
+        initial={{ id: 'new-route', definition: { upstream: 'origin.example.com' }, enabled: true }}
+        createMode
+        onSaved={onSaved}
+        onGoPublish={onGoPublish}
+      />,
+    );
+
+    await user.click(screen.getByRole('button', { name: '保存到草稿' }));
+    await waitFor(() => expect(onSaved).toHaveBeenCalledWith('new-route'));
+
+    expect(toast.success).toHaveBeenCalledWith('new-route 已存入草稿', {
+      action: { label: '去发布', onClick: onGoPublish },
+    });
+    // 沿本仓库惯例不渲染 toast portal：动作的接通以 onClick 引用为准。
+  });
+
+  it('不带 onGoPublish：toast 没有动作，保存照常成功', async () => {
+    const onSaved = vi.fn();
+    const user = userEvent.setup();
+    render(
+      <RouteEditor
+        open
+        onOpenChange={() => {}}
+        initial={{ id: 'new-route', definition: { upstream: 'origin.example.com' }, enabled: true }}
+        createMode
+        onSaved={onSaved}
+      />,
+    );
+
+    await user.click(screen.getByRole('button', { name: '保存到草稿' }));
+    await waitFor(() => expect(onSaved).toHaveBeenCalledWith('new-route'));
+
+    expect(toast.success).toHaveBeenCalledWith('new-route 已存入草稿', { action: undefined });
   });
 });

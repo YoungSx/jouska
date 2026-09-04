@@ -221,6 +221,35 @@
   }
 }
 
+/* 手风琴展开/收合：高度走 Base UI Panel 注入的 --accordion-panel-height，
+   展开收合各 200ms —— 编辑器里收起一摞卡片，高度突变会把视线甩飞。 */
+@keyframes accordion-down {
+  from {
+    height: 0;
+  }
+  to {
+    height: var(--accordion-panel-height);
+  }
+}
+
+@keyframes accordion-up {
+  from {
+    height: var(--accordion-panel-height);
+  }
+  to {
+    height: 0;
+  }
+}
+
+@utility accordion-panel {
+  &[data-open] {
+    animation: accordion-down 200ms ease-out;
+  }
+  &[data-closed] {
+    animation: accordion-up 200ms ease-out;
+  }
+}
+
 /* 闸门状态翻转的时刻：发布栏图标落位一次。这是这个世界里最重要的信号变化——
    草稿从「一致」变成「待发布」就发生在这一格——值得 200ms 的注意，不值得更多。
    动画挂在 key 上（key = gate.kind），状态每次翻转重放，静止时零成本。 */
