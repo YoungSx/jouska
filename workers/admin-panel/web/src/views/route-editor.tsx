@@ -19,7 +19,6 @@ import { Alert, AlertDescription } from '@/components/ui/alert';
 import {
   Accordion,
   AccordionContent,
-  AccordionHeader,
   AccordionItem,
   AccordionTrigger,
 } from '@/components/ui/accordion';
@@ -730,9 +729,14 @@ const RowPairList = ({
 }: RowPairListProps) => (
   <div className="flex flex-col gap-2">
     {rows.map((row, index) => (
-      <div key={index} className="flex items-center gap-2">
+      // 比例列不钉死宽度：窄屏（编辑器全屏接管时）名字列自动让位给值列，
+      // 不再是「固定 11rem + 挤扁的 flex-1」。
+      <div
+        key={index}
+        className="grid grid-cols-[minmax(0,1fr)_minmax(0,2fr)_auto] items-center gap-2"
+      >
         <Input
-          className="w-44 shrink-0 font-mono text-xs"
+          className="min-w-0 font-mono text-xs"
           placeholder={firstLabel}
           aria-label={`${firstLabel} ${String(index + 1)}`}
           aria-invalid={firstInvalid?.(row.first) ?? false}
@@ -746,7 +750,7 @@ const RowPairList = ({
           }
         />
         <Input
-          className="min-w-0 flex-1 font-mono text-xs"
+          className="min-w-0 font-mono text-xs"
           placeholder={secondLabel}
           aria-label={`${secondLabel} ${String(index + 1)}`}
           value={row.second}
@@ -979,7 +983,12 @@ const ConditionsEditor = ({
   return (
     <div className="flex flex-col gap-2">
       {rows.map((row, index) => (
-        <div key={index} className="flex flex-wrap items-center gap-2">
+        // 窄屏排成两行（family+name / op+value，删除钮跨行居中），够宽才收成一行
+        // —— flex-wrap 的换行点看内容脸色，网格的换行点自己定：语义顺序不散架。
+        <div
+          key={index}
+          className="grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-2 sm:grid-cols-[auto_minmax(0,1fr)_auto_minmax(0,1fr)_auto]"
+        >
           <Select
             value={row.family}
             onValueChange={(value) =>
@@ -991,7 +1000,7 @@ const ConditionsEditor = ({
             }
           >
             <SelectTrigger
-              className="w-28 shrink-0"
+              className="w-28"
               aria-label={`${t.fields.matchConditions.family} ${String(index + 1)}`}
             >
               <SelectValue />
@@ -1003,7 +1012,7 @@ const ConditionsEditor = ({
             </SelectContent>
           </Select>
           <Input
-            className="w-44 shrink-0 font-mono text-xs"
+            className="min-w-0 font-mono text-xs"
             placeholder={familyPlaceholder[row.family]}
             aria-label={`${t.fields.matchConditions.name} ${String(index + 1)}`}
             aria-invalid={row.name.trim() === ''}
@@ -1027,7 +1036,7 @@ const ConditionsEditor = ({
             }
           >
             <SelectTrigger
-              className="w-32 shrink-0"
+              className="w-32"
               aria-label={`${t.fields.matchConditions.op} ${String(index + 1)}`}
             >
               <SelectValue />
@@ -1040,7 +1049,7 @@ const ConditionsEditor = ({
             </SelectContent>
           </Select>
           <Input
-            className="min-w-0 flex-1 font-mono text-xs"
+            className="min-w-0 font-mono text-xs"
             placeholder={
               row.op === 'present' || row.op === 'absent'
                 ? t.fields.matchConditions.valueHidden
@@ -1062,6 +1071,7 @@ const ConditionsEditor = ({
             type="button"
             variant="ghost"
             size="icon-sm"
+            className="col-start-3 row-span-2 self-center sm:col-auto sm:row-auto"
             aria-label={`${t.fields.matchConditions.removeRow} ${String(index + 1)}`}
             onClick={() => write(rows.filter((_, i) => i !== index))}
           >
@@ -1871,13 +1881,11 @@ export const RouteEditor = ({
                 </div>
                 <Accordion value={guardsOpen} onValueChange={setGuardsOpen}>
                   <AccordionItem value="countries">
-                    <AccordionHeader>
-                      <SectionCardTrigger
-                        label={t.fields.sections.countries}
-                        set={guardsItemSet(definition, 'countries')}
-                        kind="guard"
-                      />
-                    </AccordionHeader>
+                    <SectionCardTrigger
+                      label={t.fields.sections.countries}
+                      set={guardsItemSet(definition, 'countries')}
+                      kind="guard"
+                    />
                     <AccordionContent>
                       <div className="flex flex-col gap-4">
                         <ListProperty
@@ -1903,13 +1911,11 @@ export const RouteEditor = ({
                   </AccordionItem>
 
                   <AccordionItem value="cors">
-                    <AccordionHeader>
-                      <SectionCardTrigger
-                        label={t.fields.cors.label}
-                        kind="guard"
-                        set={definition.cors !== undefined}
-                      />
-                    </AccordionHeader>
+                    <SectionCardTrigger
+                      label={t.fields.cors.label}
+                      kind="guard"
+                      set={definition.cors !== undefined}
+                    />
                     <AccordionContent>
                       <div className="flex flex-col gap-4">
                         <Field orientation="horizontal">
@@ -2005,13 +2011,11 @@ export const RouteEditor = ({
                   </AccordionItem>
 
                   <AccordionItem value="ip">
-                    <AccordionHeader>
-                      <SectionCardTrigger
-                        label={t.fields.ip.label}
-                        kind="guard"
-                        set={definition.ip !== undefined}
-                      />
-                    </AccordionHeader>
+                    <SectionCardTrigger
+                      label={t.fields.ip.label}
+                      kind="guard"
+                      set={definition.ip !== undefined}
+                    />
                     <AccordionContent>
                       <div className="flex flex-col gap-4">
                         <Field orientation="horizontal">
@@ -2056,13 +2060,11 @@ export const RouteEditor = ({
                   </AccordionItem>
 
                   <AccordionItem value="access">
-                    <AccordionHeader>
-                      <SectionCardTrigger
-                        label={t.fields.access.label}
-                        kind="guard"
-                        set={definition.access !== undefined}
-                      />
-                    </AccordionHeader>
+                    <SectionCardTrigger
+                      label={t.fields.access.label}
+                      kind="guard"
+                      set={definition.access !== undefined}
+                    />
                     <AccordionContent>
                       <div className="flex flex-col gap-4">
                         <Field orientation="horizontal">
@@ -2171,17 +2173,15 @@ export const RouteEditor = ({
                   </AccordionItem>
 
                   <AccordionItem value="forwardAuth">
-                    <AccordionHeader>
-                      <SectionCardTrigger
-                        label={t.fields.forwardAuth.label}
-                        kind="guard"
-                        set={definition.forwardAuth !== undefined}
-                        needsFix={
-                          forwardAuthReservedRequest.length > 0 ||
-                          forwardAuthReservedResponse.length > 0
-                        }
-                      />
-                    </AccordionHeader>
+                    <SectionCardTrigger
+                      label={t.fields.forwardAuth.label}
+                      kind="guard"
+                      set={definition.forwardAuth !== undefined}
+                      needsFix={
+                        forwardAuthReservedRequest.length > 0 ||
+                        forwardAuthReservedResponse.length > 0
+                      }
+                    />
                     <AccordionContent>
                       <div className="flex flex-col gap-4">
                         <Field orientation="horizontal">
@@ -2307,13 +2307,11 @@ export const RouteEditor = ({
                 </div>
                 <Accordion value={advancedOpen} onValueChange={setAdvancedOpen}>
                   <AccordionItem value="timing">
-                    <AccordionHeader>
-                      <SectionCardTrigger
-                        label={t.fields.sections.timing}
-                        set={advancedItemSet(definition, 'timing')}
-                        needsFix={NUMERIC_KEYS.some((key) => shownErrors[key] !== undefined)}
-                      />
-                    </AccordionHeader>
+                    <SectionCardTrigger
+                      label={t.fields.sections.timing}
+                      set={advancedItemSet(definition, 'timing')}
+                      needsFix={NUMERIC_KEYS.some((key) => shownErrors[key] !== undefined)}
+                    />
                     <AccordionContent>
                       <div className="flex flex-col gap-4">
                         {/* 预设行：一次性模板。点按只填该预设覆盖的框，之后它们就是
@@ -2384,12 +2382,10 @@ export const RouteEditor = ({
                   </AccordionItem>
 
                   <AccordionItem value="rewrite">
-                    <AccordionHeader>
-                      <SectionCardTrigger
-                        label={t.fields.sections.rewrite}
-                        set={advancedItemSet(definition, 'rewrite')}
-                      />
-                    </AccordionHeader>
+                    <SectionCardTrigger
+                      label={t.fields.sections.rewrite}
+                      set={advancedItemSet(definition, 'rewrite')}
+                    />
                     <AccordionContent>
                       <div className="flex flex-col gap-4">
                         <FieldDescription>
@@ -2489,13 +2485,11 @@ export const RouteEditor = ({
                   </AccordionItem>
 
                   <AccordionItem value="headers">
-                    <AccordionHeader>
-                      <SectionCardTrigger
-                        label={t.fields.sections.headers}
-                        set={advancedItemSet(definition, 'headers')}
-                        needsFix={reservedHeaders.length > 0}
-                      />
-                    </AccordionHeader>
+                    <SectionCardTrigger
+                      label={t.fields.sections.headers}
+                      set={advancedItemSet(definition, 'headers')}
+                      needsFix={reservedHeaders.length > 0}
+                    />
                     <AccordionContent>
                       <div className="flex flex-col gap-4">
                         <FieldDescription>
