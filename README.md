@@ -1873,13 +1873,25 @@ request. An unobtainable JWKS answers `503`, never `401` — without verificatio
 material there is no safe way to say yes — and a deployment whose Access
 application is missing is locked out rather than quietly downgraded.
 
-Two consequences worth stating plainly. Signing out is the platform's to
-perform: `POST /api/auth/logout` destroys nothing and returns the team's
-sign-out URL, because `CF_Authorization` lives on the team domain and a panel
-that answered "logged out" without sending the browser there would put the
-operator back in on the next reload. And emptying the `users` table reopens
-first-run provisioning to whichever address the Access policy admits next, which
-is why `DELETE /api/users/:id` refuses to remove the last row.
+Two consequences worth stating plainly.
+
+Signing out is a browser navigation, not an API call. `POST /api/auth/logout`
+destroys nothing; it answers with the same-origin path `/cdn-cgi/access/logout`,
+and going there is what revokes. Cloudflare documents that path on the
+application's own hostname and on the team domain as equivalent in effect — both
+end the session across every Access application, with previously issued tokens
+refused 20-30 seconds later — so the panel names its own hostname, which
+additionally drops the app cookie and makes the sign-out immediate. Returning a
+path rather than a hostname assembled from `ACCESS_TEAM` also means the reply
+cannot become a redirect to somewhere else, however wrong that variable is. Two
+things follow for the operator: a `fetch` cannot sign anybody out, because the
+edge needs the request to arrive with the user's cookie; and there is no
+per-application sign-out, so the panel's logout button ends that person's session
+in every Access application, not just this one.
+
+Emptying the `users` table reopens first-run provisioning to whichever address
+the Access policy admits next, which is why `DELETE /api/users/:id` refuses to
+remove the last row.
 
 ### MCP access
 

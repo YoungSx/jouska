@@ -38,10 +38,11 @@ export interface AccessIdentity {
 /**
  * Why no identity came back.
  *
- * `not_configured` is not a failure: it is the deployment that has not turned
- * Access on, and the caller falls back to its own session cookie. Every other
- * reason is a refusal — a credential was presented and did not hold up, and
- * falling back on those would let a bad token shop for a second opinion.
+ * `not_configured` is the deployment that has not turned Access on. It used to be
+ * the door to the panel's own cookie session; with that door gone it is simply
+ * another refusal, and the panel is unreachable until the vars are set. Kept
+ * distinct from the rest because the reasons differ in kind: everything else here
+ * means a credential *was* presented and did not hold up.
  */
 export type IdentityRefusal =
   'not_configured' | 'missing' | 'too_long' | 'invalid' | 'forbidden' | 'unavailable';

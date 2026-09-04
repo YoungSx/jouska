@@ -361,36 +361,26 @@ describe('ctx.access, the local-development door', () => {
 });
 
 describe('signing out', () => {
-  it('hands back the platform sign-out URL for an Access session', async () => {
+  it('hands back a same-origin path, not a hostname built from configuration', async () => {
     const { jwk, sign } = await makeSigner();
     const appEnv = accessEnv('acme-logout', jwksFetch([jwk]).impl);
-    const token = await sign(claims('ops@example.com'));
 
     const res = await request('POST', '/api/auth/logout', appEnv, {
-      'cf-access-jwt-assertion': token,
+      'cf-access-jwt-assertion': await sign(claims('ops@example.com')),
     });
     expect(res.status).toBe(200);
-    // Clearing this Worker's cookie is not a sign-out: CF_Authorization lives on
-    // the team domain, so the caller has to be sent there or the next reload
-    // walks straight back in.
-    expect((await res.json()) as unknown).toMatchObject({
-      ok: true,
-      accessLogout: 'https://acme-logout.cloudflareaccess.com/cdn-cgi/access/logout',
-    });
+    // Cloudflare treats this path on the app's own host and on the team domain as
+    // equivalent in effect — both revoke across every application — so the panel
+    // picks the one that also drops the app cookie here and cannot point anywhere
+    // but at itself.
+    expect(await res.json()).toEqual({ ok: true, accessLogout: '/cdn-cgi/access/logout' });
   });
 
-  it('still answers when the team name cannot produce a URL', async () => {
-    // ACCESS_TEAM unset: nothing to sign out of on the platform side, and the
-    // endpoint says so by omission rather than by inventing a destination.
-    const res = await request('POST', '/api/auth/logout', envWith({}));
-    expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ ok: true });
-  });
-
-  it('does not invent a URL from a team name that could not be one', async () => {
-    // Reachable only through the dev context, where the team name never went
-    // through JWT verification — and this string is handed to a browser to
-    // navigate to, so a malformed name would be an open redirect.
+  it('is a path whatever the team name says, so it can never be a redirect', async () => {
+    // A team name is operator-supplied config that never went through JWT
+    // verification. Building a hostname out of it made its shape load-bearing;
+    // answering with a path makes the question moot, and this case is what keeps
+    // anyone from reintroducing the hostname.
     const appEnv = envWith({
       ACCESS_TEAM: 'evil.example.com/..',
       ACCESS_AUD,
@@ -401,11 +391,23 @@ describe('signing out', () => {
       '/api/auth/logout',
       appEnv,
       {},
-      {
-        access: { getIdentity: async () => ({ email: 'dev@example.com' }) },
-      },
+      { access: { getIdentity: async () => ({ email: 'dev@example.com' }) } },
     );
-    expect(await res.json()).toEqual({ ok: true });
+    const body = (await res.json()) as { accessLogout?: string };
+    expect(body.accessLogout).toBe('/cdn-cgi/access/logout');
+    expect(body.accessLogout?.startsWith('/')).toBe(true);
+    expect(body.accessLogout).not.toContain('evil.example.com');
+  });
+
+  it('offers no destination when there is no Access session to end', async () => {
+    // Access off, and a team without an audience — same verdict as `resolveIdentity`
+    // reaches, because a link to a path nothing intercepts is a dead end dressed up
+    // as an action.
+    expect(await (await request('POST', '/api/auth/logout', envWith({}))).json()).toEqual({
+      ok: true,
+    });
+    const halfOn = envWith({ ACCESS_TEAM: 'acme-halfout' });
+    expect(await (await request('POST', '/api/auth/logout', halfOn)).json()).toEqual({ ok: true });
   });
 });
 
