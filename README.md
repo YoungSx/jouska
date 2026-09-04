@@ -1863,11 +1863,11 @@ accepted, header first.
 
 Who gets a row is a standing policy, `ACCESS_PROVISION_ROLE` in
 `workers/admin-panel/wrangler.jsonc` — a repo-level choice, which is why it
-lives in a reviewed file rather than CI secrets. Set to `admin` (the current
-value), every address Access admits arrives as a panel admin: the deliberate
-equal-footing posture while the team has no delegation story yet. Set to
-`viewer`, arrivals are read-only and are promoted from the users screen.
-Unset, the founding posture holds: an unknown address is refused with `403
+lives in a reviewed file rather than CI secrets. Set to `admin`, every address
+Access admits arrives as a panel admin: the deliberate equal-footing posture
+while the team has no delegation story yet. Set to `viewer`, arrivals are
+read-only and are promoted from the users screen. Unset (the current value),
+the founding posture holds: an unknown address is refused with `403
 no_panel_account` and added from the users screen, because an Access policy is
 routinely written wider than the panel's intent (a whole email domain, a whole
 Cloudflare account), and creating a row for anyone who passes the door would
@@ -1878,10 +1878,17 @@ unrecognised value fails closed like unset, logged loudly. `role` and
 last-admin guard is only enforceable where it is evaluated atomically at write
 time.
 
-One admission outranks the policy: the first caller through an empty `users`
-table always becomes admin, whatever the variable says. That is the operator's
-recovery path — a wiped table is how you get back in, never a lockout — not a
-policy leak.
+Two admissions outrank the policy. The first caller through an empty `users`
+table always becomes admin, whatever the variable says — a wiped table is how
+you get back in, never a lockout. And the deploy pipeline opens a provision
+window when it ships a panel with no enabled admin (see Deploy): a 7-day,
+single-use grant stored in D1, not in git, whose next admitted stranger
+arrives as admin and burns the row in the same batch. The window gates on the
+state, not the row — it fires only while no enabled admin exists, so a row
+that outlives its deployment cannot mint a second boss — and a deadline that
+is expired, malformed, or implausibly far out reads as closed. It exists so a
+panel whose sole admin was deleted does not wait for a manual SQL step; the
+empty-table path above remains the final layer beneath it.
 
 Both variables or neither. A team name without an audience proves a token was
 signed by the right organisation but not that it was issued for _this_
@@ -1919,8 +1926,19 @@ the Access policy admits next, which is why `DELETE /api/users/:id` refuses to
 remove the last row. Doing it deliberately — locked out, everything else
 exhausted — is the "Reset admin panel accounts" workflow
 (`.github/workflows/admin-reset.yml`): a typed-confirmation, manual-only job
-that clears `users` (and the MCP tokens whose foreign keys would refuse the
-wipe) and read-backs the count to zero.
+that clears `users` (and the MCP tokens owned by those accounts, which the
+empty-table founder path covers — no provision window is opened) and
+read-backs the count to zero.
+
+Deleting a user is not silent about what they leave behind. The deletion and
+the revocation of their unexpired MCP tokens share one guarded batch: the
+tokens are revoked — never deleted, the audit trail keeps its rows — with
+reason `owner_deleted`, their `revoked_by` names the deleting admin, and the
+ownership link is dropped by `ON DELETE SET NULL`. The confirmation dialog
+names the count before it happens, the tokens screen greys the orphans in as
+「已撤销 · 主人已删除」, and the response and audit entry both carry
+`tokensRevoked`. A guard refusal changes nothing: no row, no revocation, no
+half-deleted state.
 
 ### MCP access
 
@@ -1929,7 +1947,10 @@ token is a standing grant rather than a session. Tokens look like `jska_mcp_…`
 and the database keeps only their SHA-256 digest, so the secret appears exactly
 once, in the response that creates it; a lost token is revoked and reissued,
 never recovered. Every token carries a fixed expiry, 365 days at most, and can
-be revoked at any time.
+be revoked at any time. Each token also names its owner: the row it was minted
+under is the key the bearer authenticates against, so deleting that user
+revokes their live tokens (see the user-deletion paragraph above — the records
+stay, greyed out, and the screen shows whom each token belongs to).
 
 MCP answers on `/mcp`, same origin as the panel, authenticated by
 `Authorization: Bearer <token>` and nothing else. The panel's own door does not
@@ -1984,10 +2005,15 @@ npm run cf:setup
 
 The CI `Deploy` workflow (on `v*` tags) runs the same provisioning step before
 migrating and deploying the panel, then the proxy — first deploy creates the
-resources, later deploys reuse them. Four secrets are read: the two Cloudflare
-ones (`CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`) plus `ACCESS_TEAM` and
-`ACCESS_AUD` for the panel's door (see Sign-in — a tag deploy without the
-Access pair deploys a panel that refuses everyone, and the job only warns).
+resources, later deploys reuse them. After the health probe passes, one more
+step checks the panel's state and opens or clears the provision window: any
+enabled admin means the row is cleared (hygiene against a stale grant), none
+means a fresh 7-day deadline is written (a failed write only warns — the worst
+case is the old behaviour, a manual recovery step). Four secrets are read: the
+two Cloudflare ones (`CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`) plus
+`ACCESS_TEAM` and `ACCESS_AUD` for the panel's door (see Sign-in — a tag
+deploy without the Access pair deploys a panel that refuses everyone, and the
+job only warns).
 The patched ids live on the ephemeral runner, never in git. D1 migrations run
 first, then the Worker, then a `/api/health` probe must answer `{"ok":true}` on
 the deployed workers.dev URL before the job passes — once Access is switched

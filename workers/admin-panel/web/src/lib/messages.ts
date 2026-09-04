@@ -85,6 +85,8 @@ export const t = {
     remove: '删除',
     deleteTitle: (subject: string) => `删除用户 ${subject}？`,
     deleteBody: '立即生效，不可恢复。最后一个用户不可删除。',
+    deleteTokenWarning: (n: number) =>
+      `名下 ${n} 个有效 MCP 令牌将同时被吊销——记录保留（置灰显示），不会凭空消失。`,
     deleteSelfNote: '这是你自己的账号。删除后你会立刻退出。',
     confirm: '删除',
     created: (subject: string) => `${subject} 已创建，对方现在可以通过 Access 进来了。`,
@@ -846,6 +848,7 @@ export const t = {
     columns: {
       name: '名称',
       prefix: '令牌',
+      owner: '归属',
       scopes: '权限',
       expires: '到期',
       lastUsed: '最近使用',
@@ -854,7 +857,9 @@ export const t = {
     },
     active: '有效',
     revoked: '已撤销',
+    revokedOwnerDeleted: '已撤销 · 主人已删除',
     expired: '已过期',
+    ownerDeleted: '主人已删除',
     neverUsed: '尚未使用',
     revoke: '撤销',
     revokeTitle: (name: string) => `撤销「${name}」？`,

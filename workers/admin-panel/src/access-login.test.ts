@@ -322,6 +322,204 @@ describe('the standing provision policy', () => {
   });
 });
 
+describe('the deploy pipeline provision window', () => {
+  /**
+   * A window deadline written the way deploy.yml writes it. The window outranks
+   * the standing policy — that is its whole point: it exists to end a lockout,
+   * so it must fire exactly when no usable admin exists, whatever the policy
+   * line says. Every malformed shape must read as closed, not as open.
+   */
+  const withWindow = async (value: unknown): Promise<void> => {
+    await testEnv.DB.prepare('INSERT INTO settings (key, value) VALUES (?, ?)')
+      .bind('provision_window', JSON.stringify(value))
+      .run();
+  };
+
+  const windowRowCount = async (): Promise<number> =>
+    (
+      await testEnv.DB.prepare(
+        "SELECT COUNT(*) AS n FROM settings WHERE key = 'provision_window'",
+      ).first<{ n: number }>()
+    )?.n ?? 0;
+
+  /**
+   * Access on with the standing policy unset (the shipped posture), a viewer
+   * seated so the table is not empty, and one token for the door. With the
+   * window closed, this caller is refused — each test below then opens the
+   * window in some shape and asks what happens.
+   */
+  const windowDoor = async (
+    email: string,
+  ): Promise<{ readonly doorEnv: AppEnv; readonly token: string }> => {
+    const { jwk, sign } = await makeSigner();
+    const doorEnv = envWith({
+      ACCESS_TEAM: uniqueTeam('window'),
+      ACCESS_AUD: ACCESS_AUD,
+      ACCESS_JWKS_FETCH: jwksFetch([jwk]).impl,
+    });
+    return { doorEnv, token: await sign(claims(email)) };
+  };
+
+  it('an open window admits a stranger as admin and burns itself with the grant', async () => {
+    await insertUser('root@example.com', 'admin', true); // disabled: no usable admin
+    const { doorEnv, token } = await windowDoor('rescue@example.com');
+    const now = Math.floor(Date.now() / 1000);
+    await withWindow({ deadline: now + 7 * 86400 });
+
+    const res = await request('GET', '/api/auth/me', doorEnv, {
+      'cf-access-jwt-assertion': token,
+    });
+    expect(res.status).toBe(200);
+    expect((await res.json()) as unknown).toMatchObject({
+      user: { subject: 'rescue@example.com', role: 'admin' },
+    });
+    // One-time fuse: the grant and the deletion land together.
+    expect(await windowRowCount()).toBe(0);
+  });
+
+  it('a second stranger after the fuse finds the window closed and is refused', async () => {
+    const { jwk, sign } = await makeSigner();
+    const doorEnv = envWith({
+      ACCESS_TEAM: uniqueTeam('window-second'),
+      ACCESS_AUD: ACCESS_AUD,
+      ACCESS_JWKS_FETCH: jwksFetch([jwk]).impl,
+    });
+    const first = await sign(claims('rescue@example.com'));
+    const second = await sign(claims('freeloader@example.com'));
+    const now = Math.floor(Date.now() / 1000);
+    await withWindow({ deadline: now + 7 * 86400 });
+
+    const ok = await request('GET', '/api/auth/me', doorEnv, {
+      'cf-access-jwt-assertion': first,
+    });
+    expect(ok.status).toBe(200);
+
+    const refused = await request('GET', '/api/auth/me', doorEnv, {
+      'cf-access-jwt-assertion': second,
+    });
+    expect(refused.status).toBe(200);
+    expect((await refused.json()) as unknown).toMatchObject({
+      user: null,
+      accessEmail: 'freeloader@example.com',
+    });
+  });
+
+  it('the window outranks a standing viewer policy', async () => {
+    await insertUser('root@example.com', 'admin', true);
+    const { jwk, sign } = await makeSigner();
+    const doorEnv = envWith({
+      ACCESS_TEAM: uniqueTeam('window-outranks'),
+      ACCESS_AUD: ACCESS_AUD,
+      ACCESS_JWKS_FETCH: jwksFetch([jwk]).impl,
+      ACCESS_PROVISION_ROLE: 'viewer',
+    });
+    const now = Math.floor(Date.now() / 1000);
+    await withWindow({ deadline: now + 7 * 86400 });
+
+    const res = await request('GET', '/api/auth/me', doorEnv, {
+      'cf-access-jwt-assertion': await sign(claims('rescue@example.com')),
+    });
+    // A viewer grant inside a lockout would recreate it.
+    expect((await res.json()) as unknown).toMatchObject({
+      user: { subject: 'rescue@example.com', role: 'admin' },
+    });
+  });
+
+  it('an expired window is closed, not open', async () => {
+    await insertUser('root@example.com', 'admin', true);
+    const { doorEnv, token } = await windowDoor('late@example.com');
+    await withWindow({ deadline: Math.floor(Date.now() / 1000) - 60 });
+
+    const original = console.error;
+    console.error = () => {};
+    try {
+      const res = await request('GET', '/api/auth/me', doorEnv, {
+        'cf-access-jwt-assertion': token,
+      });
+      expect(res.status).toBe(200);
+      expect((await res.json()) as unknown).toMatchObject({
+        user: null,
+        accessEmail: 'late@example.com',
+      });
+    } finally {
+      console.error = original;
+    }
+    // Expired is quiet: no grant, and the stale row is left for deploy hygiene.
+    expect(await userRow('late@example.com')).toBeNull();
+    expect(await windowRowCount()).toBe(1);
+  });
+
+  it('a window implausibly far out is closed and said why in the log', async () => {
+    await insertUser('root@example.com', 'admin', true);
+    const { doorEnv, token } = await windowDoor('greedy@example.com');
+    await withWindow({ deadline: Math.floor(Date.now() / 1000) + 400 * 86400 });
+
+    const errors: unknown[] = [];
+    const original = console.error;
+    console.error = (...args: unknown[]) => {
+      errors.push(args);
+    };
+    try {
+      const res = await request('GET', '/api/auth/me', doorEnv, {
+        'cf-access-jwt-assertion': token,
+      });
+      expect(res.status).toBe(200);
+      expect((await res.json()) as unknown).toMatchObject({
+        user: null,
+        accessEmail: 'greedy@example.com',
+      });
+    } finally {
+      console.error = original;
+    }
+    expect(errors.length).toBeGreaterThan(0);
+    expect(await userRow('greedy@example.com')).toBeNull();
+  });
+
+  it('a malformed window row is closed and said why in the log', async () => {
+    await insertUser('root@example.com', 'admin', true);
+    const { doorEnv, token } = await windowDoor('confused@example.com');
+    await withWindow({ deadline: 'next tuesday' });
+
+    const errors: unknown[] = [];
+    const original = console.error;
+    console.error = (...args: unknown[]) => {
+      errors.push(args);
+    };
+    try {
+      const res = await request('GET', '/api/auth/me', doorEnv, {
+        'cf-access-jwt-assertion': token,
+      });
+      expect(res.status).toBe(200);
+      expect((await res.json()) as unknown).toMatchObject({
+        user: null,
+        accessEmail: 'confused@example.com',
+      });
+    } finally {
+      console.error = original;
+    }
+    expect(errors.length).toBeGreaterThan(0);
+  });
+
+  it('a live admin seat keeps the window inert: no grant, no row touched', async () => {
+    // The standing posture: an enabled admin exists, so deploy.yml would have
+    // cleared the row. Even if one lingers, the hot path must never spend it.
+    await insertUser('root@example.com', 'admin');
+    const { doorEnv, token } = await windowDoor('bystander@example.com');
+    await withWindow({ deadline: Math.floor(Date.now() / 1000) + 7 * 86400 });
+
+    const res = await request('GET', '/api/auth/me', doorEnv, {
+      'cf-access-jwt-assertion': token,
+    });
+    expect(res.status).toBe(200);
+    expect((await res.json()) as unknown).toMatchObject({
+      user: null,
+      accessEmail: 'bystander@example.com',
+    });
+    // The row is left exactly as it was: only the fuse (or deploy hygiene) moves it.
+    expect(await windowRowCount()).toBe(1);
+  });
+});
+
 describe('Access on, the panel table still decides', () => {
   it('honours the row role: a viewer stays a viewer', async () => {
     await insertUser('reader@example.com', 'viewer');

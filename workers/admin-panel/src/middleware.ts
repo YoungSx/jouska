@@ -17,7 +17,13 @@ import type { Context } from 'hono';
 import { createMiddleware } from 'hono/factory';
 import type { AppEnv, Vars } from './env.js';
 import { resolveIdentity, type AccessIdentity, type AccessOverrides } from './identity.js';
-import { findUserBySubject, provisionAccessUser, touchLastSeen, type UserRecord } from './store.js';
+import {
+  findUserBySubject,
+  provisionAccessUser,
+  provisionViaWindow,
+  touchLastSeen,
+  type UserRecord,
+} from './store.js';
 
 /** Same-origin enforcement for mutating requests; GET/HEAD pass through. */
 export const requireSameOrigin = createMiddleware<AppEnv>(async (c, next) => {
@@ -82,31 +88,48 @@ const provisionRoleOf = (value: string | undefined): 'admin' | 'viewer' | undefi
 };
 
 /**
- * The panel account behind an Access identity, provisioning it only when the
- * standing policy says to. Access answers *who*; the users table still answers
- * *what they may do* — but now the gap between the two is an explicit,
- * reviewed knob (`ACCESS_PROVISION_ROLE` in wrangler.jsonc) rather than a
- * silent one. Whatever the knob says, an empty table bootstraps its first
- * caller as admin: that is the operator's recovery path, not a policy leak.
+ * The panel account behind an Access identity.
+ *
+ * Known subject: the row is the answer, whatever it says. Unknown subject, in
+ * order of precedence:
+ *
+ *   1. the provision window — a deadline the deploy pipeline writes only while
+ *      no enabled admin exists. It outranks the standing knob because it is a
+ *      recovery credential, not a posture: its grant is always admin, and it
+ *      burns on first use, so the next stranger finds it closed;
+ *   2. the standing `ACCESS_PROVISION_ROLE` knob, an explicit reviewed choice;
+ *   3. nothing — undefined means 403, admission closed.
+ *
+ * Whatever the knob says, an empty table bootstraps its first caller as admin
+ * (inside `provisionAccessUser`): that is the operator's founding path, not a
+ * policy leak.
  */
 const accountFor = async (
   db: D1Database,
   env: Pick<AppEnv['Bindings'], 'ACCESS_PROVISION_ROLE'>,
   identity: AccessIdentity,
 ): Promise<UserRecord | undefined> => {
+  const known = await findUserBySubject(db, identity.email);
+  if (known !== undefined) {
+    return known;
+  }
+  const viaWindow = await provisionViaWindow(db, {
+    subject: identity.email,
+    email: identity.email,
+  });
+  if (viaWindow !== undefined) {
+    return viaWindow;
+  }
   const role = provisionRoleOf(env.ACCESS_PROVISION_ROLE);
-  return (
-    (await findUserBySubject(db, identity.email)) ??
-    // role is conditionally present rather than explicitly undefined: the
-    // signature declares `role?: 'admin' | 'viewer'`, and under
-    // exactOptionalPropertyTypes an explicit undefined is a type error, not a
-    // synonym for omitting the key.
-    (await provisionAccessUser(db, {
-      subject: identity.email,
-      email: identity.email,
-      ...(role === undefined ? {} : { role }),
-    }))
-  );
+  // role is conditionally present rather than explicitly undefined: the
+  // signature declares `role?: 'admin' | 'viewer'`, and under
+  // exactOptionalPropertyTypes an explicit undefined is a type error, not a
+  // synonym for omitting the key.
+  return await provisionAccessUser(db, {
+    subject: identity.email,
+    email: identity.email,
+    ...(role === undefined ? {} : { role }),
+  });
 };
 
 export type AuthOutcome =

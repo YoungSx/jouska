@@ -139,6 +139,7 @@ describe('GET /api/users', () => {
       'lastSeen',
       'role',
       'subject',
+      'tokenCount',
     ]);
   });
 
@@ -341,6 +342,138 @@ describe('DELETE /api/users/:id', () => {
     const id = String((await userRow(SCOUT))!.id);
     expect((await call('DELETE', `/api/users/${id}`, undefined, asRoot)).status).toBe(200);
     expect(await auditActions()).toContain('user.delete');
+  });
+
+  describe('with MCP tokens owned by the target', () => {
+    /**
+     * Minting is admin-only by design (a viewer cannot hand out credentials),
+     * so the target is promoted first and mints in their own name — the owner
+     * link must point at the row that will be deleted, not at root.
+     */
+    const mintToken = async (
+      subject: string,
+      name: string,
+    ): Promise<{ id: string; token: string }> => {
+      const headers = await door.headers(subject);
+      const res = await call('POST', '/api/mcp-tokens', { name }, headers);
+      const text = await res.text();
+      expect(res.status, text).toBe(201);
+      const body = JSON.parse(text) as { token: string; tokenInfo: { id: string } };
+      return { id: body.tokenInfo.id, token: body.token };
+    };
+
+    /** Promote an account to admin through the API, then have it mint. */
+    const promote = async (subject: string): Promise<void> => {
+      const row = await userRow(subject);
+      expect(row).not.toBeNull();
+      const res = await call('PATCH', `/api/users/${String(row!.id)}`, { role: 'admin' }, asRoot);
+      expect(res.status).toBe(200);
+    };
+
+    const tokenRow = async (
+      id: string,
+    ): Promise<{
+      revoked_at: number | null;
+      revoked_by_user_id: number | null;
+      revoke_reason: string | null;
+      owner_user_id: number | null;
+    } | null> =>
+      testEnv.DB.prepare(
+        'SELECT revoked_at, revoked_by_user_id, revoke_reason, owner_user_id FROM mcp_tokens WHERE id = ?',
+      )
+        .bind(id)
+        .first();
+
+    it('revokes the target tokens and orphans them, but leaves the records', async () => {
+      await viewer();
+      await promote(SCOUT);
+      const kept = await mintToken(SCOUT, 'scout-key');
+      await mintToken(SCOUT, 'scout-key-2');
+
+      const res = await call(
+        'DELETE',
+        `/api/users/${String((await userRow(SCOUT))!.id)}`,
+        undefined,
+        asRoot,
+      );
+      expect(res.status).toBe(200);
+      expect(((await res.json()) as { tokensRevoked: number }).tokensRevoked).toBe(2);
+
+      const row = await tokenRow(kept.id);
+      // Revoked, not deleted: the audit trail keeps its rows, and a still-valid
+      // credential dies with its owner rather than quietly outliving them.
+      expect(row?.revoked_at).not.toBeNull();
+      expect(row?.revoke_reason).toBe('owner_deleted');
+      // Revoker is the deleting admin, not the deleted owner — a self-attribution
+      // would be wiped by the SET NULL anyway.
+      expect(row?.revoked_by_user_id).toBe((await userRow(ROOT))!.id);
+      // The ownership link is gone with the row, by SET NULL.
+      expect(row?.owner_user_id).toBeNull();
+
+      // The minted bearer token must no longer open the MCP door.
+      expect(
+        (
+          await worker.fetch(
+            new Request(`${base}/api/mcp-tokens`, {
+              headers: { authorization: `Bearer ${kept.token}` },
+            }),
+            appEnv,
+            {} as ExecutionContext,
+          )
+        ).status,
+      ).toBe(401);
+    });
+
+    it('revokes nothing when the guard refuses the deletion', async () => {
+      const deputy = await secondAdmin();
+      const minted = await mintToken(DEPUTY, 'deputy-key');
+      const revocable = await mintToken(DEPUTY, 'deputy-spare');
+      await call('DELETE', `/api/mcp-tokens/${revocable.id}`, {}, deputy.headers);
+      // Deposit one owned token before the guard fires, then re-enable root
+      // (secondAdmin's park below needs an enabled admin to authorise PATCH).
+      await call(
+        'PATCH',
+        `/api/users/${String((await userRow(ROOT))!.id)}`,
+        { disabled: false },
+        asRoot,
+      );
+
+      // Two admins, so deputy is deletable — but park root first and the guard
+      // fires. The revoke and the delete share the guard, so neither lands.
+      await call(
+        'PATCH',
+        `/api/users/${String((await userRow(ROOT))!.id)}`,
+        { disabled: true },
+        asRoot,
+      );
+      const refused = await call(
+        'DELETE',
+        `/api/users/${String((await userRow(DEPUTY))!.id)}`,
+        undefined,
+        deputy.headers,
+      );
+      expect(refused.status).toBe(409);
+      expect(((await refused.json()) as { error: string }).error).toBe('last_admin');
+
+      const row = await tokenRow(minted.id);
+      expect(row?.revoked_at).toBeNull();
+      expect(row?.owner_user_id).toBe((await userRow(DEPUTY))!.id);
+      expect(await userRow(DEPUTY)).not.toBeNull();
+    });
+
+    it('names the revoked count in the audit detail, not just the response', async () => {
+      await viewer();
+      await promote(SCOUT);
+      await mintToken(SCOUT, 'scout-key');
+
+      await call('DELETE', `/api/users/${String((await userRow(SCOUT))!.id)}`, undefined, asRoot);
+
+      const { results } = await testEnv.DB.prepare(
+        "SELECT detail FROM audit_log WHERE action = 'user.delete'",
+      ).all<{ detail: string | null }>();
+      const details = results.map((r) => r.detail ?? '');
+      expect(details.some((d) => d.includes('"tokensRevoked":1'))).toBe(true);
+    });
   });
 });
 
