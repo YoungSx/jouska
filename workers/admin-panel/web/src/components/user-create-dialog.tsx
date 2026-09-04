@@ -28,7 +28,11 @@ import { LIMITS } from '@/lib/types';
  * 新建用户。
  *
  * 角色缺省「观察者」且界面上明摆着这个缺省 —— 与服务端一致的取向：一次点击
- * 造出来的账号宁可选权限小的那头。密码不回显、不复制进剪贴板，交递走人。
+ * 造出来的账号宁可选权限小的那头。
+ *
+ * 这里不设任何凭据：账号名必须与 Cloudflare Access 认到的邮箱一字不差，因为那
+ * 就是服务端拿来查这一行的键。打错一个字符的后果不是报错，是对方进来之后被告知
+ * 查无此人 —— 所以字段说明把这件事写在了输入框底下。
  */
 
 interface UserCreateDialogProps {
@@ -54,7 +58,6 @@ const messageFor = (error: ApiError): string => {
 
 export const UserCreateDialog = ({ open, onOpenChange, onCreated }: UserCreateDialogProps) => {
   const [subject, setSubject] = React.useState('');
-  const [password, setPassword] = React.useState('');
   const [role, setRole] = React.useState<Role>('viewer');
   const [busy, setBusy] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
@@ -62,7 +65,6 @@ export const UserCreateDialog = ({ open, onOpenChange, onCreated }: UserCreateDi
   React.useEffect(() => {
     if (!open) {
       setSubject('');
-      setPassword('');
       setRole('viewer');
       setBusy(false);
       setError(null);
@@ -70,16 +72,14 @@ export const UserCreateDialog = ({ open, onOpenChange, onCreated }: UserCreateDi
   }, [open]);
 
   const subjectOk = subject.trim().length > 0 && subject.trim().length <= LIMITS.maxSubjectLength;
-  const passwordOk =
-    password.length >= LIMITS.minPasswordLength && password.length <= LIMITS.maxPasswordLength;
-  const canSubmit = subjectOk && passwordOk && !busy;
+  const canSubmit = subjectOk && !busy;
 
   const submit = async () => {
     setBusy(true);
     setError(null);
     const trimmed = subject.trim();
     try {
-      await api.createUser(trimmed, password, role);
+      await api.createUser(trimmed, role);
       toast.success(t.users.created(trimmed));
       onCreated(trimmed);
       onOpenChange(false);
@@ -116,7 +116,7 @@ export const UserCreateDialog = ({ open, onOpenChange, onCreated }: UserCreateDi
           }}
         >
           <Field>
-            <FieldLabel htmlFor="user-subject">{t.auth.subject}</FieldLabel>
+            <FieldLabel htmlFor="user-subject">{t.users.subject}</FieldLabel>
             <Input
               id="user-subject"
               value={subject}
@@ -125,21 +125,7 @@ export const UserCreateDialog = ({ open, onOpenChange, onCreated }: UserCreateDi
               disabled={busy}
               onChange={(event) => setSubject(event.target.value)}
             />
-          </Field>
-
-          <Field>
-            <FieldLabel htmlFor="user-password">{t.auth.password}</FieldLabel>
-            <Input
-              id="user-password"
-              type="password"
-              autoComplete="new-password"
-              value={password}
-              maxLength={LIMITS.maxPasswordLength}
-              disabled={busy}
-              aria-invalid={password.length > 0 && !passwordOk ? true : undefined}
-              onChange={(event) => setPassword(event.target.value)}
-            />
-            <FieldDescription>{t.auth.passwordHint(LIMITS.minPasswordLength)}</FieldDescription>
+            <FieldDescription>{t.users.subjectHint}</FieldDescription>
           </Field>
 
           <Field>

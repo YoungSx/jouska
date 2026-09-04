@@ -93,17 +93,10 @@ export type Role = 'admin' | 'viewer';
 export interface User {
   readonly subject: string;
   readonly role: Role;
-  /**
-   * 这次身份是哪扇门证明的：平台的 Cloudflare Access 令牌，还是面板自己的会话
-   * Cookie。迁移期两扇门并存，界面据此决定「改密码」还不还有意义。
-   */
-  readonly via?: 'access' | 'session';
 }
 
 export interface MeResult {
   readonly user: User | null;
-  /** 只在 users 表为空时为 true —— 首次部署的引导表单靠它决定是否出现。 */
-  readonly bootstrapable: boolean;
   /**
    * Access 认了这个邮箱，但 users 表里没有它。这不是登录失败——平台已经回答过
    * 登录了——所以界面要说「找管理员把这个地址加进来」，而不是再给一张登录表单。
@@ -119,11 +112,9 @@ const asUser = (raw: unknown): User | null => {
   if (typeof record.subject !== 'string') {
     return null;
   }
-  const via = record.via === 'access' || record.via === 'session' ? record.via : undefined;
   return {
     subject: record.subject,
     role: record.role === 'viewer' ? 'viewer' : 'admin',
-    ...(via === undefined ? {} : { via }),
   };
 };
 
@@ -133,46 +124,17 @@ export const api = {
     const accessEmail = typeof data.accessEmail === 'string' ? data.accessEmail : undefined;
     return {
       user: asUser(data.user),
-      bootstrapable: data.bootstrapable === true,
       ...(accessEmail === undefined ? {} : { accessEmail }),
     };
   },
 
   /**
-   * 修改自己的密码。成功后当前会话保留（服务端只吊销其他会话），所以不重置
-   * 会话状态 —— SPA 缓存的身份仍然有效，弹窗自己负责把结果说清楚。
-   */
-  changePassword: async (currentPassword: string, newPassword: string): Promise<void> => {
-    await request('POST', '/api/auth/password', { currentPassword, newPassword });
-  },
-
-  bootstrap: async (subject: string, password: string): Promise<void> => {
-    await request('POST', '/api/auth/bootstrap', { subject, password });
-  },
-
-  login: async (subject: string, password: string): Promise<User> => {
-    const data = await request('POST', '/api/auth/login', { subject, password });
-    // 角色以服务端返回为准；bootstrap 刚建的号也不假设一定是 admin。
-    return asUser(data.user) ?? { subject, role: 'admin' };
-  },
-
-  /**
-   * 退出。返回值里可能带平台的登出地址：Access 那扇门的会话不在这个 Worker 上，
-   * 只清本地 Cookie 的话下一次刷新又会被放进来。
+   * 退出。返回值里带平台的登出地址：Access 那扇门的会话不在这个 Worker 上，
+   * 面板这边没有任何东西可清，不去那儿退出的话下一次刷新又被放进来。
    */
   logout: async (): Promise<{ readonly accessLogout?: string }> => {
     const data = await request('POST', '/api/auth/logout');
     return typeof data.accessLogout === 'string' ? { accessLogout: data.accessLogout } : {};
-  },
-
-  /**
-   * 带外恢复：用 settings 表里的一次性令牌重置密码。
-   *
-   * 服务端刻意不区分「没开窗口 / 令牌不对 / 已过期 / 账号名不对」，全部回
-   * `recovery_unavailable` —— 前端也不能替它猜，否则就把它刻意隐藏的信息泄回去了。
-   */
-  recover: async (subject: string, token: string, password: string): Promise<void> => {
-    await request('POST', '/api/auth/recover', { subject, token, password });
   },
 
   /* ---------- 路由 ---------- */
@@ -234,13 +196,13 @@ export const api = {
   },
 
   /** role 不传时服务端缺省 viewer：一次点击不该造出一个管理员。 */
-  createUser: async (subject: string, password: string, role: Role): Promise<void> => {
-    await request('POST', '/api/users', { subject, password, role });
+  createUser: async (subject: string, role: Role): Promise<void> => {
+    await request('POST', '/api/users', { subject, role });
   },
 
   updateUser: async (
     id: number,
-    patch: { readonly role?: Role; readonly disabled?: boolean; readonly unlock?: boolean },
+    patch: { readonly role?: Role; readonly disabled?: boolean },
   ): Promise<void> => {
     await request('PATCH', `/api/users/${String(id)}`, patch);
   },
@@ -374,8 +336,8 @@ export interface AuditEntry {
 }
 
 /**
- * GET /api/users 的行。形状逐字段对齐 store.ts 的 listUsers —— 密码哈希列从不
- * 出现在这份响应里，那是服务端 SELECT 清单的责任，前端类型只认这些字段。
+ * GET /api/users 的行。形状逐字段对齐 store.ts 的 listUsers —— 服务端列清单从不
+ * 写 `SELECT *`，前端类型也只认这几个字段。
  */
 export interface UserEntry {
   readonly id: number;
@@ -387,10 +349,6 @@ export interface UserEntry {
   readonly createdAt: number;
   /** null = 从未登录过（只创建还没用过的账号）。 */
   readonly lastSeen: number | null;
-  readonly failedAttempts: number;
-  /** null = 没有被锁。 */
-  readonly lockedUntil: number | null;
-  readonly sessions: number;
 }
 
 /* ---------- 发布历史与回滚 ---------- */

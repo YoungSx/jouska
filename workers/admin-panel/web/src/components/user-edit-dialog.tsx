@@ -1,5 +1,4 @@
 import * as React from 'react';
-import { UnlockIcon } from 'lucide-react';
 import { toast } from 'sonner';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -60,7 +59,6 @@ export const UserEditDialog = ({ target, selfSubject, onClose, onSaved }: UserEd
   const [role, setRole] = React.useState<Role>('viewer');
   const [disabled, setDisabled] = React.useState(false);
   const [busy, setBusy] = React.useState(false);
-  const [unlocking, setUnlocking] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
 
   // target 从 null 变成一个人时，把快照抄进本地状态 —— 不跟着列表实时动，
@@ -70,7 +68,6 @@ export const UserEditDialog = ({ target, selfSubject, onClose, onSaved }: UserEd
       setRole(target.role);
       setDisabled(target.disabled);
       setBusy(false);
-      setUnlocking(false);
       setError(null);
     }
   }, [target]);
@@ -112,28 +109,6 @@ export const UserEditDialog = ({ target, selfSubject, onClose, onSaved }: UserEd
       }
     } finally {
       setBusy(false);
-    }
-  };
-
-  const unlock = async () => {
-    setUnlocking(true);
-    setError(null);
-    try {
-      await api.updateUser(target.id, { unlock: true });
-      toast.success(t.users.unlocked(target.subject));
-      onSaved();
-      onClose();
-    } catch (cause) {
-      setUnlocking(false);
-      if (cause instanceof NetworkError) {
-        setError(t.common.networkError);
-      } else if (cause instanceof ApiError && cause.status === 401) {
-        setError(t.common.sessionExpired);
-      } else if (cause instanceof ApiError) {
-        setError(messageFor(cause));
-      } else {
-        setError(t.users.errors.unknown(t.common.unknownError));
-      }
     }
   };
 
@@ -184,24 +159,6 @@ export const UserEditDialog = ({ target, selfSubject, onClose, onSaved }: UserEd
                 <span className="text-muted-foreground text-xs">{t.users.editDisabledHint}</span>
               </span>
             </label>
-          )}
-
-          {target.lockedUntil !== null && (
-            <div className="flex items-center justify-between gap-2 rounded-md border p-3">
-              <span className="flex flex-col gap-0.5">
-                <span className="text-sm font-medium">{t.users.status.locked}</span>
-                <span className="text-muted-foreground text-xs">{t.users.unlockHint}</span>
-              </span>
-              <Button
-                variant="outline"
-                size="sm"
-                disabled={unlocking || busy}
-                onClick={() => void unlock()}
-              >
-                {unlocking ? <Spinner /> : <UnlockIcon />}
-                {t.users.unlock}
-              </Button>
-            </div>
           )}
 
           {error !== null && (

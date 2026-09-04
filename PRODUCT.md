@@ -51,13 +51,11 @@ jouska 是 Hono 上的反向代理中间件，运行在 Cloudflare Workers。管
 
 角色两种：`admin`（读写、可发布）与 `viewer`（只读）。写操作在各自 handler 上逐个把关，不是按前缀一刀切，所以 viewer 保留全部读取能力。
 
-登录有两扇门，不对等。**平台优先**：配上 `ACCESS_TEAM` 与 `ACCESS_AUD`，Cloudflare Access 在这个 Worker 跑起来之前就把人认完了——面板不存密码、不管会话，以后加登录方式（Cloudflare 自家 IdP、邮件一次性 PIN、GitHub、Google、Okta、通用 OIDC/SAML、硬件密钥）是去 Zero Trust 控制台点几下，不动这个仓库。Access 放行的第一个人成为初始 admin，之后的人必须已经在 `users` 表里——Access 策略常常比面板的意图写得宽（整个邮箱域、整个 Cloudflare 账号），谁进门就给谁建号等于把路由表交给一群没人点过名的人。`role` 与 `disabled` 留在 D1，不搬到 Access 分组：最后一个 admin 的守卫只有在写入时原子求值才成立。
+登录只有一扇门：**Cloudflare Access**。配上 `ACCESS_TEAM` 与 `ACCESS_AUD`，平台在这个 Worker 跑起来之前就把人认完了——面板不存密码、不管会话，以后加登录方式（Cloudflare 自家 IdP、邮件一次性 PIN、GitHub、Google、Okta、通用 OIDC/SAML、硬件密钥）是去 Zero Trust 控制台点几下，不动这个仓库。Access 放行的第一个人成为初始 admin，之后的人必须已经在 `users` 表里——Access 策略常常比面板的意图写得宽（整个邮箱域、整个 Cloudflare 账号），谁进门就给谁建号等于把路由表交给一群没人点过名的人。`role` 与 `disabled` 留在 D1，不搬到 Access 分组：最后一个 admin 的守卫只有在写入时原子求值才成立。
 
-**旧的那扇门**：没配那两个变量时，面板自己认人。首次运行走 bootstrap（`users` 表为空时，第一个调用者创建初始 admin，此后永久关闭——行数检查 + 唯一索引共同关掉竞态）。
+面板自带的那扇密码门已经**永久关闭**：没有 `/api/auth/login`，没有 `sessions` 表，`users` 里没有密码列，也没有带外恢复令牌。换来的不是一张更小的登录表单，而是没有表单——**这份「没有」就是功能本身**。拒绝是终局，请求里带什么都换不来第二个意见；「关掉认证」是操作者在控制台做一次的事，不是攻击者每个请求都能试的事。JWKS 拿不到答 503，不答 401——没有验证材料时没有安全的「是」；没接上 Access 应用的部署是被锁在门外，而不是被悄悄降级成谁都能进。
 
-两扇门并存是为了迁移不需要停机日，顺序是有讲究的：**呈上了却不成立的凭据一律拒绝，只有完全没呈上的才回落到 Cookie**。否则一个坏令牌就能去要第二个意见，而「关掉 Access」会变成攻击者每个请求都能做的事，而不是操作者在控制台做一次的事。JWKS 拿不到答 503，不答 401——没有验证材料时没有安全的「是」。
-
-密码丢了或账号锁死走**带外恢复**：有数据库权限的人在 `settings` 表里开一个一次性令牌窗口（CI 的 `admin-reset` 工作流，或直接写一行 SQL），操作者在登录页用「账号 + 令牌 + 新密码」重置。令牌用过即失效，可以钉到某个账号上，所以泄露的令牌不能被转去重置别的 admin。服务端刻意把「没开窗口 / 令牌不对 / 已过期 / 账号名不符」压成同一个 `recovery_unavailable` —— 前端不得替它区分。
+两个必须明说的后果。**登出是平台的事**：`POST /api/auth/logout` 什么都不销毁，只把团队的登出地址交回来——`CF_Authorization` 住在 team 域上，面板答一句「已退出」却不把浏览器送过去，下一次刷新人又被放进来了。**把 `users` 表清空会重新打开首次建号**，下一个被 Access 放行的地址就成了 admin，这正是 `DELETE /api/users/:id` 拒绝删掉最后一行的原因。
 
 域名发现是只读查询：面板用一个**只读**的 Cloudflare API token 读出账号里真正能打到反代 Worker 的 hostname（workers.dev 子域、自定义域、zone route），再和路由表交叉比对，回答操作者写 `match.host` 时的两个问题——哪个域名没有路由接管，哪条路由指着一个还没绑定的域名。凭据缺失不是错误：那是受支持的部署，界面解释而不是报警。
 
@@ -73,9 +71,9 @@ jouska 是 Hono 上的反向代理中间件，运行在 Cloudflare Workers。管
 - 发布历史与回滚：每次发布存一份快照（含 `defaults` 与全部启用路由，滚动保留 50 版），时间轴可按 revision 浏览、任选两版做服务端字段级 diff；回滚把目标快照恢复进草稿并复用同一条发布管道——它是发布成新 revision，不是倒带计数，`rollbackOf` 记录出处；目标快照先过 schema 校验、再重过全部发布闸门。历史功能之前的旧发布以审计日志回填为「无快照」条目，能看、不能比。
 - 舍弃未发布的草稿：把草稿重置为线上正在服务的 revision 的快照。不写 KV、不产生 revision、不过发布闸门——撤销草稿改动不需要为此制造一次发布。快照没有的路由停用但保留定义；快照刻意不做 schema 校验，草稿编译不过（blocked）时照样能弃，这是逃生舱。从未发布过、线上快照不可用、草稿已与线上一致三种情况会拒绝。
 - 审计日志，最多 200 条每页。
-- 面板登录：可交给 Cloudflare Access（推荐，认证发生在代码之前，免费额度的 10 ms CPU 一分不花），也可用面板自己的密码会话；两者并存，迁移无需停机。
-- 登录、登出、会话；连续 5 次失败锁 15 分钟（密码那扇门）。
-- 带外密码恢复：一次性令牌，可钉到账号，用过即废，走审计（`auth.recover`）。
+- 面板登录交给 Cloudflare Access：认证发生在代码之前，免费额度的 10 ms CPU 一分不花，面板不存任何凭据。
+- 登出把团队的登出地址交回前端——Access 的会话只有平台关得掉。
+- 第一个过门的人自动成为初始 admin（仅在 `users` 表为空时），之后的人由管理员在「用户」页加。
 - 域名发现：只读列出账号里绑定到反代的 hostname，与路由表交叉比对；60 秒 isolate 内缓存，不落盘。
 - 路由级访问控制：委托鉴权（forwardAuth，nginx auth_request 语义）——把「你是谁」交给一个鉴权端点，2xx 放行、其他状态原样回传，端点不可达默认 fail-closed。
 
@@ -83,12 +81,12 @@ jouska 是 Hono 上的反向代理中间件，运行在 Cloudflare Workers。管
 
 - 部署目标是 Cloudflare Workers 的静态资源 + 单 Worker，产物必须是纯静态文件。
 - `assets.not_found_handling: "single-page-application"`，所以客户端路由可用。
-- 路由定义单条上限 64 KiB，`defaults` 同；发布备注 500 字符；密码 12–1024 字符。
+- 路由定义单条上限 64 KiB，`defaults` 同；发布备注 500 字符；账号名 1–128 字符。
 - 存量数据可能损坏：D1 里的 JSON 列若解析失败，读路径必须降级为"具名的问题"，不能 500——否则操作者被锁在他唯一能修好它的那个屏幕外面。
 
 明确的缺口（真实存在的表与字段，但零 UI，未来工作要接上，不许假装已有）：
 
-- `users` 表已有 `role` / `disabled` / `failed_attempts` / `locked_until`，但面板没有任何用户管理界面：加号、改角色、停用、解锁、踢会话、改密码都做不到。唯一的建号途径是首次 bootstrap。
+- `users` 表已有 `role` / `disabled`，但面板没有任何用户管理界面：加号、改角色、停用都做不到。唯一的建号途径是第一个人过 Access 时的自动建号。
 - 路由级运行时可观测（请求量、错误率、p95、上游健康）的数据源尚不存在，需要 Analytics Engine 之类的接入。
 
 ## Brand Commitments
@@ -108,7 +106,6 @@ jouska 是 Hono 上的反向代理中间件，运行在 Cloudflare Workers。管
 - `workers/admin-panel/src/mirror.ts`：整站镜像提示，产出 `routeId` / `upstream`；判据只覆盖整站路由，且是提示不是错误。
 - `workers/admin-panel/migrations/`：`0001_init.sql`、`0002_tables.sql`、`0003_revisions.sql` 的真实表结构。
 - `workers/admin-panel/src/cloudflare.ts`：域名发现的三个来源与它们各自的失败模式。
-- `workers/admin-panel/src/recovery.ts`：恢复令牌的窗口、过期与一次性消费语义。
 
 不存在，不许编造：性能基准数字、用户数量、客户案例、可用性承诺、任何路由的实时流量数据。
 

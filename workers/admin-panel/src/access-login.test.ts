@@ -5,9 +5,9 @@
  * caller before this Worker ran. What is worth testing is everything around
  * that:
  *
- *   - the two doors never add up to a bypass: a token that was presented and
- *     failed must not be able to fall through to the cookie, or turning Access
- *     off becomes something an attacker does per-request;
+ *   - a refusal is final: with the password door gone there is nothing left for a
+ *     failed or absent token to fall through to, and these cases are what keeps
+ *     a second door from quietly growing back;
  *   - provisioning happens exactly once, because Access policies are routinely
  *     written wider than the panel's intent;
  *   - `role` and `disabled` still come from the panel's own table, so the
@@ -23,11 +23,16 @@ import { applyD1Migrations, env } from 'cloudflare:test';
 import { beforeEach, describe, expect, it } from 'vitest';
 import worker from './index.js';
 import type { AppEnv, Env } from './env.js';
+import {
+  ACCESS_AUD,
+  accessClaims as claims,
+  deadFetch,
+  jwksFetch,
+  makeSigner,
+} from './test-access.js';
 
 const testEnv = env as unknown as Env;
 const base = 'https://panel.test';
-const AUD = 'panel-audience';
-const ROOT_PW = 'correct-horse-battery';
 
 interface ResponseLike {
   status: number;
@@ -56,86 +61,17 @@ const request = async (
     ctx as ExecutionContext,
   ) as unknown as Promise<ResponseLike>;
 
-const encoder = new TextEncoder();
-
-const base64Url = (bytes: Uint8Array): string => {
-  let binary = '';
-  for (const byte of bytes) {
-    binary += String.fromCharCode(byte);
-  }
-  return btoa(binary).replaceAll('+', '-').replaceAll('/', '_').replace(/=+$/, '');
-};
-
-const encodeSegment = (value: unknown): string => base64Url(encoder.encode(JSON.stringify(value)));
-
-/** An RS256 signer plus the public JWK a certs endpoint would publish for it. */
-const makeSigner = async () => {
-  // `generateKey` is typed as `CryptoKey | CryptoKeyPair`; an RSA algorithm only
-  // ever yields the pair, and the assertion is what lets the two halves be named.
-  const pair = (await crypto.subtle.generateKey(
-    {
-      name: 'RSASSA-PKCS1-v1_5',
-      modulusLength: 2048,
-      publicExponent: new Uint8Array([1, 0, 1]),
-      hash: 'SHA-256',
-    },
-    true,
-    ['sign', 'verify'],
-  )) as CryptoKeyPair;
-  const jwk = (await crypto.subtle.exportKey('jwk', pair.publicKey)) as JsonWebKey & {
-    kid?: string;
-  };
-  jwk.kid = 'panel-key';
-  const sign = async (claims: Record<string, unknown>): Promise<string> => {
-    const header = encodeSegment({ alg: 'RS256', typ: 'JWT', kid: 'panel-key' });
-    const payload = encodeSegment(claims);
-    const signature = await crypto.subtle.sign(
-      'RSASSA-PKCS1-v1_5',
-      pair.privateKey,
-      encoder.encode(`${header}.${payload}`),
-    );
-    return `${header}.${payload}.${base64Url(new Uint8Array(signature))}`;
-  };
-  return { jwk, sign };
-};
-
-/** Answers the team's certs endpoint with `keys`; anything else is a failure. */
-const jwksFetch = (keys: JsonWebKey[]) => {
-  const calls: string[] = [];
-  const impl: typeof fetch = async (input) => {
-    const url = typeof input === 'string' ? input : (input as Request).url;
-    if (url.endsWith('/cdn-cgi/access/certs')) {
-      calls.push(url);
-      return Response.json({ keys });
-    }
-    throw new Error(`unexpected fetch to ${url}`);
-  };
-  return { impl, calls };
-};
-
-const deadFetch: typeof fetch = async () => new Response('nope', { status: 500 });
-
-const claims = (email: string, overrides: Record<string, unknown> = {}) => ({
-  aud: AUD,
-  exp: Math.floor(Date.now() / 1000) + 300,
-  email,
-  ...overrides,
-});
-
 /** Env with Access on, pointed at a stub certs endpoint. */
 const accessEnv = (team: string, fetchImpl: typeof fetch): AppEnv =>
-  envWith({ ACCESS_TEAM: team, ACCESS_AUD: AUD, ACCESS_JWKS_FETCH: fetchImpl });
+  envWith({ ACCESS_TEAM: team, ACCESS_AUD: ACCESS_AUD, ACCESS_JWKS_FETCH: fetchImpl });
 
 const userRow = async (subject: string) =>
-  testEnv.DB.prepare(
-    'SELECT id, subject, role, password, disabled, last_seen FROM users WHERE subject = ?',
-  )
+  testEnv.DB.prepare('SELECT id, subject, role, disabled, last_seen FROM users WHERE subject = ?')
     .bind(subject)
     .first<{
       id: number;
       subject: string;
       role: string;
-      password: string | null;
       disabled: number;
       last_seen: number | null;
     }>();
@@ -149,7 +85,7 @@ const insertUser = async (
   disabled = false,
 ): Promise<void> => {
   await testEnv.DB.prepare(
-    'INSERT INTO users (subject, email, role, password, disabled, created_at) VALUES (?, ?, ?, NULL, ?, ?)',
+    'INSERT INTO users (subject, email, role, disabled, created_at) VALUES (?, ?, ?, ?, ?)',
   )
     .bind(subject, subject, role, disabled ? 1 : 0, Math.floor(Date.now() / 1000))
     .run();
@@ -157,57 +93,35 @@ const insertUser = async (
 
 beforeEach(async () => {
   await applyD1Migrations(testEnv.DB, TEST_MIGRATIONS);
-  for (const table of ['audit_log', 'sessions', 'routes', 'settings', 'users']) {
+  for (const table of ['audit_log', 'routes', 'settings', 'users']) {
     await testEnv.DB.prepare(`DELETE FROM ${table}`).run();
   }
 });
 
 describe('Access off', () => {
-  it('leaves the password door exactly as it was', async () => {
+  it('refuses everyone, because there is no other door', async () => {
+    // The whole point of this migration: with ACCESS_TEAM unset there is no
+    // credential this panel knows how to read, so the answer is 401 and stays
+    // 401. A deployment that forgets to attach its Access application is locked
+    // out, not softly downgraded to something an attacker can reach.
     const appEnv = envWith({});
-    const boot = await request(
-      'POST',
-      '/api/auth/bootstrap',
-      appEnv,
-      {},
-      {},
-      {
-        subject: 'root',
-        password: ROOT_PW,
-      },
-    );
-    expect(boot.status).toBe(201);
 
-    const login = await request(
-      'POST',
-      '/api/auth/login',
-      appEnv,
-      {},
-      {},
-      {
-        subject: 'root',
-        password: ROOT_PW,
-      },
-    );
-    expect(login.status).toBe(200);
-    const cookie = `jouska_session=${/jouska_session=([^;]+)/.exec(login.headers.get('set-cookie') ?? '')?.[1]}`;
-
-    const me = await request('GET', '/api/auth/me', appEnv, { cookie });
-    expect(me.status).toBe(200);
-    // `via` is what the audit log will lean on to tell the two doors apart.
-    expect((await me.json()) as unknown).toMatchObject({
-      user: { subject: 'root', via: 'session' },
-    });
+    for (const path of ['/api/auth/me', '/api/routes', '/api/users']) {
+      const res = await request('GET', path, appEnv);
+      // /me answers its own shape: 200 with a null user, so the SPA can render.
+      expect(path === '/api/auth/me' ? 200 : 401).toBe(res.status);
+    }
+    expect(await userCount()).toBe(0);
   });
 
-  it('still refuses an anonymous caller', async () => {
-    const res = await request('GET', '/api/routes', envWith({}));
-    expect(res.status).toBe(401);
+  it('does not provision anybody on the way past', async () => {
+    await request('GET', '/api/routes', envWith({}));
+    expect(await userCount()).toBe(0);
   });
 });
 
 describe('Access on, first run', () => {
-  it('provisions the first caller as admin, with no password', async () => {
+  it('provisions the first caller as admin', async () => {
     const { jwk, sign } = await makeSigner();
     const appEnv = accessEnv('acme-first', jwksFetch([jwk]).impl);
 
@@ -216,15 +130,11 @@ describe('Access on, first run', () => {
     });
     expect(res.status).toBe(200);
     expect((await res.json()) as unknown).toMatchObject({
-      user: { subject: 'ops@example.com', role: 'admin', via: 'access' },
-      bootstrapable: false,
+      user: { subject: 'ops@example.com', role: 'admin' },
     });
 
     const row = await userRow('ops@example.com');
     expect(row?.role).toBe('admin');
-    // The column's NULL is the whole point: this account has no password to
-    // verify, so there is nothing for a stolen hash to be.
-    expect(row?.password).toBeNull();
     expect(row?.last_seen).not.toBeNull();
   });
 
@@ -261,7 +171,6 @@ describe('Access on, first run', () => {
     expect(res.status).toBe(200);
     expect((await res.json()) as unknown).toMatchObject({
       user: null,
-      bootstrapable: false,
       accessEmail: 'stranger@example.com',
     });
   });
@@ -294,56 +203,30 @@ describe('Access on, the panel table still decides', () => {
   });
 });
 
-describe('the two doors do not add up to a bypass', () => {
-  /** A live password session, so every refusal below has something to fall to. */
-  const withSession = async (): Promise<string> => {
-    const plain = envWith({});
-    await request(
-      'POST',
-      '/api/auth/bootstrap',
-      plain,
-      {},
-      {},
-      {
-        subject: 'root',
-        password: ROOT_PW,
-      },
-    );
-    const login = await request(
-      'POST',
-      '/api/auth/login',
-      plain,
-      {},
-      {},
-      {
-        subject: 'root',
-        password: ROOT_PW,
-      },
-    );
-    return `jouska_session=${/jouska_session=([^;]+)/.exec(login.headers.get('set-cookie') ?? '')?.[1]}`;
-  };
+describe('a refusal has nothing to fall through to', () => {
+  // These cases used to prove that a failed Access token could not reach the
+  // cookie door. The cookie door is gone, so what they prove now is narrower and
+  // more permanent: a token that does not hold up produces a refusal, full stop,
+  // and no request-shaped input downgrades that.
 
-  it('a forged signature is refused, cookie or no cookie', async () => {
-    const cookie = await withSession();
+  it('a forged signature is refused', async () => {
     const real = await makeSigner();
     const impostor = await makeSigner();
     // The certs endpoint publishes the real key; the token is signed by the other.
     const appEnv = accessEnv('acme-forged', jwksFetch([real.jwk]).impl);
 
     const res = await request('GET', '/api/routes', appEnv, {
-      cookie,
       'cf-access-jwt-assertion': await impostor.sign(claims('root')),
     });
     expect(res.status).toBe(401);
+    expect(await userCount()).toBe(0);
   });
 
-  it("a token for another application is 403, not somebody else's session", async () => {
-    const cookie = await withSession();
+  it('a token for another application is 403', async () => {
     const { jwk, sign } = await makeSigner();
     const appEnv = accessEnv('acme-aud', jwksFetch([jwk]).impl);
 
     const res = await request('GET', '/api/routes', appEnv, {
-      cookie,
       'cf-access-jwt-assertion': await sign(claims('root', { aud: 'some-other-app' })),
     });
     expect(res.status).toBe(403);
@@ -374,16 +257,17 @@ describe('the two doors do not add up to a bypass', () => {
     expect(await userCount()).toBe(0);
   });
 
-  it('an absent token does fall through to the cookie — that is the migration path', async () => {
-    const cookie = await withSession();
+  it('an absent token is unauthenticated, cookies on the request or not', async () => {
     const { jwk } = await makeSigner();
-    const appEnv = accessEnv('acme-fallthrough', jwksFetch([jwk]).impl);
+    const appEnv = accessEnv('acme-nofallthrough', jwksFetch([jwk]).impl);
 
-    const res = await request('GET', '/api/auth/me', appEnv, { cookie });
-    expect(res.status).toBe(200);
-    expect((await res.json()) as unknown).toMatchObject({
-      user: { subject: 'root', via: 'session' },
+    // A leftover `jouska_session` cookie from before the migration is just bytes
+    // now. Nothing reads it, and the reply must not hint that something might.
+    const res = await request('GET', '/api/routes', appEnv, {
+      cookie: 'jouska_session=whatever-used-to-work',
     });
+    expect(res.status).toBe(401);
+    expect((await res.json()) as unknown).toMatchObject({ error: 'unauthenticated' });
   });
 });
 
@@ -404,7 +288,7 @@ describe('fail closed', () => {
     const { jwk, sign } = await makeSigner();
     const appEnv = envWith({
       ACCESS_TEAM: 'evil.example.com/..',
-      ACCESS_AUD: AUD,
+      ACCESS_AUD,
       ACCESS_JWKS_FETCH: jwksFetch([jwk]).impl,
     });
 
@@ -424,8 +308,8 @@ describe('fail closed', () => {
     const res = await request('GET', '/api/routes', appEnv, {
       'cf-access-jwt-assertion': await sign(claims('ops@example.com')),
     });
-    // Falls through to the cookie path, finds none, and refuses. What it must
-    // not do is admit a token whose audience nobody checked.
+    // Access counts as off without an audience, and off means refused. What it
+    // must not do is admit a token whose audience nobody checked.
     expect(res.status).toBe(401);
     expect(await userCount()).toBe(0);
   });
@@ -442,7 +326,7 @@ describe('ctx.access, the local-development door', () => {
     const res = await request('GET', '/api/auth/me', appEnv, {}, ctxWith('dev@example.com'));
     expect(res.status).toBe(200);
     expect((await res.json()) as unknown).toMatchObject({
-      user: { subject: 'dev@example.com', role: 'admin', via: 'access' },
+      user: { subject: 'dev@example.com', role: 'admin' },
     });
   });
 
@@ -495,33 +379,11 @@ describe('signing out', () => {
     });
   });
 
-  it('says nothing about Access when the session was the cookie', async () => {
-    const plain = envWith({});
-    await request(
-      'POST',
-      '/api/auth/bootstrap',
-      plain,
-      {},
-      {},
-      {
-        subject: 'root',
-        password: ROOT_PW,
-      },
-    );
-    const login = await request(
-      'POST',
-      '/api/auth/login',
-      plain,
-      {},
-      {},
-      {
-        subject: 'root',
-        password: ROOT_PW,
-      },
-    );
-    const cookie = `jouska_session=${/jouska_session=([^;]+)/.exec(login.headers.get('set-cookie') ?? '')?.[1]}`;
-
-    const res = await request('POST', '/api/auth/logout', plain, { cookie });
+  it('still answers when the team name cannot produce a URL', async () => {
+    // ACCESS_TEAM unset: nothing to sign out of on the platform side, and the
+    // endpoint says so by omission rather than by inventing a destination.
+    const res = await request('POST', '/api/auth/logout', envWith({}));
+    expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ ok: true });
   });
 
@@ -531,7 +393,7 @@ describe('signing out', () => {
     // navigate to, so a malformed name would be an open redirect.
     const appEnv = envWith({
       ACCESS_TEAM: 'evil.example.com/..',
-      ACCESS_AUD: AUD,
+      ACCESS_AUD,
       ACCESS_JWKS_FETCH: deadFetch,
     });
     const res = await request(

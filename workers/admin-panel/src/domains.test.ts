@@ -7,15 +7,19 @@
  * shapes it returns are the ones asserted in `cloudflare.test.ts`.
  */
 import { applyD1Migrations, env } from 'cloudflare:test';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import worker from './index.js';
 import { __resetDomainCache, type DomainsResponse } from './api/domains.js';
 import type { AppEnv, Env } from './env.js';
+import { openAccessDoor, type AccessDoor } from './test-access.js';
 
 const testEnv = env as unknown as Env;
 const base = 'https://panel.test';
-const PASSWORD = 'domains-test-password';
 const SCRIPT = 'jouska';
+const ROOT = 'root@example.com';
+const WATCHER = 'watcher@example.com';
+
+let door: AccessDoor;
 
 interface ResponseLike {
   status: number;
@@ -23,9 +27,14 @@ interface ResponseLike {
   json(): Promise<unknown>;
 }
 
-/** Env for one case: the real bindings plus discovery config and the stub. */
-const envWith = (overrides: Record<string, unknown>): AppEnv =>
-  ({ ...testEnv, ...overrides }) as unknown as AppEnv;
+/**
+ * Env for one case: the real bindings plus discovery config and the stub.
+ *
+ * Access is wired in here rather than per case because every authenticated call
+ * in this file needs it, and a case that quietly lost it would fail as a 401 in
+ * the middle of a discovery assertion.
+ */
+const envWith = (overrides: Record<string, unknown>): AppEnv => door.env(overrides);
 
 const call = async (
   method: string,
@@ -109,40 +118,34 @@ const configured = (state: ApiState, extra: Record<string, unknown> = {}): AppEn
     ...extra,
   });
 
-/** Bootstraps an admin and returns its cookie header value. */
-const adminCookie = async (appEnv: AppEnv): Promise<string> => {
-  await call('POST', '/api/auth/bootstrap', appEnv, { subject: 'root', password: PASSWORD });
-  const login = await call('POST', '/api/auth/login', appEnv, {
-    subject: 'root',
-    password: PASSWORD,
-  });
-  const raw = login.headers.get('set-cookie');
-  if (raw === null) {
-    throw new Error('login returned no cookie');
-  }
-  return raw.split(';')[0] ?? '';
+/** Admin headers; the first request on an empty table provisions the row. */
+const adminAuth = async (appEnv: AppEnv): Promise<Record<string, string>> => {
+  const auth = await door.headers(ROOT);
+  const res = await call('GET', '/api/auth/me', appEnv, undefined, auth);
+  expect(res.status).toBe(200);
+  return auth;
 };
 
 const putRoute = async (
   appEnv: AppEnv,
-  cookie: string,
+  auth: Record<string, string>,
   id: string,
   definition: unknown,
   enabled = true,
 ): Promise<void> => {
-  const res = await call('PUT', `/api/routes/${id}`, appEnv, { definition, enabled }, { cookie });
+  const res = await call('PUT', `/api/routes/${id}`, appEnv, { definition, enabled }, auth);
   expect(res.status, `route ${id} should save`).toBe(200);
 };
 
-const domains = async (appEnv: AppEnv, cookie: string): Promise<DomainsResponse> => {
-  const res = await call('GET', '/api/domains', appEnv, undefined, { cookie });
+const domains = async (appEnv: AppEnv, auth: Record<string, string>): Promise<DomainsResponse> => {
+  const res = await call('GET', '/api/domains', appEnv, undefined, auth);
   expect(res.status).toBe(200);
   return (await res.json()) as DomainsResponse;
 };
 
 beforeEach(async () => {
   await applyD1Migrations(testEnv.DB, TEST_MIGRATIONS);
-  for (const table of ['audit_log', 'sessions', 'routes', 'settings', 'mcp_tokens', 'users']) {
+  for (const table of ['audit_log', 'routes', 'settings', 'mcp_tokens', 'users']) {
     await testEnv.DB.prepare(`DELETE FROM ${table}`).run();
   }
   __resetDomainCache();
@@ -157,37 +160,32 @@ describe('GET /api/domains', () => {
 
   it('is readable by a viewer: hostnames are public by construction', async () => {
     const appEnv = configured({ workersDev: true, subdomain: 'team' });
-    // Bootstrap creates the admin; the viewer is inserted directly because the
-    // point under test is the role gate on this endpoint, not user management.
-    const cookie = await adminCookie(appEnv);
+    // The admin goes through the door first, so the viewer row is added to a
+    // table that is no longer empty — the point under test is the role gate on
+    // this endpoint, not user management.
+    const auth = await adminAuth(appEnv);
     await testEnv.DB.prepare(
-      "INSERT INTO users (subject, role, password, created_at) VALUES ('watcher', 'viewer', NULL, 0)",
-    ).run();
-    const viewer = await testEnv.DB.prepare(
-      "SELECT id FROM users WHERE subject = 'watcher'",
-    ).first<{ id: number }>();
-    // A session row for the viewer, hashed the way auth.ts stores them.
-    const token = 'v'.repeat(43);
-    const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(token));
-    const hash = [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('');
-    await testEnv.DB.prepare(
-      'INSERT INTO sessions (token_hash, user_id, created_at, expires_at) VALUES (?, ?, ?, ?)',
+      "INSERT INTO users (subject, role, created_at) VALUES (?, 'viewer', 0)",
     )
-      .bind(hash, viewer?.id ?? 0, 0, Math.floor(Date.now() / 1000) + 3600)
+      .bind(WATCHER)
       .run();
-    const asViewer = await call('GET', '/api/domains', appEnv, undefined, {
-      cookie: `jouska_session=${token}`,
-    });
+    const asViewer = await call(
+      'GET',
+      '/api/domains',
+      appEnv,
+      undefined,
+      await door.headers(WATCHER),
+    );
     expect(asViewer.status).toBe(200);
     expect(((await asViewer.json()) as DomainsResponse).configured).toBe(true);
     // And the admin sees the same thing.
-    expect((await domains(appEnv, cookie)).configured).toBe(true);
+    expect((await domains(appEnv, auth)).configured).toBe(true);
   });
 
   it('reports unconfigured, not an error, when no credentials are set', async () => {
     const appEnv = envWith({ CF_ACCOUNT_ID: undefined, CF_API_TOKEN: undefined });
-    const cookie = await adminCookie(appEnv);
-    const body = await domains(appEnv, cookie);
+    const auth = await adminAuth(appEnv);
+    const body = await domains(appEnv, auth);
     expect(body.configured).toBe(false);
     expect(body.reason).toBe('missing_both');
     // The script name is still reported, so the UI can name what it would look up.
@@ -197,23 +195,23 @@ describe('GET /api/domains', () => {
 
   it('names which credential is missing', async () => {
     const withToken = envWith({ CF_API_TOKEN: 'tok', CF_ACCOUNT_ID: undefined });
-    const cookie = await adminCookie(withToken);
-    expect((await domains(withToken, cookie)).reason).toBe('missing_account_id');
+    const auth = await adminAuth(withToken);
+    expect((await domains(withToken, auth)).reason).toBe('missing_account_id');
 
     const withAccount = envWith({ CF_ACCOUNT_ID: 'acct', CF_API_TOKEN: undefined });
-    expect((await domains(withAccount, cookie)).reason).toBe('missing_token');
+    expect((await domains(withAccount, auth)).reason).toBe('missing_token');
   });
 
   it('treats a blank credential as absent rather than sending an empty token', async () => {
     const appEnv = envWith({ CF_ACCOUNT_ID: '  ', CF_API_TOKEN: '  ' });
-    const cookie = await adminCookie(appEnv);
-    expect((await domains(appEnv, cookie)).reason).toBe('missing_both');
+    const auth = await adminAuth(appEnv);
+    expect((await domains(appEnv, auth)).reason).toBe('missing_both');
   });
 
   it('never echoes the token', async () => {
     const appEnv = configured({ workersDev: true });
-    const cookie = await adminCookie(appEnv);
-    const res = await call('GET', '/api/domains', appEnv, undefined, { cookie });
+    const auth = await adminAuth(appEnv);
+    const res = await call('GET', '/api/domains', appEnv, undefined, auth);
     const raw = JSON.stringify(await res.json());
     expect(raw).not.toContain('read-only-token');
   });
@@ -222,12 +220,12 @@ describe('GET /api/domains', () => {
     const appEnv = configured({
       customDomains: [{ hostname: 'mirror.example.com', service: SCRIPT }],
     });
-    const cookie = await adminCookie(appEnv);
-    await putRoute(appEnv, cookie, 'r1', {
+    const auth = await adminAuth(appEnv);
+    await putRoute(appEnv, auth, 'r1', {
       match: { host: 'mirror.example.com', path: '/' },
       upstream: 'up.example.com',
     });
-    const body = await domains(appEnv, cookie);
+    const body = await domains(appEnv, auth);
     const host = body.hosts?.find((h) => h.host === 'mirror.example.com');
     expect(host?.routeIds).toEqual(['r1']);
     expect(body.unmatchedRouteHosts).toEqual([]);
@@ -237,37 +235,37 @@ describe('GET /api/domains', () => {
     const appEnv = configured({
       customDomains: [{ hostname: 'orphan.example.com', service: SCRIPT }],
     });
-    const cookie = await adminCookie(appEnv);
-    await putRoute(appEnv, cookie, 'r1', {
+    const auth = await adminAuth(appEnv);
+    await putRoute(appEnv, auth, 'r1', {
       match: { host: 'other.example.com', path: '/' },
       upstream: 'up.example.com',
     });
-    const body = await domains(appEnv, cookie);
+    const body = await domains(appEnv, auth);
     expect(body.hosts?.find((h) => h.host === 'orphan.example.com')?.routeIds).toEqual([]);
   });
 
   it('reports a route whose host is not bound anywhere', async () => {
     const appEnv = configured({ customDomains: [] });
-    const cookie = await adminCookie(appEnv);
-    await putRoute(appEnv, cookie, 'typo', {
+    const auth = await adminAuth(appEnv);
+    await putRoute(appEnv, auth, 'typo', {
       match: { host: 'mirrror.example.com', path: '/' },
       upstream: 'up.example.com',
     });
-    const body = await domains(appEnv, cookie);
+    const body = await domains(appEnv, auth);
     expect(body.unmatchedRouteHosts).toEqual([{ routeId: 'typo', host: 'mirrror.example.com' }]);
   });
 
   it('does not flag a disabled route as unmatched: it is not live', async () => {
     const appEnv = configured({ customDomains: [] });
-    const cookie = await adminCookie(appEnv);
+    const auth = await adminAuth(appEnv);
     await putRoute(
       appEnv,
-      cookie,
+      auth,
       'parked',
       { match: { host: 'parked.example.com', path: '/' }, upstream: 'up.example.com' },
       false,
     );
-    const body = await domains(appEnv, cookie);
+    const body = await domains(appEnv, auth);
     expect(body.unmatchedRouteHosts).toEqual([]);
   });
 
@@ -275,12 +273,12 @@ describe('GET /api/domains', () => {
     const appEnv = configured({
       customDomains: [{ hostname: 'a.example.com', service: SCRIPT }],
     });
-    const cookie = await adminCookie(appEnv);
-    await putRoute(appEnv, cookie, 'catchall', {
+    const auth = await adminAuth(appEnv);
+    await putRoute(appEnv, auth, 'catchall', {
       match: { path: '/' },
       upstream: 'up.example.com',
     });
-    const body = await domains(appEnv, cookie);
+    const body = await domains(appEnv, auth);
     expect(body.hosts?.find((h) => h.host === 'a.example.com')?.routeIds).toEqual(['catchall']);
     // A route with no host cannot be unmatched, so it must not be listed.
     expect(body.unmatchedRouteHosts).toEqual([]);
@@ -293,12 +291,12 @@ describe('GET /api/domains', () => {
         { hostname: 'example.com', service: SCRIPT },
       ],
     });
-    const cookie = await adminCookie(appEnv);
-    await putRoute(appEnv, cookie, 'wild', {
+    const auth = await adminAuth(appEnv);
+    await putRoute(appEnv, auth, 'wild', {
       match: { host: '*.example.com', path: '/' },
       upstream: 'up.example.com',
     });
-    const body = await domains(appEnv, cookie);
+    const body = await domains(appEnv, auth);
     expect(body.hosts?.find((h) => h.host === 'a.example.com')?.routeIds).toEqual(['wild']);
     // The apex is not a subdomain: the same rule the router applies.
     expect(body.hosts?.find((h) => h.host === 'example.com')?.routeIds).toEqual([]);
@@ -310,12 +308,12 @@ describe('GET /api/domains', () => {
     const appEnv = configured({
       customDomains: [{ hostname: '..example.com', service: SCRIPT }],
     });
-    const cookie = await adminCookie(appEnv);
-    await putRoute(appEnv, cookie, 'wild', {
+    const auth = await adminAuth(appEnv);
+    await putRoute(appEnv, auth, 'wild', {
       match: { host: '*.example.com', path: '/' },
       upstream: 'up.example.com',
     });
-    const body = await domains(appEnv, cookie);
+    const body = await domains(appEnv, auth);
     expect(body.hosts?.find((h) => h.host === '..example.com')?.routeIds).toEqual([]);
   });
 
@@ -324,12 +322,12 @@ describe('GET /api/domains', () => {
     const appEnv = configured({
       customDomains: [{ hostname: '.example.com', service: SCRIPT }],
     });
-    const cookie = await adminCookie(appEnv);
-    await putRoute(appEnv, cookie, 'wild', {
+    const auth = await adminAuth(appEnv);
+    await putRoute(appEnv, auth, 'wild', {
       match: { host: '*.example.com', path: '/' },
       upstream: 'up.example.com',
     });
-    const body = await domains(appEnv, cookie);
+    const body = await domains(appEnv, auth);
     expect(body.hosts?.find((h) => h.host === '.example.com')?.routeIds).toEqual([]);
   });
 
@@ -340,12 +338,12 @@ describe('GET /api/domains', () => {
       zones: [{ id: 'z1', name: 'example.com' }],
       routes: { z1: [{ id: 'cf1', pattern: '*.example.com/*', script: SCRIPT }] },
     });
-    const cookie = await adminCookie(appEnv);
-    await putRoute(appEnv, cookie, 'narrow', {
+    const auth = await adminAuth(appEnv);
+    await putRoute(appEnv, auth, 'narrow', {
       match: { host: '*.a.example.com', path: '/' },
       upstream: 'up.example.com',
     });
-    const body = await domains(appEnv, cookie);
+    const body = await domains(appEnv, auth);
     expect(body.hosts?.find((h) => h.host === '*.example.com')?.routeIds).toEqual([]);
     expect(body.unmatchedRouteHosts).toEqual([{ routeId: 'narrow', host: '*.a.example.com' }]);
   });
@@ -357,12 +355,12 @@ describe('GET /api/domains', () => {
       zones: [{ id: 'z1', name: 'example.com' }],
       routes: { z1: [{ id: 'cf1', pattern: '*.example.com/*', script: SCRIPT }] },
     });
-    const cookie = await adminCookie(appEnv);
-    await putRoute(appEnv, cookie, 'exact', {
+    const auth = await adminAuth(appEnv);
+    await putRoute(appEnv, auth, 'exact', {
       match: { host: 'a.example.com', path: '/' },
       upstream: 'up.example.com',
     });
-    const body = await domains(appEnv, cookie);
+    const body = await domains(appEnv, auth);
     expect(body.hosts?.find((h) => h.host === '*.example.com')?.routeIds).toEqual(['exact']);
     expect(body.unmatchedRouteHosts).toEqual([]);
   });
@@ -372,8 +370,8 @@ describe('GET /api/domains', () => {
       zones: [{ id: 'z1', name: 'example.com' }],
       routes: { z1: [{ id: 'cf1', pattern: 'example.com/api/*', script: SCRIPT }] },
     });
-    const cookie = await adminCookie(appEnv);
-    const body = await domains(appEnv, cookie);
+    const auth = await adminAuth(appEnv);
+    const body = await domains(appEnv, auth);
     const host = body.hosts?.find((h) => h.kind === 'route');
     expect(host?.pattern).toBe('example.com/api/*');
     expect(host?.zone).toBe('example.com');
@@ -385,20 +383,20 @@ describe('GET /api/domains', () => {
       subdomain: 'team',
       deny: ['zones'],
     });
-    const cookie = await adminCookie(appEnv);
-    const body = await domains(appEnv, cookie);
+    const auth = await adminAuth(appEnv);
+    const body = await domains(appEnv, auth);
     expect(body.hosts?.map((h) => h.host)).toEqual(['jouska.team.workers.dev']);
     expect(body.failures).toEqual([{ source: 'route', message: 'Zone Read required' }]);
   });
 
   it('withholds unmatched routes when every source failed: nothing was compared', async () => {
     const appEnv = configured({ deny: ['workers_dev', 'custom_domain', 'zones'] });
-    const cookie = await adminCookie(appEnv);
-    await putRoute(appEnv, cookie, 'r1', {
+    const auth = await adminAuth(appEnv);
+    await putRoute(appEnv, auth, 'r1', {
       match: { host: 'a.example.com', path: '/' },
       upstream: 'up.example.com',
     });
-    const body = await domains(appEnv, cookie);
+    const body = await domains(appEnv, auth);
     expect(body.failures?.length).toBe(3);
     // Reporting every route as unmatched here would be a false alarm.
     expect(body.unmatchedRouteHosts).toBeUndefined();
@@ -411,12 +409,12 @@ describe('GET /api/domains', () => {
     // routes could not be read — so "your routes match nothing" is a false
     // alarm, not a finding.
     const appEnv = configured({ workersDev: false, customDomains: [], deny: ['zones'] });
-    const cookie = await adminCookie(appEnv);
-    await putRoute(appEnv, cookie, 'r1', {
+    const auth = await adminAuth(appEnv);
+    await putRoute(appEnv, auth, 'r1', {
       match: { host: 'mirror.example.com', path: '/' },
       upstream: 'up.example.com',
     });
-    const body = await domains(appEnv, cookie);
+    const body = await domains(appEnv, auth);
     expect(body.hosts).toEqual([]);
     expect(body.failures).toEqual([{ source: 'route', message: 'Zone Read required' }]);
     expect(body.unmatchedRouteHosts).toBeUndefined();
@@ -430,8 +428,8 @@ describe('GET /api/domains', () => {
       CF_API_FETCH: stub.fetch,
       PROXY_SCRIPT_NAME: 'my-proxy',
     });
-    const cookie = await adminCookie(appEnv);
-    const body = await domains(appEnv, cookie);
+    const auth = await adminAuth(appEnv);
+    const body = await domains(appEnv, auth);
     expect(body.script).toBe('my-proxy');
     expect(stub.calls.some((u) => u.includes('service=my-proxy'))).toBe(true);
   });
@@ -443,11 +441,11 @@ describe('GET /api/domains', () => {
       CF_API_TOKEN: 'tok',
       CF_API_FETCH: stub.fetch,
     });
-    const cookie = await adminCookie(appEnv);
-    await domains(appEnv, cookie);
+    const auth = await adminAuth(appEnv);
+    await domains(appEnv, auth);
     const first = stub.calls.length;
     expect(first).toBeGreaterThan(0);
-    await domains(appEnv, cookie);
+    await domains(appEnv, auth);
     expect(stub.calls.length).toBe(first);
   });
 
@@ -458,8 +456,8 @@ describe('GET /api/domains', () => {
       CF_API_TOKEN: 'old-token',
       CF_API_FETCH: before.fetch,
     });
-    const cookie = await adminCookie(envBefore);
-    expect((await domains(envBefore, cookie)).hosts?.[0]?.host).toBe('old.example.com');
+    const auth = await adminAuth(envBefore);
+    expect((await domains(envBefore, auth)).hosts?.[0]?.host).toBe('old.example.com');
 
     const after = apiStub({ customDomains: [{ hostname: 'new.example.com', service: SCRIPT }] });
     const envAfter = envWith({
@@ -467,16 +465,16 @@ describe('GET /api/domains', () => {
       CF_API_TOKEN: 'new-token',
       CF_API_FETCH: after.fetch,
     });
-    expect((await domains(envAfter, cookie)).hosts?.[0]?.host).toBe('new.example.com');
+    expect((await domains(envAfter, auth)).hosts?.[0]?.host).toBe('new.example.com');
   });
 
   it('writes nothing: no audit entry for opening the screen', async () => {
     const appEnv = configured({ workersDev: true });
-    const cookie = await adminCookie(appEnv);
+    const auth = await adminAuth(appEnv);
     const before = await testEnv.DB.prepare('SELECT COUNT(*) AS n FROM audit_log').first<{
       n: number;
     }>();
-    await domains(appEnv, cookie);
+    await domains(appEnv, auth);
     const after = await testEnv.DB.prepare('SELECT COUNT(*) AS n FROM audit_log').first<{
       n: number;
     }>();
@@ -485,7 +483,7 @@ describe('GET /api/domains', () => {
 
   it('tolerates a route row whose definition will not parse', async () => {
     const appEnv = configured({ customDomains: [] });
-    const cookie = await adminCookie(appEnv);
+    const auth = await adminAuth(appEnv);
     await testEnv.DB.prepare(
       'INSERT INTO routes (id, definition, enabled, position, updated_at, updated_by) VALUES (?, ?, 1, 0, 0, ?)',
     )
@@ -493,8 +491,12 @@ describe('GET /api/domains', () => {
       .run();
     // The screen must still open: a corrupt row is a compile problem, reported
     // on the preview screen, not a reason for this lookup to 500.
-    const body = await domains(appEnv, cookie);
+    const body = await domains(appEnv, auth);
     expect(body.configured).toBe(true);
     expect(body.unmatchedRouteHosts).toEqual([]);
   });
+});
+
+beforeAll(async () => {
+  door = await openAccessDoor('domains-suite');
 });

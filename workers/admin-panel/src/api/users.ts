@@ -10,7 +10,6 @@ import { Hono } from 'hono';
 import { readJsonObject } from '../body.js';
 import type { AppEnv } from '../env.js';
 import { requireAdmin } from '../middleware.js';
-import { hashPassword } from '../password.js';
 import {
   audit,
   deleteUserGuarded,
@@ -19,14 +18,7 @@ import {
   updateUserGuarded,
   type UserUpdate,
 } from '../store.js';
-import {
-  boundedString,
-  isPlainObject,
-  MAX_PASSWORD_LENGTH,
-  MAX_SUBJECT_LENGTH,
-  MIN_PASSWORD_LENGTH,
-  strictBoolean,
-} from '../validate.js';
+import { boundedString, isPlainObject, MAX_SUBJECT_LENGTH, strictBoolean } from '../validate.js';
 
 export const userRoutes = new Hono<AppEnv>();
 
@@ -44,36 +36,29 @@ userRoutes.get('/users', requireAdmin, async (c) => {
 });
 
 // The endpoint's default role is 'viewer' — deliberately the opposite of the
-// column's DEFAULT 'admin'. An account created by a click should err toward
-// less power; the bootstrap path is the only place 'admin' is ever assumed.
+// column's DEFAULT 'admin'. An account created by a click should err toward less
+// power; first-run provisioning is the only place 'admin' is ever assumed.
+//
+// No credential is set here. Cloudflare Access proves who the subject is; this
+// row only says what that subject may do once it arrives.
 userRoutes.post('/users', requireAdmin, async (c) => {
   const body = await readJsonObject(c);
   const subject = boundedString(body.subject, MAX_SUBJECT_LENGTH);
   const email = boundedString(body.email, MAX_SUBJECT_LENGTH);
-  const password = typeof body.password === 'string' ? body.password : undefined;
   const role = body.role === undefined ? 'viewer' : isRole(body.role) ? body.role : undefined;
-  if (
-    subject === undefined ||
-    password === undefined ||
-    password.length < MIN_PASSWORD_LENGTH ||
-    password.length > MAX_PASSWORD_LENGTH ||
-    role === undefined
-  ) {
+  if (subject === undefined || role === undefined) {
     return c.json(
       bad(
-        `subject (1-${MAX_SUBJECT_LENGTH} chars, not blank), password (${MIN_PASSWORD_LENGTH}-${MAX_PASSWORD_LENGTH} chars) and role (admin|viewer) are required`,
+        `subject (1-${MAX_SUBJECT_LENGTH} chars, not blank) and role (admin|viewer) are required`,
       ),
       400,
     );
   }
-  const passwordHash = await hashPassword(password);
-  const id = await insertUser(c.env.DB, { subject, email, role, passwordHash });
+  const id = await insertUser(c.env.DB, { subject, email, role });
   if (id === undefined) {
     return c.json({ error: 'subject_taken' }, 409);
   }
   await audit(c.env.DB, c.get('user').subject, 'user.create', subject, { id, role });
-  // The password is deliberately not echoed back; the operator set it and can
-  // hand it over out of band.
   return c.json({ ok: true, id }, 201);
 });
 
@@ -87,24 +72,18 @@ userRoutes.patch('/users/:id', requireAdmin, async (c) => {
     return c.json(bad('a JSON object is required'), 400);
   }
   // A mistyped value (`disabled: 'yes'`) is a client bug and answers 400, not
-  // a silent false. Absent is absent; all three absent means nothing to do.
+  // a silent false. Absent is absent; both absent means nothing to do.
   const role = body.role === undefined ? undefined : isRole(body.role) ? body.role : null;
   const disabled = body.disabled === undefined ? undefined : strictBoolean(body.disabled);
-  const unlock = body.unlock === undefined ? undefined : strictBoolean(body.unlock);
-  if (
-    role === null ||
-    (disabled === undefined && body.disabled !== undefined) ||
-    (unlock === undefined && body.unlock !== undefined)
-  ) {
-    return c.json(bad('role must be admin|viewer; disabled and unlock must be booleans'), 400);
+  if (role === null || (disabled === undefined && body.disabled !== undefined)) {
+    return c.json(bad('role must be admin|viewer; disabled must be a boolean'), 400);
   }
   const update: UserUpdate = {
     ...(role !== undefined ? { role } : {}),
     ...(disabled !== undefined ? { disabled } : {}),
-    ...(unlock === true ? { unlock: true } : {}),
   };
   if (Object.keys(update).length === 0) {
-    return c.json(bad('at least one of role, disabled, unlock is required'), 400);
+    return c.json(bad('at least one of role, disabled is required'), 400);
   }
 
   // Guarded write: 0 rows means either no such row or the guard refused. The
@@ -144,8 +123,8 @@ userRoutes.delete('/users/:id', requireAdmin, async (c) => {
   const changes = await deleteUserGuarded(c.env.DB, id);
   if (changes === 0) {
     // Guard refused, row still there. Name which wall was hit: emptying the
-    // table would reopen bootstrap, which is a different emergency than
-    // "no admin left".
+    // table would reopen first-run provisioning to whatever address Access
+    // admits next, which is a different emergency than "no admin left".
     const total = await c.env.DB.prepare('SELECT COUNT(*) AS n FROM users').first<{ n: number }>();
     return c.json({ error: (total?.n ?? 0) === 1 ? 'last_user' : 'last_admin' }, 409);
   }

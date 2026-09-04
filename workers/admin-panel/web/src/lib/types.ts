@@ -300,15 +300,7 @@ export const LIMITS = {
   definitionBytes: 64 * 1024,
   defaultsBytes: 64 * 1024,
   noteLength: 500,
-  minPasswordLength: 12,
-  maxPasswordLength: 1024,
   maxSubjectLength: 128,
-} as const;
-
-/** 认证策略，用于登录页的说明文案。与 api/auth.ts 的常量一致。 */
-export const AUTH_POLICY = {
-  maxFailedAttempts: 5,
-  lockoutMinutes: 15,
 } as const;
 
 /**

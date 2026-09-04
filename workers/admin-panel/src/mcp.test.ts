@@ -1,12 +1,14 @@
 import { applyD1Migrations, env } from 'cloudflare:test';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import worker from './index.js';
 import type { AppEnv, Env } from './env.js';
+import { openAccessDoor, type AccessDoor } from './test-access.js';
 
 const testEnv = env as unknown as Env;
-const appEnv = testEnv as unknown as AppEnv;
+let door: AccessDoor;
+let appEnv: AppEnv;
 const base = 'https://panel.test';
-const password = 'mcp-boundary-password';
+const ROOT = 'root@example.com';
 
 const request = async (
   method: string,
@@ -24,10 +26,12 @@ const request = async (
     {} as ExecutionContext,
   );
 
-const loginCookie = async (): Promise<string> => {
-  await request('POST', '/api/auth/bootstrap', { subject: 'root', password });
-  const login = await request('POST', '/api/auth/login', { subject: 'root', password });
-  return `jouska_session=${login.headers.get('set-cookie')?.split('=')[1]?.split(';')[0] ?? ''}`;
+/** Admin headers for the panel API; the first request provisions the row. */
+const signInAdmin = async (): Promise<Record<string, string>> => {
+  const auth = await door.headers(ROOT);
+  const res = await request('GET', '/api/auth/me', undefined, auth);
+  expect(res.status).toBe(200);
+  return auth;
 };
 
 const mcp = async (
@@ -70,7 +74,7 @@ const theRoute = {
 beforeEach(async () => {
   await applyD1Migrations(testEnv.DB, TEST_MIGRATIONS);
   await Promise.all(
-    ['audit_log', 'sessions', 'routes', 'settings', 'mcp_tokens', 'users'].map((table) =>
+    ['audit_log', 'routes', 'settings', 'mcp_tokens', 'users'].map((table) =>
       testEnv.DB.prepare(`DELETE FROM ${table}`).run(),
     ),
   );
@@ -78,7 +82,7 @@ beforeEach(async () => {
 
 describe('MCP token lifecycle', () => {
   it('returns a generated secret once, stores only its digest, and authenticates MCP', async () => {
-    const cookie = await loginCookie();
+    const auth = await signInAdmin();
     const created = await request(
       'POST',
       '/api/mcp-tokens',
@@ -87,7 +91,7 @@ describe('MCP token lifecycle', () => {
         scopes: ['config:read'],
         expiresInDays: 30,
       },
-      { cookie },
+      auth,
     );
     expect(created.status).toBe(201);
     const createdBody = (await created.json()) as {
@@ -102,7 +106,7 @@ describe('MCP token lifecycle', () => {
     expect(row?.token_hash).toBeTruthy();
     expect(row?.token_hash).not.toContain(createdBody.token);
 
-    const listed = await request('GET', '/api/mcp-tokens', undefined, { cookie });
+    const listed = await request('GET', '/api/mcp-tokens', undefined, auth);
     const listBody = (await listed.json()) as { tokens: Array<{ id: string; token?: string }> };
     expect(listBody.tokens[0]?.id).toBe(createdBody.tokenInfo.id);
     expect(listBody.tokens[0]?.token).toBeUndefined();
@@ -121,8 +125,8 @@ describe('MCP token lifecycle', () => {
   });
 
   it('accepts missing Origin for Bearer MCP but never falls back to a Cookie session', async () => {
-    const cookie = await loginCookie();
-    const created = await request('POST', '/api/mcp-tokens', { name: 'probe' }, { cookie });
+    const auth = await signInAdmin();
+    const created = await request('POST', '/api/mcp-tokens', { name: 'probe' }, auth);
     const token = ((await created.json()) as { token: string }).token;
     const noOrigin = await mcp(token, {
       jsonrpc: '2.0',
@@ -131,11 +135,15 @@ describe('MCP token lifecycle', () => {
       params: modernMeta,
     });
     expect(noOrigin.status).toBe(200);
-    const cookieOnly = await worker.fetch(
+    // The panel's own door does not open this one. An Access token proves a human
+    // at a browser; /mcp is for machines and takes a bearer token it can revoke
+    // by id. Accepting the human's credential here would make every operator's
+    // session an unrevokable MCP key.
+    const accessOnly = await worker.fetch(
       new Request(`${base}/mcp`, {
         method: 'POST',
         headers: {
-          cookie,
+          ...auth,
           'content-type': 'application/json',
           'MCP-Protocol-Version': '2026-07-28',
           'Mcp-Method': 'ping',
@@ -145,16 +153,16 @@ describe('MCP token lifecycle', () => {
       appEnv,
       {} as ExecutionContext,
     );
-    expect(cookieOnly.status).toBe(401);
+    expect(accessOnly.status).toBe(401);
   });
 
   it('enforces scopes, credits token creation to the admin, and honours revocation', async () => {
-    const cookie = await loginCookie();
+    const auth = await signInAdmin();
     const created = await request(
       'POST',
       '/api/mcp-tokens',
       { name: 'read-only', scopes: ['config:read'] },
-      { cookie },
+      auth,
     );
     const token = (await created.json()) as { token: string; tokenInfo: { id: string } };
     const denied = await mcp(
@@ -188,12 +196,7 @@ describe('MCP token lifecycle', () => {
     }>();
     expect(untouched?.n).toBe(0);
 
-    const revoked = await request(
-      'DELETE',
-      `/api/mcp-tokens/${token.tokenInfo.id}`,
-      {},
-      { cookie },
-    );
+    const revoked = await request('DELETE', `/api/mcp-tokens/${token.tokenInfo.id}`, {}, auth);
     expect(revoked.status).toBe(200);
     const after = await mcp(token.token, {
       jsonrpc: '2.0',
@@ -205,15 +208,15 @@ describe('MCP token lifecycle', () => {
     const audit = await testEnv.DB.prepare(
       "SELECT actor FROM audit_log WHERE action = 'mcp.token.create'",
     ).first<{ actor: string }>();
-    expect(audit?.actor).toBe('root');
+    expect(audit?.actor).toBe(ROOT);
   });
   it('attributes writes to the acting token, not to an anonymous MCP client', async () => {
-    const cookie = await loginCookie();
+    const auth = await signInAdmin();
     const created = await request(
       'POST',
       '/api/mcp-tokens',
       { name: 'writer', scopes: ['config:read', 'config:write'] },
-      { cookie },
+      auth,
     );
     const token = (await created.json()) as { token: string; tokenInfo: { id: string } };
     const wrote = await mcp(
@@ -240,7 +243,7 @@ describe('MCP token lifecycle', () => {
     // Revoking a token only means something if its past writes can be traced
     // back to it, so the trail must carry the token id — in the actor and in
     // the row it touched, not just in the detail blob.
-    const actor = `mcp:${token.tokenInfo.id}:root`;
+    const actor = `mcp:${token.tokenInfo.id}:${ROOT}`;
     const entry = await testEnv.DB.prepare(
       "SELECT actor, detail FROM audit_log WHERE action = 'route.create'",
     ).first<{ actor: string; detail: string }>();
@@ -263,12 +266,12 @@ describe('MCP token lifecycle', () => {
  */
 describe('MCP transport conformance', () => {
   const readToken = async (): Promise<string> => {
-    const cookie = await loginCookie();
+    const auth = await signInAdmin();
     const created = await request(
       'POST',
       '/api/mcp-tokens',
       { name: 'transport', scopes: ['config:read'] },
-      { cookie },
+      auth,
     );
     return ((await created.json()) as { token: string }).token;
   };
@@ -339,12 +342,12 @@ describe('MCP transport conformance', () => {
 
 describe('MCP envelope and result shape', () => {
   const writeToken = async (): Promise<string> => {
-    const cookie = await loginCookie();
+    const auth = await signInAdmin();
     const created = await request(
       'POST',
       '/api/mcp-tokens',
       { name: 'shape', scopes: ['config:read', 'config:write'] },
-      { cookie },
+      auth,
     );
     return ((await created.json()) as { token: string }).token;
   };
@@ -502,12 +505,12 @@ describe('MCP envelope and result shape', () => {
 
 describe('MCP draft tools', () => {
   const writeToken = async (): Promise<string> => {
-    const cookie = await loginCookie();
+    const auth = await signInAdmin();
     const created = await request(
       'POST',
       '/api/mcp-tokens',
       { name: 'draft', scopes: ['config:read', 'config:write'] },
-      { cookie },
+      auth,
     );
     return ((await created.json()) as { token: string }).token;
   };
@@ -562,4 +565,9 @@ describe('MCP draft tools', () => {
       .first<{ enabled: number }>();
     expect(row?.enabled).toBe(0);
   });
+});
+
+beforeAll(async () => {
+  door = await openAccessDoor('mcp-suite');
+  appEnv = door.env();
 });

@@ -7,12 +7,14 @@
  * history suite, so what they see is what publish actually wrote.
  */
 import { applyD1Migrations, env } from 'cloudflare:test';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import worker from './index.js';
 import type { AppEnv, Env } from './env.js';
+import { openAccessDoor, type AccessDoor } from './test-access.js';
 
 const testEnv = env as unknown as Env;
-const appEnv = testEnv as unknown as AppEnv;
+let door: AccessDoor;
+let appEnv: AppEnv;
 
 interface HeadersLike {
   get(name: string): string | null;
@@ -55,48 +57,29 @@ const get = async (path: string, headers: Record<string, string> = {}): Promise<
     {} as ExecutionContext,
   ) as unknown as Promise<ResponseLike>;
 
-let adminCookie = '';
+const ROOT = 'root@example.com';
+const VIEWER = 'viewer@example.com';
 
-const login = async (subject: string, password: string): Promise<ResponseLike> => {
-  const res = await call('POST', '/api/auth/login', { subject, password });
-  const setCookie = res.headers.get('set-cookie') ?? '';
-  expect(/jouska_session=([^;]+)/.test(setCookie), 'login must set the session cookie').toBe(true);
-  return {
-    status: res.status,
-    headers: {
-      get: (n: string) => (n.toLowerCase() === 'set-cookie' ? setCookie : res.headers.get(n)),
-    },
-    json: () => res.json(),
-    text: () => res.text(),
-  };
+/**
+ * The admin's headers, provisioning the row on the first call.
+ *
+ * Must run before anything else writes to `users`: first-run provisioning only
+ * fires on an empty table, so a viewer inserted first would leave the admin
+ * unrecognised — which is the behaviour under test elsewhere, not here.
+ */
+const signInAdmin = async (): Promise<Record<string, string>> => {
+  const auth = await door.headers(ROOT);
+  const res = await get('/api/auth/me', auth);
+  expect(res.status, await res.text()).toBe(200);
+  return auth;
 };
 
-const cookieFrom = (res: ResponseLike): string => {
-  const raw = res.headers.get('set-cookie') ?? '';
-  return `jouska_session=${/jouska_session=([^;]+)/.exec(raw)?.[1] ?? ''}`;
-};
-
-const bootstrapAdmin = async (): Promise<void> => {
-  const res = await call('POST', '/api/auth/bootstrap', {
-    subject: 'root',
-    password: 'correct-horse-battery',
-  });
-  expect(res.status, JSON.stringify(await res.json())).toBe(201);
-};
-
-const createViewer = async (): Promise<void> => {
-  const { hashPassword } = await import('./password.js');
-  const hash = await hashPassword('viewer-password-123');
-  await testEnv.DB.prepare(
-    "INSERT INTO users (subject, role, password, created_at) VALUES ('viewer', 'viewer', ?, ?)",
-  )
-    .bind(hash, Math.floor(Date.now() / 1000))
+/** A viewer row, added the way an admin would add one: no credential of its own. */
+const viewerAuth = async (): Promise<Record<string, string>> => {
+  await testEnv.DB.prepare("INSERT INTO users (subject, role, created_at) VALUES (?, 'viewer', ?)")
+    .bind(VIEWER, Math.floor(Date.now() / 1000))
     .run();
-};
-
-const loginAdmin = async (): Promise<Record<string, string>> => {
-  adminCookie = cookieFrom(await login('root', 'correct-horse-battery'));
-  return { cookie: adminCookie };
+  return await door.headers(VIEWER);
 };
 
 /** Puts one route into the draft. */
@@ -135,11 +118,10 @@ const publishThenDirty = async (auth: Record<string, string>): Promise<void> => 
 describe('draft discard', () => {
   beforeEach(async () => {
     await applyD1Migrations(testEnv.DB, TEST_MIGRATIONS);
-    for (const table of ['audit_log', 'sessions', 'routes', 'settings', 'users', 'revisions']) {
+    for (const table of ['audit_log', 'routes', 'settings', 'users', 'revisions']) {
       await testEnv.DB.prepare(`DELETE FROM ${table}`).run();
     }
     await testEnv.CONFIG_KV.delete('routes');
-    adminCookie = '';
   });
 
   it('requires authentication', async () => {
@@ -147,22 +129,19 @@ describe('draft discard', () => {
   });
 
   it('viewers cannot discard', async () => {
-    await bootstrapAdmin();
-    await createViewer();
-    const auth = await loginAdmin();
+    const auth = await signInAdmin();
+    const asViewer = await viewerAuth();
     await publishThenDirty(auth);
-    const viewerAuth = { cookie: cookieFrom(await login('viewer', 'viewer-password-123')) };
 
-    const res = await discard(viewerAuth);
+    const res = await discard(asViewer);
     expect(res.status).toBe(403);
     // The draft survives the refused attempt.
-    const preview = await (await get('/api/preview', viewerAuth)).json();
+    const preview = await (await get('/api/preview', asViewer)).json();
     expect(preview.dirty).toBe(true);
   });
 
   it('refuses when nothing has ever been published', async () => {
-    await bootstrapAdmin();
-    const auth = await loginAdmin();
+    const auth = await signInAdmin();
     await putRoute(auth, 'alpha', routeFor('a.example.com', 'a.internal.example.com'));
 
     const res = await discard(auth);
@@ -175,8 +154,7 @@ describe('draft discard', () => {
   });
 
   it('resets the draft to the live snapshot without a new revision or KV write', async () => {
-    await bootstrapAdmin();
-    const auth = await loginAdmin();
+    const auth = await signInAdmin();
     await publishThenDirty(auth);
     const kvBefore = await testEnv.CONFIG_KV.get('routes');
 
@@ -210,8 +188,7 @@ describe('draft discard', () => {
   });
 
   it('restores defaults along with the routes', async () => {
-    await bootstrapAdmin();
-    const auth = await loginAdmin();
+    const auth = await signInAdmin();
     await putRoute(auth, 'alpha', routeFor('a.example.com', 'a.internal.example.com'));
     await putDefaults(auth, { timeoutMs: 7000 });
     expect((await publish(auth)).status).toBe(200);
@@ -226,8 +203,7 @@ describe('draft discard', () => {
   });
 
   it('discards a draft that will not compile — the escape hatch', async () => {
-    await bootstrapAdmin();
-    const auth = await loginAdmin();
+    const auth = await signInAdmin();
     await publishThenDirty(auth);
     // A route the schema rejects: the draft is now blocked, preview says so.
     await putRoute(auth, 'bad', { upstream: '', match: {} });
@@ -243,8 +219,7 @@ describe('draft discard', () => {
   });
 
   it('refuses an already-clean draft as a concurrency backstop', async () => {
-    await bootstrapAdmin();
-    const auth = await loginAdmin();
+    const auth = await signInAdmin();
     await publishThenDirty(auth);
     expect((await discard(auth)).status).toBe(200);
 
@@ -260,8 +235,7 @@ describe('draft discard', () => {
   });
 
   it('refuses when the live revision has no usable snapshot', async () => {
-    await bootstrapAdmin();
-    const auth = await loginAdmin();
+    const auth = await signInAdmin();
     await publishThenDirty(auth);
     // Simulate a pre-history-feature deployment: publish happened, snapshots
     // did not exist yet.
@@ -273,16 +247,20 @@ describe('draft discard', () => {
   });
 
   it('audits a discard with its source revision', async () => {
-    await bootstrapAdmin();
-    const auth = await loginAdmin();
+    const auth = await signInAdmin();
     await publishThenDirty(auth);
     expect((await discard(auth)).status).toBe(200);
 
     const audit = await (await get('/api/audit?limit=10', auth)).json();
     const entry = audit.entries.find((e: any) => e.action === 'config.discard');
     expect(entry).toBeDefined();
-    expect(entry.actor).toBe('root');
+    expect(entry.actor).toBe(ROOT);
     expect(entry.target).toBe('draft');
     expect(JSON.parse(entry.detail).sourceRevision).toBe(1);
   });
+});
+
+beforeAll(async () => {
+  door = await openAccessDoor('discard-suite');
+  appEnv = door.env();
 });

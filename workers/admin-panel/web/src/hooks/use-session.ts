@@ -1,9 +1,9 @@
 /**
  * 会话状态。
  *
- * `/api/auth/me` 是这个 SPA 唯一的登录态来源，它同时回答两个问题：谁登录了，
- * 以及首次部署的引导表单该不该出现。两个答案必须一起拿，否则会出现"已经有账号
- * 了却还显示创建管理员"这种既误导又必然失败的状态。
+ * `/api/auth/me` 是这个 SPA 唯一的登录态来源。它跑的是中间件同一套 `authenticate`,
+ * 所以「这一页该显示什么」和「下一个请求会不会被拒」永远是同一个答案 —— 两套实现
+ * 迟早会分叉，而分叉出来的那一面一定是误导人的那一面。
  */
 import * as React from 'react';
 import { api, ApiError, NetworkError, type User } from '@/lib/api';
@@ -13,10 +13,9 @@ export type SessionState =
   | { readonly status: 'authed'; readonly user: User }
   | {
       readonly status: 'anonymous';
-      readonly bootstrapable: boolean;
       /**
-       * Access 放进来了，但 users 表里没这个地址。界面要说「找管理员加一下」，
-       * 不能再给登录表单——那张表单解不开这个状态。
+       * Access 放进来了，但 users 表里没这个地址。界面要说「找管理员加一下」——
+       * 这个状态只有别人的账号能解开。
        */
       readonly accessEmail?: string;
     }
@@ -26,7 +25,6 @@ export type SessionState =
 export interface Session {
   readonly state: SessionState;
   readonly refresh: () => Promise<void>;
-  readonly signIn: (user: User) => void;
   readonly signOut: () => Promise<void>;
   /** 任何请求撞上 401 时调用：把界面拉回登录页，而不是留在一个全是错误的页面上。 */
   readonly onUnauthenticated: () => void;
@@ -37,33 +35,21 @@ export const useSession = (): Session => {
 
   const refresh = React.useCallback(async () => {
     try {
-      const { user, bootstrapable, accessEmail } = await api.me();
+      const { user, accessEmail } = await api.me();
       setState(
         user === null
-          ? {
-              status: 'anonymous',
-              bootstrapable,
-              ...(accessEmail === undefined ? {} : { accessEmail }),
-            }
+          ? { status: 'anonymous', ...(accessEmail === undefined ? {} : { accessEmail }) }
           : { status: 'authed', user },
       );
     } catch (error) {
       // 网络不通与"服务端说未登录"是两件事：前者给重试，后者给登录表单。
-      setState(
-        error instanceof NetworkError
-          ? { status: 'offline' }
-          : { status: 'anonymous', bootstrapable: false },
-      );
+      setState(error instanceof NetworkError ? { status: 'offline' } : { status: 'anonymous' });
     }
   }, []);
 
   React.useEffect(() => {
     void refresh();
   }, [refresh]);
-
-  const signIn = React.useCallback((user: User) => {
-    setState({ status: 'authed', user });
-  }, []);
 
   const signOut = React.useCallback(async () => {
     try {
@@ -81,15 +67,16 @@ export const useSession = (): Session => {
         return;
       }
     }
-    // 退出后再问一次 me：如果这是最后一个账号被删的边缘情况，引导态要正确。
+    // 没有 accessLogout（ACCESS_TEAM 没配或团队名不合法）时至少把状态问回来，
+    // 让界面停在「需要 Access」而不是假装还登录着。
     await refresh();
   }, [refresh]);
 
   const onUnauthenticated = React.useCallback(() => {
-    setState({ status: 'anonymous', bootstrapable: false });
+    setState({ status: 'anonymous' });
   }, []);
 
-  return { state, refresh, signIn, signOut, onUnauthenticated };
+  return { state, refresh, signOut, onUnauthenticated };
 };
 
 /** 把 API 异常翻成一个稳定的错误码，供文案表查找。 */
