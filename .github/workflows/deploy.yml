@@ -55,13 +55,24 @@ jobs:
 
       # 域名发现要读账号 id。它不是密钥，但也不该写进被 git 跟踪的
       # wrangler.jsonc——用 CI 已有的 secret 在部署时注入，仓库里始终只有占位符。
+      # Access 身份验签的两个值。启用 Worker 级 Access 时仪表盘给出的 AUD 标签
+      # （Worker 页 → Access 标签页）和团队域名在这里注入，仓库里始终只有占位符。
+      # 缺了任何一个面板都答 401——"unauthenticated"，拒绝页那扇门就还是关着的。
       - name: Deploy admin panel and health-check
         working-directory: workers/admin-panel
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          ACCESS_TEAM: ${{ secrets.ACCESS_TEAM }}
+          ACCESS_AUD: ${{ secrets.ACCESS_AUD }}
         run: |
-          out=$(npx wrangler deploy \
+          extra_vars=()
+          for name in ACCESS_TEAM ACCESS_AUD; do
+            if [ -n "${!name}" ]; then
+              extra_vars+=(--var "$name:${!name}")
+            fi
+          done
+          out=$(npx wrangler deploy "${extra_vars[@]}" \
             --var CF_ACCOUNT_ID:"$CLOUDFLARE_ACCOUNT_ID" 2>&1)
           echo "$out"
           url=$(echo "$out" | grep -oE 'https://[a-zA-Z0-9.-]+\.workers\.dev' | head -1)
@@ -69,15 +80,25 @@ jobs:
             echo "deploy output contained no workers.dev URL" >&2
             exit 1
           fi
-          # 上传后 workerd 需要几秒才对新版本应答，重试直到 health 通或超时。
+          # 上传后 workerd 需要几秒才对新版本应答，重试直到有应答或超时。
+          # Access 开启后匿名请求拿不到 /api/health 的 JSON——只会收到 302/401
+          # 的登录跳转。那也算「活了」：能跳进 Access 登录页的只可能是一个部署
+          # 成功的 Worker。代价说实话：这个检查退化为「部署在且门关着」，验证不
+          # 了 Worker 内部健康；要看真话，用带 Access 凭据的浏览器开一次面板。
           for _ in 1 2 3 4 5 6; do
-            if curl -fsS -m 10 "$url/api/health" | grep -q '"ok":true'; then
+            code=$(curl -s -o /dev/null -w '%{http_code}' -m 10 "$url/api/health")
+            if [ "$code" = "200" ] \
+              && curl -fsS -m 10 "$url/api/health" | grep -q '"ok":true'; then
               echo "admin panel healthy at $url"
+              exit 0
+            fi
+            if [ "$code" = "302" ] || [ "$code" = "401" ] || [ "$code" = "403" ]; then
+              echo "::notice::admin panel answering behind Cloudflare Access (HTTP $code) at $url"
               exit 0
             fi
             sleep 5
           done
-          echo "health check failed at $url/api/health" >&2
+          echo "health check failed at $url/api/health (last status: $code)" >&2
           exit 1
 
       # 「域名」页要调 Cloudflare API，凭据复用部署用的这一个。

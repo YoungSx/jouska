@@ -55,12 +55,15 @@
   // tracked by git and both values are account-specific:
   //
   //   ACCESS_TEAM  — the `<team>` in `<team>.cloudflareaccess.com`.
-  //   ACCESS_AUD   — the Access application's audience (AUD) tag.
+  //   ACCESS_AUD   — the Access audience (AUD) tag: shown in the modal when
+  //                  you enable Cloudflare Access on the Worker (Settings →
+  //                  Access). Worker-level Access covers the workers.dev
+  //                  hostname too, so no separate self-hosted app is needed.
   //
-  // Deploy them with `--var ACCESS_TEAM:… --var ACCESS_AUD:…`, or put them in
-  // the git-ignored .dev.vars for local runs. Both or neither: a team without an
-  // audience would verify that a token was signed by the right organisation but
-  // not that it was issued for *this* application.
+  // CI deploys with both from GitHub secrets (see .github/workflows/deploy.yml);
+  // locally put them in the git-ignored .dev.vars. Both or neither: a team
+  // without an audience would verify that a token was signed by the right
+  // organisation but not that it was issued for *this* application.
   //
   // For local development, Access also needs a simulated identity, because
   // `wrangler dev` never receives the real header. Add this block with your own
