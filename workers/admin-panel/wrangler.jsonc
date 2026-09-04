@@ -74,6 +74,27 @@
   //
   // Remove the block to exercise the unauthenticated path.
 
+  // Provisioning policy for addresses Access admits that `users` has never
+  // heard of. Not a secret and not account-specific — a repo-level policy
+  // choice, which is why it lives here rather than in CI secrets: tightening it
+  // is a reviewed change, not a silent one.
+  //
+  //   "admin"  — equal-footing phase: every admitted address gets a row at
+  //              admin, the deliberate posture while there is no delegation
+  //              story. Any teammate who passes Access runs the panel.
+  //   "viewer" — progressive phase: arrivals get read-only rows; promote from
+  //              the users screen. Flipping this line is the entire
+  //              changeover between the phases — same table, no migration.
+  //   absent   — founding posture: unknown addresses are refused (`403
+  //              no_panel_account`) and added from the users screen.
+  //
+  // Anything else — a typo — fails closed like absent, logged loudly. Whatever
+  // this says, the first caller through an empty table always bootstraps as
+  // admin: an out-of-band wipe is recovery, never a lockout.
+  "vars": {
+    "ACCESS_PROVISION_ROLE": "admin",
+  },
+
   "observability": {
     "enabled": true,
   },

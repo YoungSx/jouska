@@ -8,8 +8,10 @@
  *   - a refusal is final: with the password door gone there is nothing left for a
  *     failed or absent token to fall through to, and these cases are what keeps
  *     a second door from quietly growing back;
- *   - provisioning happens exactly once, because Access policies are routinely
- *     written wider than the panel's intent;
+ *   - provisioning happens exactly once in the founding posture, because Access
+ *     policies are routinely written wider than the panel's intent;
+ *   - the standing `ACCESS_PROVISION_ROLE` policy admits addresses at its stated
+ *     role, an unknown value fails closed, and the empty table still bootstraps;
  *   - `role` and `disabled` still come from the panel's own table, so the
  *     last-admin guard keeps meaning something;
  *   - the environment that has no `ctx.access` (production, with static assets)
@@ -29,6 +31,7 @@ import {
   deadFetch,
   jwksFetch,
   makeSigner,
+  uniqueTeam,
 } from './test-access.js';
 
 const testEnv = env as unknown as Env;
@@ -41,7 +44,9 @@ interface ResponseLike {
 }
 
 const envWith = (overrides: Record<string, unknown>): AppEnv =>
-  ({ ...testEnv, ...overrides }) as unknown as AppEnv;
+  // wrangler.jsonc's vars leak into `env` via the Workers pool; strip the
+  // provision policy so a test's posture is always what it says in the case.
+  ({ ...testEnv, ACCESS_PROVISION_ROLE: undefined, ...overrides }) as unknown as AppEnv;
 
 const request = async (
   method: string,
@@ -190,6 +195,130 @@ describe('Access on, first run', () => {
       user: null,
       accessEmail: 'stranger@example.com',
     });
+  });
+});
+
+describe('the standing provision policy', () => {
+  /**
+   * Access on with the given policy value, plus a token minted for that same
+   * door. Own team name per call: the JWKS cache is keyed by team and shared.
+   */
+  const doorWith = async (
+    label: string,
+    role: string | undefined,
+    email: string,
+  ): Promise<{ readonly doorEnv: AppEnv; readonly token: string }> => {
+    const { jwk, sign } = await makeSigner();
+    const doorEnv = envWith({
+      ACCESS_TEAM: uniqueTeam(label),
+      ACCESS_AUD: ACCESS_AUD,
+      ACCESS_JWKS_FETCH: jwksFetch([jwk]).impl,
+      ...(role === undefined ? {} : { ACCESS_PROVISION_ROLE: role }),
+    });
+    return { doorEnv, token: await sign(claims(email)) };
+  };
+
+  it('the equal-footing policy gives an admitted stranger an admin row', async () => {
+    await insertUser('root@example.com', 'admin');
+    const { doorEnv, token } = await doorWith('policy-admin', 'admin', 'teammate@example.com');
+
+    const res = await request('GET', '/api/auth/me', doorEnv, {
+      'cf-access-jwt-assertion': token,
+    });
+    expect(res.status).toBe(200);
+    expect((await res.json()) as unknown).toMatchObject({
+      user: { subject: 'teammate@example.com', role: 'admin' },
+    });
+    expect((await userRow('teammate@example.com'))?.role).toBe('admin');
+  });
+
+  it('the progressive policy admits to read but not to admin surfaces', async () => {
+    await insertUser('root@example.com', 'admin');
+    const { doorEnv, token } = await doorWith('policy-viewer', 'viewer', 'late@example.com');
+
+    const read = await request('GET', '/api/routes', doorEnv, {
+      'cf-access-jwt-assertion': token,
+    });
+    expect(read.status).toBe(200);
+    expect((await userRow('late@example.com'))?.role).toBe('viewer');
+
+    const write = await request('GET', '/api/users', doorEnv, {
+      'cf-access-jwt-assertion': token,
+    });
+    expect(write.status).toBe(403);
+  });
+
+  it('the empty table outranks a viewer policy, and only for the first arrival', async () => {
+    // One signer, one team: the JWKS cache is keyed by team, so a second token
+    // for the same door must be minted by the same key to verify at all.
+    const { jwk, sign } = await makeSigner();
+    const doorEnv = envWith({
+      ACCESS_TEAM: uniqueTeam('policy-founder'),
+      ACCESS_AUD: ACCESS_AUD,
+      ACCESS_JWKS_FETCH: jwksFetch([jwk]).impl,
+      ACCESS_PROVISION_ROLE: 'viewer',
+    });
+
+    const first = await request('GET', '/api/auth/me', doorEnv, {
+      'cf-access-jwt-assertion': await sign(claims('founder@example.com')),
+    });
+    expect(first.status).toBe(200);
+    expect((await first.json()) as unknown).toMatchObject({
+      user: { subject: 'founder@example.com', role: 'admin' },
+    });
+
+    // The table is no longer empty, so the second arrival takes the policy role.
+    const second = await request('GET', '/api/auth/me', doorEnv, {
+      'cf-access-jwt-assertion': await sign(claims('late@example.com')),
+    });
+    expect(second.status).toBe(200);
+    expect((await second.json()) as unknown).toMatchObject({
+      user: { subject: 'late@example.com', role: 'viewer' },
+    });
+  });
+
+  it('an unrecognised value fails closed like unset, and says why in the log', async () => {
+    await insertUser('root@example.com', 'admin');
+    const { doorEnv, token } = await doorWith('policy-typo', 'adimn', 'typo@example.com');
+
+    const errors: unknown[] = [];
+    const original = console.error;
+    console.error = (...args: unknown[]) => {
+      errors.push(args);
+    };
+    try {
+      const res = await request('GET', '/api/auth/me', doorEnv, {
+        'cf-access-jwt-assertion': token,
+      });
+      // The founding posture's shape: 200, nobody home, address named.
+      expect(res.status).toBe(200);
+      expect((await res.json()) as unknown).toMatchObject({
+        user: null,
+        accessEmail: 'typo@example.com',
+      });
+    } finally {
+      console.error = original;
+    }
+    expect(errors.length).toBeGreaterThan(0);
+    expect(await userRow('typo@example.com')).toBeNull();
+  });
+
+  it('the empty table still bootstraps when the policy value is a typo', async () => {
+    const { doorEnv, token } = await doorWith('policy-recovery', 'adimn', 'recovery@example.com');
+
+    const original = console.error;
+    console.error = () => {};
+    try {
+      const res = await request('GET', '/api/auth/me', doorEnv, {
+        'cf-access-jwt-assertion': token,
+      });
+      expect(res.status).toBe(200);
+      expect((await res.json()) as unknown).toMatchObject({
+        user: { subject: 'recovery@example.com', role: 'admin' },
+      });
+    } finally {
+      console.error = original;
+    }
   });
 });
 

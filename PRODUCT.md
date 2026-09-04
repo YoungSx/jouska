@@ -51,7 +51,9 @@ jouska 是 Hono 上的反向代理中间件，运行在 Cloudflare Workers。管
 
 角色两种：`admin`（读写、可发布）与 `viewer`（只读）。写操作在各自 handler 上逐个把关，不是按前缀一刀切，所以 viewer 保留全部读取能力。
 
-登录只有一扇门：**Cloudflare Access**。配上 `ACCESS_TEAM` 与 `ACCESS_AUD`，平台在这个 Worker 跑起来之前就把人认完了——面板不存密码、不管会话，以后加登录方式（Cloudflare 自家 IdP、邮件一次性 PIN、GitHub、Google、Okta、通用 OIDC/SAML、硬件密钥）是去 Zero Trust 控制台点几下，不动这个仓库。Access 放行的第一个人成为初始 admin，之后的人必须已经在 `users` 表里——Access 策略常常比面板的意图写得宽（整个邮箱域、整个 Cloudflare 账号），谁进门就给谁建号等于把路由表交给一群没人点过名的人。`role` 与 `disabled` 留在 D1，不搬到 Access 分组：最后一个 admin 的守卫只有在写入时原子求值才成立。
+登录只有一扇门：**Cloudflare Access**。配上 `ACCESS_TEAM` 与 `ACCESS_AUD`，平台在这个 Worker 跑起来之前就把人认完了——面板不存密码、不管会话，以后加登录方式（Cloudflare 自家 IdP、邮件一次性 PIN、GitHub、Google、Okta、通用 OIDC/SAML、硬件密钥）是去 Zero Trust 控制台点几下，不动这个仓库。陌生地址进门发什么号，由部署变量 `ACCESS_PROVISION_ROLE`（在 `wrangler.jsonc` 里，走 PR 评审而非静默 secrets）说了算：设 `admin` 是**等权期**——团队还没有权限故事，谁过门谁 admin；设 `viewer` 是**渐进期**——新人只读，从「用户」页提拔；不设是**创业姿态**——陌生地址被 `403 no_panel_account` 拒之门外，由管理员从「用户」页手工加，因为 Access 策略常常比面板的意图写得宽（整个邮箱域、整个 Cloudflare 账号），谁进门就给谁建号等于把路由表交给一群没人点过名的人。三态之间切换 = 改一行配置 + 重新部署，同一张表、同一批行，零迁移；拼错的值按未设处理（fail closed）并大声记日志。`role` 与 `disabled` 留在 D1，不搬到 Access 分组：最后一个 admin 的守卫只有在写入时原子求值才成立。
+
+唯一盖过政策的一条：`users` 表为空时，第一个过门的人**无条件**成为 admin，变量说什么都没用。清空表是带外恢复手段，恢复不能变成永久锁死。
 
 面板自带的那扇密码门已经**永久关闭**：没有 `/api/auth/login`，没有 `sessions` 表，`users` 里没有密码列，也没有带外恢复令牌。换来的不是一张更小的登录表单，而是没有表单——**这份「没有」就是功能本身**。拒绝是终局，请求里带什么都换不来第二个意见；「关掉认证」是操作者在控制台做一次的事，不是攻击者每个请求都能试的事。JWKS 拿不到答 503，不答 401——没有验证材料时没有安全的「是」；没接上 Access 应用的部署是被锁在门外，而不是被悄悄降级成谁都能进。
 
@@ -77,7 +79,7 @@ jouska 是 Hono 上的反向代理中间件，运行在 Cloudflare Workers。管
 - 审计日志，最多 200 条每页。
 - 面板登录交给 Cloudflare Access：认证发生在代码之前，免费额度的 10 ms CPU 一分不花，面板不存任何凭据。
 - 登出回一个同源路径给前端，跳过去由边缘撤销；范围是该用户的所有 Access 应用，Access 不支持只退一个。
-- 第一个过门的人自动成为初始 admin（仅在 `users` 表为空时），之后的人由管理员在「用户」页加。
+- 第一个过门的人自动成为初始 admin（仅在 `users` 表为空时，且盖过任何政策变量）；之后的建号按 `ACCESS_PROVISION_ROLE` 政策走（等权期全 admin / 渐进期 viewer / 不设则拒），或由管理员在「用户」页手工加。
 - 域名发现：只读列出账号里绑定到反代的 hostname，与路由表交叉比对；60 秒 isolate 内缓存，不落盘。
 - 路由级访问控制：委托鉴权（forwardAuth，nginx auth_request 语义）——把「你是谁」交给一个鉴权端点，2xx 放行、其他状态原样回传，端点不可达默认 fail-closed。
 
@@ -90,8 +92,9 @@ jouska 是 Hono 上的反向代理中间件，运行在 Cloudflare Workers。管
 
 明确的缺口（真实存在的表与字段，但零 UI，未来工作要接上，不许假装已有）：
 
-- `users` 表已有 `role` / `disabled`，但面板没有任何用户管理界面：加号、改角色、停用都做不到。唯一的建号途径是第一个人过 Access 时的自动建号。
 - 路由级运行时可观测（请求量、错误率、p95、上游健康）的数据源尚不存在，需要 Analytics Engine 之类的接入。
+
+（曾列于此处的「`users` 表没有任何管理界面」已过时：「用户」页已上线，可建号、改角色、停用、删行；唯一剩下的缺口是还没有邮箱邀请流程，加人要手填地址。）
 
 ## Brand Commitments
 

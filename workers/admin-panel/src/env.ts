@@ -50,6 +50,19 @@ export interface Env {
   ACCESS_AUD?: string;
 
   /**
+   * Standing policy for addresses Access admits that `users` has never heard
+   * of: `admin` or `viewer` gives them a row with that role on arrival, while
+   * unset (and anything else — a typo must fail closed, not softly) keeps the
+   * founding posture of refusing unknown addresses and adding people from the
+   * users screen. Not a secret; a repo-level policy choice, which is why it
+   * lives in wrangler.jsonc rather than CI secrets — tightening it is a
+   * reviewed change, not a silent one. Whatever it says, the first caller
+   * through an empty table still bootstraps as admin: an out-of-band wipe is
+   * recovery, never a permanent lockout.
+   */
+  ACCESS_PROVISION_ROLE?: string;
+
+  /**
    * Read-only Cloudflare API token, for hostname discovery. A secret.
    *
    * Set with `wrangler secret put CF_API_TOKEN`. Wants only read scopes —

@@ -1861,13 +1861,27 @@ it, which is measured on a real deployment rather than inferred, and
 an `access.dev` block populates the context and no header exists — so both are
 accepted, header first.
 
-The first caller Access vouches for becomes the initial admin. Everyone after
-that has to already be in `users`: an Access policy is routinely written wider
-than the panel's intent (a whole email domain, a whole Cloudflare account), and
-creating a row for anyone who passes the door would hand the route table to a
-group nobody enumerated. `role` and `disabled` stay in D1 rather than moving to
-Access groups, because the last-admin guard is only enforceable where it is
-evaluated atomically at write time.
+Who gets a row is a standing policy, `ACCESS_PROVISION_ROLE` in
+`workers/admin-panel/wrangler.jsonc` — a repo-level choice, which is why it
+lives in a reviewed file rather than CI secrets. Set to `admin` (the current
+value), every address Access admits arrives as a panel admin: the deliberate
+equal-footing posture while the team has no delegation story yet. Set to
+`viewer`, arrivals are read-only and are promoted from the users screen.
+Unset, the founding posture holds: an unknown address is refused with `403
+no_panel_account` and added from the users screen, because an Access policy is
+routinely written wider than the panel's intent (a whole email domain, a whole
+Cloudflare account), and creating a row for anyone who passes the door would
+hand the route table to a group nobody enumerated. Flipping between these is
+one line and a redeploy — same table, same rows, no migration — and an
+unrecognised value fails closed like unset, logged loudly. `role` and
+`disabled` stay in D1 rather than moving to Access groups, because the
+last-admin guard is only enforceable where it is evaluated atomically at write
+time.
+
+One admission outranks the policy: the first caller through an empty `users`
+table always becomes admin, whatever the variable says. That is the operator's
+recovery path — a wiped table is how you get back in, never a lockout — not a
+policy leak.
 
 Both variables or neither. A team name without an audience proves a token was
 signed by the right organisation but not that it was issued for _this_
@@ -1902,7 +1916,11 @@ in every Access application, not just this one.
 
 Emptying the `users` table reopens first-run provisioning to whichever address
 the Access policy admits next, which is why `DELETE /api/users/:id` refuses to
-remove the last row.
+remove the last row. Doing it deliberately — locked out, everything else
+exhausted — is the "Reset admin panel accounts" workflow
+(`.github/workflows/admin-reset.yml`): a typed-confirmation, manual-only job
+that clears `users` (and the MCP tokens whose foreign keys would refuse the
+wipe) and read-backs the count to zero.
 
 ### MCP access
 
