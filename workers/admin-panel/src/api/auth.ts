@@ -68,6 +68,13 @@ authRoutes.get('/me', async (c) => {
     return c.json({ error: outcome.error }, outcome.status);
   }
 
-  // No Access identity and no valid authentication.
-  return c.json({ user: null }, 200);
+  // No Access identity and no valid authentication. When the deployment has no
+  // Access wiring at all, that fact rides along: the SPA's refusal screen is
+  // then addressed to whoever deploys this panel. The endpoint still answers
+  // 200 with `user: null`, so a stranger probing it learns nothing beyond what
+  // any 401 would have said.
+  return c.json(
+    outcome.notConfigured === true ? { user: null, identity: 'not_configured' } : { user: null },
+    200,
+  );
 });

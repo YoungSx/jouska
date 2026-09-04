@@ -290,6 +290,9 @@ const App = () => {
             ...(session.state.accessEmail === undefined
               ? {}
               : { accessEmail: session.state.accessEmail }),
+            ...(session.state.identityNotConfigured === true
+              ? { identityNotConfigured: true }
+              : {}),
           }}
           loading={false}
         />

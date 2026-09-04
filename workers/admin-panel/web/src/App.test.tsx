@@ -75,12 +75,12 @@ describe('App', () => {
     const menu = await openAccountMenu();
 
     // 退出后 App 会重新问一次 me。没有 accessLogout 可跳时（ACCESS_TEAM 没配），
-    // 界面必须落在「这个面板走 Access」而不是假装还登录着。
+    // 界面必须落在拒绝页而不是假装还登录着。
     vi.mocked(api.me).mockResolvedValue({ user: null });
     await user.click(within(menu).getByRole('menuitem', { name: '退出登录' }));
 
     expect(api.logout).toHaveBeenCalledTimes(1);
-    expect(await screen.findByText('这个面板走 Cloudflare Access')).toBeInTheDocument();
+    expect(await screen.findByText('没有可用的入口')).toBeInTheDocument();
   });
 
   it('触发器把展开状态说出来——雪佛龙的翻转和读屏都靠它', async () => {

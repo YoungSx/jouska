@@ -88,6 +88,14 @@ export type AuthOutcome =
        * showing a login form the platform already answered.
        */
       readonly accessEmail?: string;
+      /**
+       * Set when the deployment itself never wired Access in (`not_configured`),
+       * alongside the same 401 as every other refusal. It describes the
+       * deployment, not the caller, which is why the SPA may know it — that
+       * refusal has to point at configuration, and its audience is whoever
+       * deploys this panel. API 401s elsewhere stay uniform.
+       */
+      readonly notConfigured?: true;
     };
 
 /**
@@ -138,10 +146,14 @@ export const authenticate = async (c: Context<AppEnv>): Promise<AuthOutcome> => 
     return { ok: false, status: 403, error: 'forbidden' };
   }
   // Everything still standing answers the same way, because there is nothing
-  // else to try: a token that did not verify (`invalid`, `too_long`), no token
-  // at all (`missing`), or Access never configured (`not_configured`). One
-  // refusal, no second door to hint at.
-  return { ok: false, status: 401, error: 'unauthenticated' };
+  // else to try: a token that did not verify (`invalid`, `too_long`) or no
+  // token at all (`missing`). One refusal, no second door to hint at. The one
+  // exception rides on the same 401: `not_configured` is not about this caller
+  // at all, so /api/auth/me may name the real problem without telling a
+  // stranger probing the endpoints anything they can use.
+  return access.reason === 'not_configured'
+    ? { ok: false, status: 401, error: 'unauthenticated', notConfigured: true }
+    : { ok: false, status: 401, error: 'unauthenticated' };
 };
 
 /** Resolves the caller to `c.var.user`, or refuses with the reason why. */

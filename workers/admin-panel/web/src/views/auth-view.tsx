@@ -6,12 +6,14 @@ import type { MeResult } from '@/lib/api';
 import { t } from '@/lib/messages';
 
 /**
- * 「进不来」的那一屏，两种原因，两句不同的话。
+ * 「进不来」的那一屏，三种原因，三句不同的话。
  *
  * 这个面板已经没有登录表单了 —— Cloudflare Access 在 Worker 跑起来之前就把人认完
  * 了，能改变现状的动作全都不在这一页上。所以这里的每条路径都必须指向别处：要么是
- * 别人的账号（管理员把地址加进来），要么是别处的配置（把 Access 应用接上）。给一
- * 张表单反而是最坏的选择，因为它一定失败。
+ * 别人的账号（管理员把地址加进来），要么是部署配置（把 Access 接上）。
+ *
+ * 「门没接上」那张卡是给部署者看的，说得出下一步；另外两张卡可能被任何扫到这个
+ * 域名的陌生人看到，所以只说这个面板要什么，不解释内部如何接线。
  */
 
 interface AuthViewProps {
@@ -29,6 +31,16 @@ export const AuthView = ({ me, loading }: AuthViewProps) => {
     );
   }
 
+  // 服务端明说了：这次部署还没接 Access。这页多半正开在部署者的浏览器里，
+  // 给出接线步骤是唯一能改变现状的动作。
+  if (me?.identityNotConfigured === true) {
+    return (
+      <div className="mx-auto w-full max-w-sm px-4 py-16">
+        <AccessSetupCard />
+      </div>
+    );
+  }
+
   if (loading) {
     return (
       <div className="mx-auto w-full max-w-sm px-4 py-16" aria-hidden>
@@ -42,8 +54,8 @@ export const AuthView = ({ me, loading }: AuthViewProps) => {
     );
   }
 
-  // 连 Access 身份都没有：要么这个部署还没接上 Access 应用，要么请求绕过了它
-  // （比如直连 workers.dev 而策略没覆盖到）。两种都只有配置能修。
+  // 接了线，但这条请求没有 Access 身份：可能是被绕过的路径，也可能是陌生人。
+  // 一句「这个面板要什么」就是全部 —— 内部怎么接线的细节不在这里。
   return (
     <div className="mx-auto w-full max-w-sm px-4 py-16">
       <Card>
@@ -85,6 +97,31 @@ const AccessPendingCard = ({ email }: { readonly email: string }) => (
       >
         {t.accessPending.refresh}
       </Button>
+    </CardContent>
+  </Card>
+);
+
+/**
+ * 「这个部署压根没接 Access」的接线卡。
+ *
+ * 受众是部署者本人：卡片能改变现状（照步骤接线），所以步骤写全。接上之后这页
+ * 就到头了 —— 过门的人由 Cloudflare 登录页接管，这张卡不会再见到。
+ */
+const AccessSetupCard = () => (
+  <Card>
+    <CardHeader>
+      <CardTitle>{t.accessSetup.title}</CardTitle>
+      <CardDescription>{t.accessSetup.lead}</CardDescription>
+    </CardHeader>
+    <CardContent className="flex flex-col gap-4">
+      <ol className="list-decimal space-y-2 pl-5 text-sm">
+        {t.accessSetup.steps.map((step) => (
+          <li key={step}>{step}</li>
+        ))}
+      </ol>
+      <Alert>
+        <AlertTitle>{t.accessSetup.hint}</AlertTitle>
+      </Alert>
     </CardContent>
   </Card>
 );
