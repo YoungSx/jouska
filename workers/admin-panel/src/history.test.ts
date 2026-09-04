@@ -6,13 +6,15 @@
  * publish wrote, not a test double's idea of it.
  */
 import { applyD1Migrations, env } from 'cloudflare:test';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import worker from './index.js';
 import proxy, { __resetConfigCache } from '../../reverse-proxy/index.js';
 import type { AppEnv, Env } from './env.js';
+import { openAccessDoor, type AccessDoor } from './test-access.js';
 
 const testEnv = env as unknown as Env;
-const appEnv = testEnv as unknown as AppEnv;
+let door: AccessDoor;
+let appEnv: AppEnv;
 
 interface HeadersLike {
   get(name: string): string | null;
@@ -55,48 +57,29 @@ const get = async (path: string, headers: Record<string, string> = {}): Promise<
     {} as ExecutionContext,
   ) as unknown as Promise<ResponseLike>;
 
-let adminCookie = '';
+const ROOT = 'root@example.com';
+const VIEWER = 'viewer@example.com';
 
-const login = async (subject: string, password: string): Promise<ResponseLike> => {
-  const res = await call('POST', '/api/auth/login', { subject, password });
-  const setCookie = res.headers.get('set-cookie') ?? '';
-  expect(/jouska_session=([^;]+)/.test(setCookie), 'login must set the session cookie').toBe(true);
-  return {
-    status: res.status,
-    headers: {
-      get: (n: string) => (n.toLowerCase() === 'set-cookie' ? setCookie : res.headers.get(n)),
-    },
-    json: () => res.json(),
-    text: () => res.text(),
-  };
+/**
+ * The admin's headers, provisioning the row on the first call.
+ *
+ * Must run before anything else writes to `users`: first-run provisioning only
+ * fires on an empty table, so a viewer inserted first would leave the admin
+ * unrecognised.
+ */
+const signInAdmin = async (): Promise<Record<string, string>> => {
+  const auth = await door.headers(ROOT);
+  const res = await get('/api/auth/me', auth);
+  expect(res.status, await res.text()).toBe(200);
+  return auth;
 };
 
-const cookieFrom = (res: ResponseLike): string => {
-  const raw = res.headers.get('set-cookie') ?? '';
-  return `jouska_session=${/jouska_session=([^;]+)/.exec(raw)?.[1] ?? ''}`;
-};
-
-const bootstrapAdmin = async (): Promise<void> => {
-  const res = await call('POST', '/api/auth/bootstrap', {
-    subject: 'root',
-    password: 'correct-horse-battery',
-  });
-  expect(res.status, JSON.stringify(await res.json())).toBe(201);
-};
-
-const createViewer = async (): Promise<void> => {
-  const { hashPassword } = await import('./password.js');
-  const hash = await hashPassword('viewer-password-123');
-  await testEnv.DB.prepare(
-    "INSERT INTO users (subject, role, password, created_at) VALUES ('viewer', 'viewer', ?, ?)",
-  )
-    .bind(hash, Math.floor(Date.now() / 1000))
+/** A viewer row, with no credential of its own — Access is the only door. */
+const viewerAuth = async (): Promise<Record<string, string>> => {
+  await testEnv.DB.prepare("INSERT INTO users (subject, role, created_at) VALUES (?, 'viewer', ?)")
+    .bind(VIEWER, Math.floor(Date.now() / 1000))
     .run();
-};
-
-const loginAdmin = async (): Promise<Record<string, string>> => {
-  adminCookie = cookieFrom(await login('root', 'correct-horse-battery'));
-  return { cookie: adminCookie };
+  return await door.headers(VIEWER);
 };
 
 /** Puts one route into the draft. */
@@ -134,17 +117,15 @@ const seedHistory = async (auth: Record<string, string>): Promise<void> => {
 describe('revision history and rollback', () => {
   beforeEach(async () => {
     await applyD1Migrations(testEnv.DB, TEST_MIGRATIONS);
-    for (const table of ['audit_log', 'sessions', 'routes', 'settings', 'users', 'revisions']) {
+    for (const table of ['audit_log', 'routes', 'settings', 'users', 'revisions']) {
       await testEnv.DB.prepare(`DELETE FROM ${table}`).run();
     }
     await testEnv.CONFIG_KV.delete('routes');
-    adminCookie = '';
     __resetConfigCache();
   });
 
   it('lists published revisions newest first, marking the live one', async () => {
-    await bootstrapAdmin();
-    const auth = await loginAdmin();
+    const auth = await signInAdmin();
     await seedHistory(auth);
 
     const res = await get('/api/revisions', auth);
@@ -160,8 +141,7 @@ describe('revision history and rollback', () => {
   });
 
   it('shows pre-feature publishes as snapshot-less entries from the audit log', async () => {
-    await bootstrapAdmin();
-    const auth = await loginAdmin();
+    const auth = await signInAdmin();
     // History without ever publishing through the feature's code path is the
     // old-deployment case: publish once, then wipe the revisions table the
     // way a pre-feature deployment would never have had it.
@@ -183,27 +163,17 @@ describe('revision history and rollback', () => {
   });
 
   it('viewers can read history but cannot roll back', async () => {
-    await bootstrapAdmin();
-    await createViewer();
-    await loginAdmin();
-    const auth = { cookie: adminCookie };
+    const auth = await signInAdmin();
+    const asViewer = await viewerAuth();
     await seedHistory(auth);
-    const viewerLogin = await login('viewer', 'viewer-password-123');
-    const viewerAuth = { cookie: cookieFrom(viewerLogin) };
 
-    expect((await get('/api/revisions', viewerAuth)).status).toBe(200);
-    const rollback = await call(
-      'POST',
-      '/api/revisions/rollback',
-      { sourceRevision: 1 },
-      viewerAuth,
-    );
+    expect((await get('/api/revisions', asViewer)).status).toBe(200);
+    const rollback = await call('POST', '/api/revisions/rollback', { sourceRevision: 1 }, asViewer);
     expect(rollback.status).toBe(403);
   });
 
   it('diffs two snapshots at field level, by route id', async () => {
-    await bootstrapAdmin();
-    const auth = await loginAdmin();
+    const auth = await signInAdmin();
     await seedHistory(auth);
 
     // 1 → 3: alpha's upstream changed, beta appeared.
@@ -244,8 +214,7 @@ describe('revision history and rollback', () => {
   });
 
   it('reports moved routes instead of rewriting every later element', async () => {
-    await bootstrapAdmin();
-    const auth = await loginAdmin();
+    const auth = await signInAdmin();
     await putRoute(auth, 'one', routeFor('1.example.com', '1.internal.example.com'));
     await putRoute(auth, 'two', routeFor('2.example.com', '2.internal.example.com'));
     await publish(auth);
@@ -264,8 +233,7 @@ describe('revision history and rollback', () => {
   });
 
   it('reports a move alongside field changes when both happen to one route', async () => {
-    await bootstrapAdmin();
-    const auth = await loginAdmin();
+    const auth = await signInAdmin();
     await putRoute(auth, 'one', routeFor('1.example.com', '1.internal.example.com'));
     await putRoute(auth, 'two', routeFor('2.example.com', '2.internal.example.com'));
     await publish(auth);
@@ -291,8 +259,7 @@ describe('revision history and rollback', () => {
   });
 
   it('refuses a republish whose only difference is key order', async () => {
-    await bootstrapAdmin();
-    const auth = await loginAdmin();
+    const auth = await signInAdmin();
     await putRoute(auth, 'a', {
       upstream: 'u.example.com',
       match: { host: 'a.example.com', path: '/' },
@@ -314,8 +281,7 @@ describe('revision history and rollback', () => {
   });
 
   it('refuses to diff across a missing snapshot', async () => {
-    await bootstrapAdmin();
-    const auth = await loginAdmin();
+    const auth = await signInAdmin();
     await seedHistory(auth);
     await testEnv.DB.prepare('DELETE FROM revisions WHERE revision = 2').run();
 
@@ -332,8 +298,7 @@ describe('revision history and rollback', () => {
   });
 
   it('rolls back: draft is replaced, KV serves the old content, new revision records provenance', async () => {
-    await bootstrapAdmin();
-    const auth = await loginAdmin();
+    const auth = await signInAdmin();
     await seedHistory(auth);
 
     const res = await call('POST', '/api/revisions/rollback', { sourceRevision: 1 }, auth);
@@ -375,12 +340,11 @@ describe('revision history and rollback', () => {
     const kv = (await testEnv.CONFIG_KV.get('routes', { type: 'json' })) as any;
     expect(kv.routes.map((r: any) => r.id)).toEqual(['alpha']);
     expect(kv.meta.revision).toBe(4);
-    expect(kv.meta.updatedBy).toBe('root');
+    expect(kv.meta.updatedBy).toBe(ROOT);
   });
 
   it('rolls back through the same danger gate — 409 first, confirm then success', async () => {
-    await bootstrapAdmin();
-    const auth = await loginAdmin();
+    const auth = await signInAdmin();
     // Revision 1: dangerous switch, published with confirm. Revision 2: the
     // operator removes it. Rolling back re-introduces the risk, so the gate
     // must fire on the *target* snapshot — the draft is what the rollback
@@ -417,8 +381,7 @@ describe('revision history and rollback', () => {
   });
 
   it('refuses to roll back to what is already live', async () => {
-    await bootstrapAdmin();
-    const auth = await loginAdmin();
+    const auth = await signInAdmin();
     await seedHistory(auth);
 
     const res = await call('POST', '/api/revisions/rollback', { sourceRevision: 3 }, auth);
@@ -429,8 +392,7 @@ describe('revision history and rollback', () => {
   });
 
   it('refuses a nonexistent or pruned source revision', async () => {
-    await bootstrapAdmin();
-    const auth = await loginAdmin();
+    const auth = await signInAdmin();
     await seedHistory(auth);
 
     const ghost = await call('POST', '/api/revisions/rollback', { sourceRevision: 9 }, auth);
@@ -444,8 +406,7 @@ describe('revision history and rollback', () => {
   });
 
   it('validates the input shape before touching anything', async () => {
-    await bootstrapAdmin();
-    const auth = await loginAdmin();
+    const auth = await signInAdmin();
     expect((await call('POST', '/api/revisions/rollback', {}, auth)).status).toBe(400);
     expect(
       (await call('POST', '/api/revisions/rollback', { sourceRevision: 0 }, auth)).status,
@@ -456,8 +417,7 @@ describe('revision history and rollback', () => {
   });
 
   it('audits rollback as config.rollback with provenance', async () => {
-    await bootstrapAdmin();
-    const auth = await loginAdmin();
+    const auth = await signInAdmin();
     await seedHistory(auth);
     const res = await call(
       'POST',
@@ -470,7 +430,7 @@ describe('revision history and rollback', () => {
     const audit = await (await get('/api/audit?limit=10', auth)).json();
     const entry = audit.entries.find((e: any) => e.action === 'config.rollback');
     expect(entry).toBeDefined();
-    expect(entry.actor).toBe('root');
+    expect(entry.actor).toBe(ROOT);
     const detail = JSON.parse(entry.detail);
     expect(detail.rollbackOf).toBe(1);
     expect(detail.revision).toBe(4);
@@ -478,8 +438,7 @@ describe('revision history and rollback', () => {
   });
 
   it('prunes history down to the retention window', async () => {
-    await bootstrapAdmin();
-    const auth = await loginAdmin();
+    const auth = await signInAdmin();
     // KEEP_REVISIONS is 50; 52 publishes must leave 3..52.
     for (let i = 1; i <= 52; i += 1) {
       await putRoute(auth, 'churn', routeFor('c.example.com', `c${i}.internal.example.com`));
@@ -500,4 +459,9 @@ describe('revision history and rollback', () => {
     expect(body.entries.filter((e: any) => e.snapshot === 'full')).toHaveLength(50);
     expect(body.entries).toHaveLength(52);
   });
+});
+
+beforeAll(async () => {
+  door = await openAccessDoor('history-suite');
+  appEnv = door.env();
 });

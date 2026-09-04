@@ -46,7 +46,6 @@ describe('App', () => {
   beforeEach(() => {
     vi.spyOn(api, 'me').mockResolvedValue({
       user: { subject: 'op', role: 'admin' },
-      bootstrapable: false,
     });
     vi.spyOn(api, 'listRoutes').mockResolvedValue([]);
     vi.spyOn(api, 'getDefaults').mockResolvedValue(null);
@@ -59,27 +58,29 @@ describe('App', () => {
     vi.restoreAllMocks();
   });
 
-  it('账号菜单打得开，身份、改密码、退出登录三样都在里面', async () => {
+  it('账号菜单打得开，身份与退出登录都在里面', async () => {
     renderApp();
     const menu = await openAccountMenu();
 
     // 触发器上的账号名被 truncate 截过，完整值只在菜单里，所以这一行必须存在。
     expect(within(menu).getByText('op')).toBeInTheDocument();
-    expect(within(menu).getByRole('menuitem', { name: '修改密码…' })).toBeInTheDocument();
     expect(within(menu).getByRole('menuitem', { name: '退出登录' })).toBeInTheDocument();
+    // 改密码那一项随密码门一起没了：留着只会让人点开一个必然失败的弹窗。
+    expect(within(menu).queryByRole('menuitem', { name: '修改密码…' })).toBeNull();
   });
 
-  it('菜单里的退出登录真的退出，界面回到登录页', async () => {
+  it('菜单里的退出登录真的退出，界面回到「需要 Access」', async () => {
     const user = userEvent.setup();
     renderApp();
     const menu = await openAccountMenu();
 
-    // 退出成功后 App 会重新问一次 me，此时服务端该说「没人登录」。
-    vi.mocked(api.me).mockResolvedValue({ user: null, bootstrapable: false });
+    // 退出后 App 会重新问一次 me。没有 accessLogout 可跳时（ACCESS_TEAM 没配），
+    // 界面必须落在「这个面板走 Access」而不是假装还登录着。
+    vi.mocked(api.me).mockResolvedValue({ user: null });
     await user.click(within(menu).getByRole('menuitem', { name: '退出登录' }));
 
     expect(api.logout).toHaveBeenCalledTimes(1);
-    expect(await screen.findByRole('button', { name: '登录' })).toBeInTheDocument();
+    expect(await screen.findByText('这个面板走 Cloudflare Access')).toBeInTheDocument();
   });
 
   it('触发器把展开状态说出来——雪佛龙的翻转和读屏都靠它', async () => {

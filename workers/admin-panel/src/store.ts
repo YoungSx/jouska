@@ -41,42 +41,6 @@ export const settingStmt = (db: D1Database, key: string, value: unknown): D1Prep
     )
     .bind(key, JSON.stringify(value));
 
-/**
- * Sets a password and spends the recovery token in one batch.
- *
- * `db.batch` is a single transaction, which is the point: deleting the token in
- * a second round-trip would leave a window where two concurrent requests both
- * see a live token and both set a password. The DELETE is conditional on the
- * value still being the one that was checked, so the loser of a race writes
- * nothing and its own delete affects zero rows.
- *
- * Sessions of the target account go too — a recovery whose old cookies keep
- * working has not recovered anything.
- */
-export const consumeRecoveryAndSetPassword = async (
-  db: D1Database,
-  args: {
-    readonly recoveryKey: string;
-    readonly expectedValue: string;
-    readonly userId: number;
-    readonly passwordHash: string;
-  },
-): Promise<boolean> => {
-  const [deleted] = await db.batch([
-    db
-      .prepare('DELETE FROM settings WHERE key = ? AND value = ?')
-      .bind(args.recoveryKey, args.expectedValue),
-    db
-      .prepare(
-        'UPDATE users SET password = ?, failed_attempts = 0, locked_until = NULL WHERE id = ?',
-      )
-      .bind(args.passwordHash, args.userId),
-    db.prepare('DELETE FROM sessions WHERE user_id = ?').bind(args.userId),
-  ]);
-  // meta.changes === 0 means another request spent the same token first.
-  return (deleted?.meta.changes ?? 0) > 0;
-};
-
 /** Raw stored text for a setting, for callers that must compare it verbatim. */
 export const getSettingRaw = async (db: D1Database, key: string): Promise<string | undefined> => {
   const row = await db
@@ -265,9 +229,9 @@ export const listPublishAudit = async (db: D1Database, limit: number): Promise<A
  * The last-admin invariant lives *inside* the write statement, not in a
  * check-then-act pair around it: the guard subqueries are evaluated against
  * the table as it stands at write time, so two concurrent requests cannot
- * both pass a read-side check and jointly brick the panel. (Recovery only
- * rewrites passwords and bootstrap only opens on an empty table, so a table
- * with no usable admin has no way back.)
+ * both pass a read-side check and jointly brick the panel. (First-run
+ * provisioning only opens on an empty table and there is no password path left
+ * to climb back in through, so a table with no usable admin has no way back.)
  *
  * Two invariants, both required:
  *   - at least one admin row exists, AND
@@ -284,23 +248,19 @@ export interface UserListEntry {
   readonly disabled: boolean;
   readonly createdAt: number;
   readonly lastSeen: number | null;
-  readonly failedAttempts: number;
-  readonly lockedUntil: number | null;
-  readonly sessions: number;
 }
 
 /**
  * The user list for the admin screen.
  *
- * Column list, never `SELECT *`: the `password` hash lives in this table and
- * must not be one forgotten `*` away from a 200 response.
+ * Column list, never `SELECT *`: what this table holds is the panel's
+ * authorization state, and a forgotten `*` is how a column added later leaks
+ * into a 200 response nobody re-reviewed.
  */
 export const listUsers = async (db: D1Database): Promise<UserListEntry[]> => {
   const { results } = await db
     .prepare(
-      `SELECT u.id, u.subject, u.email, u.role, u.disabled, u.created_at, u.last_seen,
-              u.failed_attempts, u.locked_until,
-              (SELECT COUNT(*) FROM sessions s WHERE s.user_id = u.id) AS sessions
+      `SELECT u.id, u.subject, u.email, u.role, u.disabled, u.created_at, u.last_seen
        FROM users u
        ORDER BY u.id`,
     )
@@ -312,9 +272,6 @@ export const listUsers = async (db: D1Database): Promise<UserListEntry[]> => {
       disabled: number;
       created_at: number;
       last_seen: number | null;
-      failed_attempts: number;
-      locked_until: number | null;
-      sessions: number;
     }>();
   return results.map((r) => ({
     id: r.id,
@@ -324,15 +281,12 @@ export const listUsers = async (db: D1Database): Promise<UserListEntry[]> => {
     disabled: r.disabled === 1,
     createdAt: r.created_at,
     lastSeen: r.last_seen,
-    failedAttempts: r.failed_attempts,
-    lockedUntil: r.locked_until,
-    sessions: r.sessions,
   }));
 };
 
 /**
- * Creates a user with an admin-set password. Returns the new id, or undefined
- * when the subject's unique index rejected the insert.
+ * Creates a user. Returns the new id, or undefined when the subject's unique
+ * index rejected the insert.
  */
 export const insertUser = async (
   db: D1Database,
@@ -340,15 +294,12 @@ export const insertUser = async (
     readonly subject: string;
     readonly email: string | undefined;
     readonly role: 'admin' | 'viewer';
-    readonly passwordHash: string;
   },
 ): Promise<number | undefined> => {
   try {
     const res = await db
-      .prepare(
-        'INSERT INTO users (subject, email, role, password, created_at) VALUES (?, ?, ?, ?, ?)',
-      )
-      .bind(args.subject, args.email ?? null, args.role, args.passwordHash, nowSeconds())
+      .prepare('INSERT INTO users (subject, email, role, created_at) VALUES (?, ?, ?, ?)')
+      .bind(args.subject, args.email ?? null, args.role, nowSeconds())
       .run();
     return res.meta.last_row_id;
   } catch {
@@ -372,8 +323,9 @@ const asRole = (value: unknown): 'admin' | 'viewer' => (value === 'admin' ? 'adm
  * Looks a user up by their stable external identity.
  *
  * Returns the row even when it is disabled — the caller decides between "not
- * yours" and "switched off", and can audit the attempt either way. The same
- * reason `resolveSession` does it.
+ * yours" and "switched off", and can audit the attempt either way. Flattening
+ * the two here would cost the middleware the only signal it has for saying
+ * which one happened.
  */
 export const findUserBySubject = async (
   db: D1Database,
@@ -391,19 +343,17 @@ export const findUserBySubject = async (
 /**
  * First-run provisioning for a caller Cloudflare Access already vouched for.
  *
- * The Access equivalent of `/auth/bootstrap`, and closed the same way: the
- * guard is inside the statement, so the INSERT only fires while `users` is
- * empty and two concurrent first requests cannot both mint an admin. The
- * unique index on `subject` closes what is left.
+ * This is now the only way the first account comes into being — there is no
+ * `/auth/bootstrap` form behind it — and it is closed the same way that form
+ * was: the guard is inside the statement, so the INSERT only fires while
+ * `users` is empty and two concurrent first requests cannot both mint an admin.
+ * The unique index on `subject` closes what is left.
  *
  * Deliberately only the *first* caller. Access policies are frequently written
  * wider than the panel's intent — a whole email domain, a whole Cloudflare
  * account — so auto-creating a row for everyone who passes the door would hand
  * the route table to a group the operator never enumerated. Everybody after the
  * first is added on purpose, through the users screen.
- *
- * `password` is left NULL: this account has no password to verify, which is
- * exactly what the column's NULL means.
  */
 export const provisionFirstAdmin = async (
   db: D1Database,
@@ -412,8 +362,8 @@ export const provisionFirstAdmin = async (
   try {
     await db
       .prepare(
-        `INSERT INTO users (subject, email, role, password, created_at)
-         SELECT ?, ?, 'admin', NULL, ?
+        `INSERT INTO users (subject, email, role, created_at)
+         SELECT ?, ?, 'admin', ?
          WHERE NOT EXISTS (SELECT 1 FROM users)`,
       )
       .bind(args.subject, args.email ?? null, nowSeconds())
@@ -444,17 +394,11 @@ export const touchLastSeen = async (db: D1Database, id: number): Promise<void> =
 export interface UserUpdate {
   readonly role?: 'admin' | 'viewer';
   readonly disabled?: boolean;
-  /** Clears the login lockout: locked_until and the failure counter together. */
-  readonly unlock?: boolean;
 }
 
 /**
  * Partial update of one user, guarded when the change could shrink the admin
  * pool. Returns the number of rows written: 0 means the guard refused.
- *
- * `unlock` gets its own SET clause rather than always clearing the lock — an
- * unlock bundled into an unrelated role change would silently un-lock an
- * account the operator never asked about.
  */
 export const updateUserGuarded = async (
   db: D1Database,
@@ -470,9 +414,6 @@ export const updateUserGuarded = async (
   if (update.disabled !== undefined) {
     sets.push('disabled = ?');
     binds.push(update.disabled ? 1 : 0);
-  }
-  if (update.unlock === true) {
-    sets.push('locked_until = NULL, failed_attempts = 0');
   }
   // Dangerous = this request could shrink the enabled-admin pool. Decided from
   // the requested fields alone, never from a stale read of the row: the guard
@@ -517,37 +458,6 @@ export const deleteUserGuarded = async (db: D1Database, id: number): Promise<num
     .bind(id)
     .run();
   return res.meta.changes;
-};
-
-/**
- * Sets the caller's own new password and revokes every other session in one
- * transaction. The current session (identified by its token hash) is kept, so
- * the request that changed the password does not log itself out.
- *
- * The UPDATE is unconditional on purpose — the caller has already verified the
- * current password — so this batch cannot silently write zero rows, which is
- * why the audit row for a successful change may live outside it.
- */
-export const changePasswordAndRevokeOthers = async (
-  db: D1Database,
-  args: {
-    readonly userId: number;
-    readonly passwordHash: string;
-    /** SHA-256 of the current request's own session token. */
-    readonly keepTokenHash: string;
-  },
-): Promise<number> => {
-  const [, revoked] = await db.batch([
-    db
-      .prepare(
-        'UPDATE users SET password = ?, failed_attempts = 0, locked_until = NULL WHERE id = ?',
-      )
-      .bind(args.passwordHash, args.userId),
-    db
-      .prepare('DELETE FROM sessions WHERE user_id = ? AND token_hash != ?')
-      .bind(args.userId, args.keepTokenHash),
-  ]);
-  return revoked?.meta.changes ?? 0;
 };
 
 /* ---------- Revisions: the snapshot of every publish. ---------- */

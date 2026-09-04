@@ -1,22 +1,36 @@
 /**
- * Account management: change own password, list, create, update, delete.
+ * Account management: list, create, update, delete.
  *
  * The interesting surface here is not the happy path but the ways this could
- * brick the panel: demoting or disabling the last admin, deleting every row
- * (which would reopen bootstrap to the public), or a password change that
- * lets a stolen cookie lock the owner out. Each guarded refusal is asserted
- * against the database, not just the status code.
+ * brick the panel: demoting or disabling the last admin, or deleting every row —
+ * which would reopen first-run provisioning to whichever address the Access
+ * policy admits next. Each guarded refusal is asserted against the database, not
+ * just the status code.
+ *
+ * Authentication is Cloudflare Access, so "acting as X" below means "holding a
+ * token this suite's certs endpoint vouches for". That distinction has teeth
+ * after a deletion: Access keeps vouching for the address, so what the panel
+ * loses is recognition, not authentication — the refusal is 403
+ * `no_panel_account`, never 401.
  */
 import { applyD1Migrations, env } from 'cloudflare:test';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import worker from './index.js';
 import type { AppEnv, Env } from './env.js';
-import { verifyPassword } from './password.js';
-import { MAX_PASSWORD_LENGTH, MAX_SUBJECT_LENGTH, MIN_PASSWORD_LENGTH } from './validate.js';
+import { MAX_SUBJECT_LENGTH } from './validate.js';
+import { openAccessDoor, type AccessDoor, type AuthHeaders } from './test-access.js';
 
 const testEnv = env as unknown as Env;
-const appEnv = testEnv as unknown as AppEnv;
 const base = 'https://panel.test';
+
+/** The first address through the door, and therefore the sole provisioned admin. */
+const ROOT = 'root@example.com';
+const DEPUTY = 'deputy@example.com';
+const SCOUT = 'scout@example.com';
+
+let door: AccessDoor;
+let appEnv: AppEnv;
+let asRoot: AuthHeaders;
 
 interface ResponseLike {
   status: number;
@@ -34,12 +48,7 @@ const call = async (
   worker.fetch(
     new Request(`${base}${path}`, {
       method,
-      headers: {
-        origin: base,
-        'content-type': 'application/json',
-        ...(body === undefined ? {} : {}),
-        ...headers,
-      },
+      headers: { origin: base, 'content-type': 'application/json', ...headers },
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     }),
     appEnv,
@@ -53,41 +62,15 @@ const get = async (path: string, headers: Record<string, string> = {}): Promise<
     {} as ExecutionContext,
   ) as unknown as Promise<ResponseLike>;
 
-const login = (subject: string, password: string): Promise<ResponseLike> =>
-  call('POST', '/api/auth/login', { subject, password });
-
-/** Logs in and unwraps the session cookie. Intentional-failure logins use the raw one. */
-const loginCookie = async (subject: string, password: string): Promise<string> => {
-  const res = await login(subject, password);
-  const setCookie = res.headers.get('set-cookie') ?? '';
-  expect(/jouska_session=([^;]+)/.test(setCookie), 'login must set a cookie').toBe(true);
-  return `jouska_session=${/jouska_session=([^;]+)/.exec(setCookie)![1]}`;
-};
-
-const bootstrapAdmin = async (): Promise<void> => {
-  const res = await call('POST', '/api/auth/bootstrap', { subject: 'root', password: ROOT_PW });
-  expect(res.status, JSON.stringify(await res.json())).toBe(201);
-};
-
-const ROOT_PW = 'correct-horse-battery';
-const OTHER_PW = 'a-different-long-password';
-const NEW_PW = 'the-replacement-password';
-
 const userRow = async (
   subject: string,
-): Promise<{
-  id: number;
-  password: string | null;
-  failed_attempts: number;
-  locked_until: number | null;
-  disabled: number;
-  role: string;
-} | null> =>
-  testEnv.DB.prepare(
-    'SELECT id, password, failed_attempts, locked_until, disabled, role FROM users WHERE subject = ?',
-  )
+): Promise<{ id: number; disabled: number; role: string } | null> =>
+  testEnv.DB.prepare('SELECT id, disabled, role FROM users WHERE subject = ?')
     .bind(subject)
     .first();
+
+const userCount = async (): Promise<number> =>
+  (await testEnv.DB.prepare('SELECT COUNT(*) AS n FROM users').first<{ n: number }>())?.n ?? 0;
 
 const auditActions = async (): Promise<string[]> => {
   const { results } = await testEnv.DB.prepare('SELECT action FROM audit_log').all<{
@@ -96,555 +79,285 @@ const auditActions = async (): Promise<string[]> => {
   return results.map((r) => r.action);
 };
 
-const nowSeconds = (): number => Math.floor(Date.now() / 1000);
-
-/** A second admin created through the API, with its own live session. */
-const secondAdmin = async (adminCookie: string): Promise<{ cookie: string; id: number }> => {
-  const res = await call(
-    'POST',
-    '/api/users',
-    { subject: 'deputy', password: OTHER_PW, role: 'admin' },
-    { cookie: adminCookie },
-  );
-  expect(res.status).toBe(201);
-  const id = ((await res.json()) as { id: number }).id;
-  return { cookie: await loginCookie('deputy', OTHER_PW), id };
+/** A second admin, created through the API and holding its own Access token. */
+const secondAdmin = async (): Promise<{ headers: AuthHeaders; id: number }> => {
+  const res = await call('POST', '/api/users', { subject: DEPUTY, role: 'admin' }, asRoot);
+  const body = await res.text();
+  expect(res.status, body).toBe(201);
+  return { headers: await door.headers(DEPUTY), id: (JSON.parse(body) as { id: number }).id };
 };
+
+/** An account created by root, so its own requests come back as a viewer. */
+const viewer = async (subject = SCOUT): Promise<AuthHeaders> => {
+  const res = await call('POST', '/api/users', { subject, role: 'viewer' }, asRoot);
+  expect(res.status, await res.text()).toBe(201);
+  return await door.headers(subject);
+};
+
+beforeAll(async () => {
+  door = await openAccessDoor('users-suite');
+  appEnv = door.env();
+  asRoot = await door.headers(ROOT);
+});
 
 beforeEach(async () => {
   await applyD1Migrations(testEnv.DB, TEST_MIGRATIONS);
-  for (const table of ['audit_log', 'sessions', 'routes', 'settings', 'users']) {
+  // mcp_tokens before users: its foreign keys are ON DELETE RESTRICT, so a
+  // leftover token row would refuse the users wipe rather than cascade.
+  for (const table of ['audit_log', 'mcp_tokens', 'routes', 'settings', 'users']) {
     await testEnv.DB.prepare(`DELETE FROM ${table}`).run();
   }
-  await bootstrapAdmin();
-});
-
-describe('POST /api/auth/password', () => {
-  it('refuses a wrong current password and counts the failure', async () => {
-    const cookie = await loginCookie('root', ROOT_PW);
-    const before = await userRow('root');
-
-    const res = await call(
-      'POST',
-      '/api/auth/password',
-      { currentPassword: 'a-wrong-guess-long', newPassword: NEW_PW },
-      { cookie },
-    );
-    expect(res.status).toBe(401);
-
-    const after = await userRow('root');
-    expect(after?.failed_attempts).toBe((before?.failed_attempts ?? 0) + 1);
-    expect(after?.password).toBe(before?.password); // hash untouched
-  });
-
-  it('changes the password, kills other sessions, keeps the current one', async () => {
-    const current = await loginCookie('root', ROOT_PW);
-    const other = await loginCookie('root', ROOT_PW); // second session
-    expect((await get('/api/routes', { cookie: other })).status).toBe(200);
-
-    const res = await call(
-      'POST',
-      '/api/auth/password',
-      { currentPassword: ROOT_PW, newPassword: NEW_PW },
-      { cookie: current },
-    );
-    expect(res.status).toBe(200);
-    const body = (await res.json()) as { revokedSessions?: number };
-    expect(body.revokedSessions).toBe(1);
-
-    // Current session survives; the other one is dead.
-    expect((await get('/api/routes', { cookie: current })).status).toBe(200);
-    expect((await get('/api/routes', { cookie: other })).status).toBe(401);
-
-    // The stored hash flipped with it.
-    const row = await userRow('root');
-    expect(await verifyPassword(NEW_PW, row?.password ?? '')).toBe(true);
-    expect(await verifyPassword(ROOT_PW, row?.password ?? '')).toBe(false);
-
-    // Old password can no longer log in; new one can.
-    expect((await login('root', ROOT_PW)).status).toBe(401);
-    expect((await login('root', NEW_PW)).status).toBe(200);
-  });
-
-  it('enforces the password floor and ceiling without counting it as a failure', async () => {
-    const cookie = await loginCookie('root', ROOT_PW);
-    const before = await userRow('root');
-
-    expect(
-      (
-        await call(
-          'POST',
-          '/api/auth/password',
-          { currentPassword: ROOT_PW, newPassword: 'x'.repeat(MIN_PASSWORD_LENGTH - 1) },
-          { cookie },
-        )
-      ).status,
-    ).toBe(400);
-    expect(
-      (
-        await call(
-          'POST',
-          '/api/auth/password',
-          { currentPassword: ROOT_PW, newPassword: 'x'.repeat(MAX_PASSWORD_LENGTH + 1) },
-          { cookie },
-        )
-      ).status,
-    ).toBe(400);
-    expect(
-      (
-        await call(
-          'POST',
-          '/api/auth/password',
-          { currentPassword: 'x'.repeat(MAX_PASSWORD_LENGTH + 1), newPassword: NEW_PW },
-          { cookie },
-        )
-      ).status,
-    ).toBe(400);
-
-    const after = await userRow('root');
-    expect(after?.failed_attempts).toBe(before?.failed_attempts); // shape errors are not guesses
-    // The floor itself still works: exactly MIN chars goes through.
-    expect(
-      (
-        await call(
-          'POST',
-          '/api/auth/password',
-          { currentPassword: ROOT_PW, newPassword: 'x'.repeat(MIN_PASSWORD_LENGTH) },
-          { cookie },
-        )
-      ).status,
-    ).toBe(200);
-  });
-
-  it('shares the login lockout: five wrong current passwords lock both endpoints', async () => {
-    const cookie = await loginCookie('root', ROOT_PW);
-    for (let i = 0; i < 5; i += 1) {
-      expect(
-        (
-          await call(
-            'POST',
-            '/api/auth/password',
-            { currentPassword: 'a-wrong-guess-long', newPassword: NEW_PW },
-            { cookie },
-          )
-        ).status,
-      ).toBe(401);
-    }
-    const locked = await call(
-      'POST',
-      '/api/auth/password',
-      { currentPassword: ROOT_PW, newPassword: NEW_PW },
-      { cookie },
-    );
-    expect(locked.status).toBe(429);
-    const body = (await locked.json()) as { retryAfterSeconds?: number };
-    expect(body.retryAfterSeconds).toBeGreaterThan(0);
-    // The lock is the account's, so login is locked out by the same window.
-    expect((await login('root', ROOT_PW)).status).toBe(429);
-  });
-
-  it('answers 409 for an account that has no password to verify', async () => {
-    await testEnv.DB.prepare(
-      "INSERT INTO users (subject, role, created_at) VALUES ('sso-user', 'admin', ?)",
-    )
-      .bind(nowSeconds())
-      .run();
-    const sso = await testEnv.DB.prepare('SELECT id FROM users WHERE subject = ?')
-      .bind('sso-user')
-      .first<{ id: number }>();
-    // Fabricate a session for the passwordless account directly.
-    const { createSession } = await import('./auth.js');
-    const { token } = await createSession(testEnv.DB, { id: sso!.id });
-    const cookie = `jouska_session=${token}`;
-
-    const res = await call(
-      'POST',
-      '/api/auth/password',
-      { currentPassword: ROOT_PW, newPassword: NEW_PW },
-      { cookie },
-    );
-    expect(res.status).toBe(409);
-  });
-
-  it('stays behind the same-origin gate and records the change', async () => {
-    const cookie = await loginCookie('root', ROOT_PW);
-    const evil = await worker.fetch(
-      new Request(`${base}/api/auth/password`, {
-        method: 'POST',
-        headers: { origin: 'https://evil.test', 'content-type': 'application/json', cookie },
-        body: JSON.stringify({ currentPassword: ROOT_PW, newPassword: NEW_PW }),
-      }),
-      appEnv,
-      {} as ExecutionContext,
-    );
-    expect(evil.status).toBe(403);
-
-    await call(
-      'POST',
-      '/api/auth/password',
-      { currentPassword: ROOT_PW, newPassword: NEW_PW },
-      {
-        cookie,
-      },
-    );
-    expect(await auditActions()).toContain('auth.password');
-  });
+  // One request through the door on an empty table provisions the sole admin, so
+  // every test below starts from "exactly one admin exists, and it is root".
+  const boot = await get('/api/auth/me', asRoot);
+  expect(boot.status, await boot.text()).toBe(200);
+  expect(await userRow(ROOT)).not.toBeNull();
+  await testEnv.DB.prepare('DELETE FROM audit_log').run();
 });
 
 describe('GET /api/users', () => {
-  it('lists users with session counts and never leaks the hash column', async () => {
-    const adminCookie = await loginCookie('root', ROOT_PW);
-    await call(
-      'POST',
-      '/api/users',
-      { subject: 'scout', password: OTHER_PW, role: 'viewer' },
-      { cookie: adminCookie },
-    );
-    await login('scout', OTHER_PW); // one live session for scout
-    await login('scout', OTHER_PW); // second one
+  it('lists what the column list names, and nothing the schema grows later', async () => {
+    await viewer();
+    await get('/api/routes', await door.headers(SCOUT)); // gives scout a last_seen
 
-    const res = await get('/api/users', { cookie: adminCookie });
+    const res = await get('/api/users', asRoot);
     expect(res.status).toBe(200);
-    // The raw body, not a parsed projection: a stray `*` in the SQL would only
-    // be visible here.
-    const raw = await res.text();
-    expect(raw).not.toContain('pbkdf2$');
-    const body = JSON.parse(raw) as {
-      users: {
-        subject: string;
-        role: string;
-        disabled: boolean;
-        sessions: number;
-        createdAt: number;
-        lastSeen: number | null;
-      }[];
-    };
-    const scout = body.users.find((u) => u.subject === 'scout');
+    const body = (await res.json()) as { users: Record<string, unknown>[] };
+    const scout = body.users.find((u) => u.subject === SCOUT);
+    expect(scout).toBeDefined();
     expect(scout?.role).toBe('viewer');
     expect(scout?.disabled).toBe(false);
-    expect(scout?.sessions).toBe(2);
-    expect(scout?.createdAt).toBeGreaterThan(0);
+    expect(scout?.createdAt as number).toBeGreaterThan(0);
     expect(scout?.lastSeen).not.toBeNull();
+    // The exact key set, not a subset: `SELECT *` plus a column added by a later
+    // migration is how a private field ends up in a 200 that nobody re-reviewed.
+    expect(Object.keys(scout ?? {}).toSorted()).toEqual([
+      'createdAt',
+      'disabled',
+      'email',
+      'id',
+      'lastSeen',
+      'role',
+      'subject',
+    ]);
   });
 
-  it('is admin-only and requires a session', async () => {
+  it('separates "we do not know you" from "you may not"', async () => {
+    // No token at all: the platform never vouched, so this is 401.
     expect((await get('/api/users')).status).toBe(401);
-    const adminCookie = await loginCookie('root', ROOT_PW);
-    await call(
-      'POST',
-      '/api/users',
-      { subject: 'scout', password: OTHER_PW, role: 'viewer' },
-      { cookie: adminCookie },
-    );
-    const viewerCookie = await loginCookie('scout', OTHER_PW);
-    expect((await get('/api/users', { cookie: viewerCookie })).status).toBe(403);
+    // A vouched-for viewer: recognised, and refused for what they are — 403.
+    expect((await get('/api/users', await viewer())).status).toBe(403);
   });
 });
 
 describe('POST /api/users', () => {
-  it('creates a viewer by default with a verifiable hash and no echo of the password', async () => {
-    const adminCookie = await loginCookie('root', ROOT_PW);
-    const res = await call(
-      'POST',
-      '/api/users',
-      { subject: 'scout', password: OTHER_PW, email: 'scout@example.com' },
-      { cookie: adminCookie },
-    );
+  it('creates a viewer by default, and that address can then walk in', async () => {
+    const res = await call('POST', '/api/users', { subject: SCOUT, email: SCOUT }, asRoot);
     expect(res.status).toBe(201);
-    expect(await res.text()).not.toContain(OTHER_PW);
 
-    const row = await userRow('scout');
-    expect(row?.role).toBe('viewer'); // default, not the column's 'admin'
+    const row = await userRow(SCOUT);
+    expect(row?.role).toBe('viewer'); // the endpoint default, not the column's 'admin'
     expect(row?.disabled).toBe(0);
-    expect(await verifyPassword(OTHER_PW, row?.password ?? '')).toBe(true);
-    expect((await login('scout', OTHER_PW)).status).toBe(200);
+
+    // The row is the whole credential story: no secret was set, and Access
+    // vouching for the same address is now enough to be recognised.
+    const asScout = await door.headers(SCOUT);
+    expect((await get('/api/routes', asScout)).status).toBe(200);
+    expect((await get('/api/users', asScout)).status).toBe(403);
   });
 
   it('rejects duplicates, bad shapes, and invalid roles as 400/409 — never 500', async () => {
-    const adminCookie = await loginCookie('root', ROOT_PW);
-    const create = (body: unknown) => call('POST', '/api/users', body, { cookie: adminCookie });
+    const create = (body: unknown) => call('POST', '/api/users', body, asRoot);
 
-    expect((await create({ subject: 'root', password: OTHER_PW })).status).toBe(409);
-    expect((await create({ subject: '', password: OTHER_PW })).status).toBe(400);
-    expect(
-      (await create({ subject: 'x'.repeat(MAX_SUBJECT_LENGTH + 1), password: OTHER_PW })).status,
-    ).toBe(400);
-    expect(
-      (await create({ subject: 'scout', password: 'x'.repeat(MIN_PASSWORD_LENGTH - 1) })).status,
-    ).toBe(400);
-    expect(
-      (await create({ subject: 'scout', password: OTHER_PW, role: 'superadmin' })).status,
-    ).toBe(400);
+    expect((await create({ subject: ROOT })).status).toBe(409);
+    expect((await create({ subject: '' })).status).toBe(400);
+    expect((await create({ subject: '   ' })).status).toBe(400);
+    expect((await create({ subject: 'x'.repeat(MAX_SUBJECT_LENGTH + 1) })).status).toBe(400);
+    expect((await create({ subject: SCOUT, role: 'superadmin' })).status).toBe(400);
+    expect(await userCount()).toBe(1);
   });
 
   it('is admin-only', async () => {
-    const adminCookie = await loginCookie('root', ROOT_PW);
-    await call(
-      'POST',
-      '/api/users',
-      { subject: 'scout', password: OTHER_PW, role: 'viewer' },
-      { cookie: adminCookie },
-    );
-    const viewerCookie = await loginCookie('scout', OTHER_PW);
-    expect(
-      (
-        await call(
-          'POST',
-          '/api/users',
-          { subject: 'scout2', password: OTHER_PW },
-          { cookie: viewerCookie },
-        )
-      ).status,
-    ).toBe(403);
+    const asViewer = await viewer();
+    const res = await call('POST', '/api/users', { subject: 'other@example.com' }, asViewer);
+    expect(res.status).toBe(403);
+    expect(await userRow('other@example.com')).toBeNull();
   });
 });
 
 describe('PATCH /api/users/:id', () => {
   it('demotes a second admin and the new role applies to their next request', async () => {
-    const adminCookie = await loginCookie('root', ROOT_PW);
-    const deputy = await secondAdmin(adminCookie);
+    const deputy = await secondAdmin();
 
-    expect(
-      (
-        await call(
-          'PATCH',
-          `/api/users/${String(deputy.id)}`,
-          { role: 'viewer' },
-          { cookie: adminCookie },
-        )
-      ).status,
-    ).toBe(200);
-    // resolveSession joins the role per request, so this is immediate — no
-    // re-login, no grace period.
-    expect((await get('/api/users', { cookie: deputy.cookie })).status).toBe(403);
+    const res = await call('PATCH', `/api/users/${String(deputy.id)}`, { role: 'viewer' }, asRoot);
+    expect(res.status).toBe(200);
+    // The role is joined per request from the row, so this is immediate — no
+    // token to re-mint, no grace period while an old claim is still valid.
+    expect((await get('/api/users', deputy.headers)).status).toBe(403);
   });
 
   it('refuses to demote or disable the only admin', async () => {
-    const adminCookie = await loginCookie('root', ROOT_PW);
-    const row = await userRow('root');
-    const id = String(row!.id);
+    const id = String((await userRow(ROOT))!.id);
 
-    const demote = await call(
-      'PATCH',
-      `/api/users/${id}`,
-      { role: 'viewer' },
-      { cookie: adminCookie },
-    );
+    const demote = await call('PATCH', `/api/users/${id}`, { role: 'viewer' }, asRoot);
     expect(demote.status).toBe(409);
     expect(((await demote.json()) as { error: string }).error).toBe('last_admin');
 
-    expect(
-      (await call('PATCH', `/api/users/${id}`, { disabled: true }, { cookie: adminCookie })).status,
-    ).toBe(409);
+    expect((await call('PATCH', `/api/users/${id}`, { disabled: true }, asRoot)).status).toBe(409);
     // The row must be untouched by both refusals.
-    expect((await userRow('root'))?.role).toBe('admin');
-    expect((await userRow('root'))?.disabled).toBe(0);
+    expect((await userRow(ROOT))?.role).toBe('admin');
+    expect((await userRow(ROOT))?.disabled).toBe(0);
   });
 
   it('holds both invariants: a disabled admin does not count as a spare', async () => {
-    const adminCookie = await loginCookie('root', ROOT_PW);
-    const deputy = await secondAdmin(adminCookie);
+    const deputy = await secondAdmin();
     // Park the deputy first; now root is the only *enabled* admin.
-    expect(
-      (
-        await call(
-          'PATCH',
-          `/api/users/${String(deputy.id)}`,
-          { disabled: true },
-          { cookie: adminCookie },
-        )
-      ).status,
-    ).toBe(200);
+    const park = await call('PATCH', `/api/users/${String(deputy.id)}`, { disabled: true }, asRoot);
+    expect(park.status).toBe(200);
+    // And a parked account is refused even though Access still lets it through.
+    expect((await get('/api/routes', deputy.headers)).status).toBe(403);
 
-    // Root cannot be disabled or demoted — deputy does not count as a spare.
-    const row = await userRow('root');
-    const id = String(row!.id);
-    expect(
-      (await call('PATCH', `/api/users/${id}`, { disabled: true }, { cookie: adminCookie })).status,
-    ).toBe(409);
-    expect(
-      (await call('PATCH', `/api/users/${id}`, { role: 'viewer' }, { cookie: adminCookie })).status,
-    ).toBe(409);
+    const id = String((await userRow(ROOT))!.id);
+    expect((await call('PATCH', `/api/users/${id}`, { disabled: true }, asRoot)).status).toBe(409);
+    expect((await call('PATCH', `/api/users/${id}`, { role: 'viewer' }, asRoot)).status).toBe(409);
 
-    // But the parked deputy can still be demoted: that only shrinks the row
+    // But the parked deputy can still be demoted: that shrinks the admin row
     // count, not the enabled pool.
-    expect(
-      (
-        await call(
-          'PATCH',
-          `/api/users/${String(deputy.id)}`,
-          { role: 'viewer' },
-          { cookie: adminCookie },
-        )
-      ).status,
-    ).toBe(200);
-  });
-
-  it('unlocks by clearing the lockout and the counter together', async () => {
-    const adminCookie = await loginCookie('root', ROOT_PW);
-    await call(
-      'POST',
-      '/api/users',
-      { subject: 'scout', password: OTHER_PW },
-      { cookie: adminCookie },
-    );
-    const scout = await userRow('scout');
-    await testEnv.DB.prepare('UPDATE users SET failed_attempts = 5, locked_until = ? WHERE id = ?')
-      .bind(nowSeconds() + 900, scout!.id)
-      .run();
-
-    const res = await call(
+    const demote = await call(
       'PATCH',
-      `/api/users/${String(scout!.id)}`,
-      { unlock: true },
-      { cookie: adminCookie },
+      `/api/users/${String(deputy.id)}`,
+      { role: 'viewer' },
+      asRoot,
     );
-    expect(res.status).toBe(200);
-    const after = await userRow('scout');
-    expect(after?.failed_attempts).toBe(0);
-    expect(after?.locked_until).toBeNull();
-    // The point of unlocking: the account can actually log in again.
-    expect((await login('scout', OTHER_PW)).status).toBe(200);
+    expect(demote.status).toBe(200);
   });
 
   it('updates only the named fields, refuses nonsense, and audits', async () => {
-    const adminCookie = await loginCookie('root', ROOT_PW);
-    await call(
-      'POST',
-      '/api/users',
-      { subject: 'scout', password: OTHER_PW, role: 'viewer' },
-      { cookie: adminCookie },
-    );
-    const scout = await userRow('scout');
-    const id = String(scout!.id);
+    await viewer();
+    const id = String((await userRow(SCOUT))!.id);
 
     // Role-only change must not touch disabled.
-    await call('PATCH', `/api/users/${id}`, { role: 'admin' }, { cookie: adminCookie });
-    expect((await userRow('scout'))?.role).toBe('admin');
-    expect((await userRow('scout'))?.disabled).toBe(0);
+    await call('PATCH', `/api/users/${id}`, { role: 'admin' }, asRoot);
+    expect((await userRow(SCOUT))?.role).toBe('admin');
+    expect((await userRow(SCOUT))?.disabled).toBe(0);
 
-    expect((await call('PATCH', `/api/users/${id}`, {}, { cookie: adminCookie })).status).toBe(400);
-    expect(
-      (await call('PATCH', `/api/users/${id}`, { disabled: 'yes' }, { cookie: adminCookie }))
-        .status,
-    ).toBe(400);
-    expect(
-      (await call('PATCH', '/api/users/999', { role: 'viewer' }, { cookie: adminCookie })).status,
-    ).toBe(404);
-    expect(
-      (await call('PATCH', '/api/users/root', { role: 'viewer' }, { cookie: adminCookie })).status,
-    ).toBe(404);
+    expect((await call('PATCH', `/api/users/${id}`, {}, asRoot)).status).toBe(400);
+    expect((await call('PATCH', `/api/users/${id}`, { disabled: 'yes' }, asRoot)).status).toBe(400);
+    // A field the password door used to own is now just an unknown key, and an
+    // unknown key alone is nothing to do — not a silent success.
+    expect((await call('PATCH', `/api/users/${id}`, { unlock: true }, asRoot)).status).toBe(400);
+    expect((await call('PATCH', '/api/users/999', { role: 'viewer' }, asRoot)).status).toBe(404);
+    expect((await call('PATCH', '/api/users/root', { role: 'viewer' }, asRoot)).status).toBe(404);
 
     expect(await auditActions()).toContain('user.update');
   });
 });
 
 describe('DELETE /api/users/:id', () => {
-  it('deletes a viewer and cascades their sessions out from under the cookie', async () => {
-    const adminCookie = await loginCookie('root', ROOT_PW);
-    await call(
-      'POST',
-      '/api/users',
-      { subject: 'scout', password: OTHER_PW },
-      { cookie: adminCookie },
-    );
-    const scoutCookie = await loginCookie('scout', OTHER_PW);
-    expect((await get('/api/routes', { cookie: scoutCookie })).status).toBe(200);
-    const scout = await userRow('scout');
+  it('deletes a viewer, and Access alone no longer gets them in', async () => {
+    const asScout = await viewer();
+    expect((await get('/api/routes', asScout)).status).toBe(200);
+    const id = String((await userRow(SCOUT))!.id);
 
-    expect(
-      (await call('DELETE', `/api/users/${String(scout!.id)}`, undefined, { cookie: adminCookie }))
-        .status,
-    ).toBe(200);
-    expect((await get('/api/routes', { cookie: scoutCookie })).status).toBe(401);
-    expect(await userRow('scout')).toBeNull();
+    expect((await call('DELETE', `/api/users/${id}`, undefined, asRoot)).status).toBe(200);
+    expect(await userRow(SCOUT)).toBeNull();
+
+    // The same token still verifies — the platform's opinion did not change —
+    // but the panel has no row to key a role on, so it refuses by name.
+    const after = await get('/api/routes', asScout);
+    expect(after.status).toBe(403);
+    expect((await after.json()) as unknown).toMatchObject({
+      error: 'no_panel_account',
+      accessEmail: SCOUT,
+    });
+    // And the refusal must not quietly re-provision: the table is not empty.
+    expect(await userCount()).toBe(1);
   });
 
   it('re-evaluates the guard at write time, so the last admin cannot be deleted', async () => {
-    const adminCookie = await loginCookie('root', ROOT_PW);
-    const deputy = await secondAdmin(adminCookie);
+    const deputy = await secondAdmin();
 
     // One of two admins goes.
     expect(
-      (await call('DELETE', `/api/users/${String(deputy.id)}`, undefined, { cookie: adminCookie }))
-        .status,
+      (await call('DELETE', `/api/users/${String(deputy.id)}`, undefined, asRoot)).status,
     ).toBe(200);
-    // Now the same request shape hits a different table state: refused, and
-    // the remaining admin is still there.
-    const root = await userRow('root');
-    const refused = await call('DELETE', `/api/users/${String(root!.id)}`, undefined, {
-      cookie: adminCookie,
-    });
-    expect(refused.status).toBe(409);
-    // Root is now the only row left, so the endpoint names the stricter wall:
-    // deleting it would empty the table and reopen bootstrap.
-    expect(((await refused.json()) as { error: string }).error).toBe('last_user');
-    expect(await userRow('root')).not.toBeNull();
-  });
-
-  it('refuses to empty the table: bootstrap must not reopen', async () => {
-    const adminCookie = await loginCookie('root', ROOT_PW);
-    // A second admin, parked, so its deletion leaves exactly one row.
-    const deputy = await secondAdmin(adminCookie);
-    await call(
-      'PATCH',
-      `/api/users/${String(deputy.id)}`,
-      { disabled: true },
-      { cookie: adminCookie },
+    // Now the same request shape meets a different table state: refused, and the
+    // remaining admin is still there.
+    const refused = await call(
+      'DELETE',
+      `/api/users/${String((await userRow(ROOT))!.id)}`,
+      undefined,
+      asRoot,
     );
-    expect(
-      (await call('DELETE', `/api/users/${String(deputy.id)}`, undefined, { cookie: adminCookie }))
-        .status,
-    ).toBe(200);
-
-    const root = await userRow('root');
-    const refused = await call('DELETE', `/api/users/${String(root!.id)}`, undefined, {
-      cookie: adminCookie,
-    });
     expect(refused.status).toBe(409);
+    // Root is the only row left, so the endpoint names the stricter wall.
     expect(((await refused.json()) as { error: string }).error).toBe('last_user');
-    const count = await testEnv.DB.prepare('SELECT COUNT(*) AS n FROM users').first<{
-      n: number;
-    }>();
-    expect(count?.n).toBe(1);
+    expect(await userRow(ROOT)).not.toBeNull();
   });
 
-  it('lets an admin delete themselves when a spare admin exists, and dies with their session', async () => {
-    const adminCookie = await loginCookie('root', ROOT_PW);
-    const deputy = await secondAdmin(adminCookie);
+  it('refuses to empty the table: first-run provisioning must not reopen', async () => {
+    // An emptied table hands admin to whatever address Access admits next, so
+    // this refusal is the one standing between a mis-scoped policy and the route
+    // table. A parked second admin, so its deletion leaves exactly one row.
+    const deputy = await secondAdmin();
+    await call('PATCH', `/api/users/${String(deputy.id)}`, { disabled: true }, asRoot);
+    expect(
+      (await call('DELETE', `/api/users/${String(deputy.id)}`, undefined, asRoot)).status,
+    ).toBe(200);
+
+    const refused = await call(
+      'DELETE',
+      `/api/users/${String((await userRow(ROOT))!.id)}`,
+      undefined,
+      asRoot,
+    );
+    expect(refused.status).toBe(409);
+    expect(((await refused.json()) as { error: string }).error).toBe('last_user');
+    expect(await userCount()).toBe(1);
+  });
+
+  it('lets an admin delete themselves when a spare exists, losing the panel with the row', async () => {
+    const deputy = await secondAdmin();
     // Deputy lists users to learn its own id, then deletes itself.
-    const list = await get('/api/users', { cookie: deputy.cookie });
+    const list = await get('/api/users', deputy.headers);
     const self = ((await list.json()) as { users: { id: number; subject: string }[] }).users.find(
-      (u) => u.subject === 'deputy',
+      (u) => u.subject === DEPUTY,
     );
 
     expect(
-      (await call('DELETE', `/api/users/${String(self!.id)}`, undefined, { cookie: deputy.cookie }))
-        .status,
+      (await call('DELETE', `/api/users/${String(self!.id)}`, undefined, deputy.headers)).status,
     ).toBe(200);
-    // The cascade removed the session the request itself was riding on.
-    expect((await get('/api/users', { cookie: deputy.cookie })).status).toBe(401);
+    // The row the request was authorised by is gone, so the next one is 403.
+    expect((await get('/api/users', deputy.headers)).status).toBe(403);
     // The other admin survives.
-    expect((await get('/api/users', { cookie: adminCookie })).status).toBe(200);
+    expect((await get('/api/users', asRoot)).status).toBe(200);
   });
 
   it('answers 404 for unknown and malformed ids, and audits real deletions', async () => {
-    const adminCookie = await loginCookie('root', ROOT_PW);
-    expect(
-      (await call('DELETE', '/api/users/999', undefined, { cookie: adminCookie })).status,
-    ).toBe(404);
-    expect(
-      (await call('DELETE', '/api/users/root', undefined, { cookie: adminCookie })).status,
-    ).toBe(404);
+    expect((await call('DELETE', '/api/users/999', undefined, asRoot)).status).toBe(404);
+    expect((await call('DELETE', '/api/users/root', undefined, asRoot)).status).toBe(404);
 
-    await call(
-      'POST',
-      '/api/users',
-      { subject: 'scout', password: OTHER_PW },
-      { cookie: adminCookie },
-    );
-    const scout = await userRow('scout');
-    await call('DELETE', `/api/users/${String(scout!.id)}`, undefined, { cookie: adminCookie });
+    await viewer();
+    const id = String((await userRow(SCOUT))!.id);
+    expect((await call('DELETE', `/api/users/${id}`, undefined, asRoot)).status).toBe(200);
     expect(await auditActions()).toContain('user.delete');
+  });
+});
+
+describe('the same-origin gate', () => {
+  it('refuses a mutating request that arrives without an Origin', async () => {
+    // A cross-site form post omits Origin entirely, and a valid Access token
+    // does not make that request the operator's intent.
+    const res = await worker.fetch(
+      new Request(`${base}/api/users`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', ...asRoot },
+        body: JSON.stringify({ subject: SCOUT }),
+      }),
+      appEnv,
+      {} as ExecutionContext,
+    );
+    expect(res.status).toBe(403);
+    expect(await userRow(SCOUT)).toBeNull();
   });
 });

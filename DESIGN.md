@@ -184,7 +184,7 @@ components:
 
 单列纵向流，`flex min-h-dvh flex-col` 夹住内容：
 
-- **容器**：`max-w-6xl`（72rem）居中，水平内边距统一 `px-4`（16px）。登录页收窄到 `max-w-sm`（24rem）居中。
+- **容器**：`max-w-6xl`（72rem）居中，水平内边距统一 `px-4`（16px）。「进不来」那一屏（等管理员加号 / 未接 Access）收窄到 `max-w-sm`（24rem）居中。
 - **顶栏**：sticky top-0，`bg-background/95` + `backdrop-blur` + 底边框，z-30。品牌（左）+ 导航（中，见「响应式」）+ 主题切换与账号菜单（右）。高度由 `py-2.5` 决定，内容单行。
 - **发布栏**：sticky bottom-0，同样的半透明 + blur + 顶边框，z-20。左：状态图标 + 状态句 + （非 clean 时）线上 revision Badge；下挂一行 12px muted-foreground 细节。右：查看按钮（ghost sm）+ 发布按钮（sm）。sticky 而非 fixed——fixed 会盖住最后一行，而这个面板的最后一行常常正是刚改的那条路由。
 - **主体**：`pt-6 pb-8`（24px / 32px），页面内区块之间 `gap-6`（24px），Card 内元素 `gap-2`/`gap-1.5`（8px / 6px）。
@@ -284,7 +284,7 @@ components:
 
 ### 反馈
 
-- Toast：sonner，top-center，主题跟随应用主题，底/字/边全部绑回 popover/border token，radius 绑 `--radius`。成功/失败/会话过期/网络错误都走它；写操作失败必须可见，静默失败会让人以为存上了。
+- Toast：sonner，top-center，主题跟随应用主题，底/字/边全部绑回 popover/border token，radius 绑 `--radius`。成功/失败/身份失效/网络错误都走它；写操作失败必须可见，静默失败会让人以为存上了。
 - Skeleton：形状对齐真实内容（几行、多高），加载完不跳版，`aria-hidden` + 外层 `aria-busy`。
 - Empty：Empty 组件 + EmptyMedia 图标 + 标题 + 引导句 + （可选）行动按钮。空是「还没开始」，不是「配置有错」。
 

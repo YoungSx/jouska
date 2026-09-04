@@ -1,12 +1,5 @@
 import * as React from 'react';
-import {
-  ChevronDownIcon,
-  KeyRoundIcon,
-  LogOutIcon,
-  MenuIcon,
-  RefreshCwIcon,
-  Trash2Icon,
-} from 'lucide-react';
+import { ChevronDownIcon, LogOutIcon, MenuIcon, RefreshCwIcon, Trash2Icon } from 'lucide-react';
 import { toast } from 'sonner';
 import { Toaster } from '@/components/ui/sonner';
 import { Badge } from '@/components/ui/badge';
@@ -35,7 +28,6 @@ import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { PublishBar } from '@/components/publish-bar';
 import { PublishDialog } from '@/components/publish-dialog';
 import { DiscardDialog } from '@/components/discard-dialog';
-import { ChangePasswordDialog } from '@/components/change-password-dialog';
 import { ViewErrorBoundary } from '@/components/error-boundary';
 import { ThemeToggle } from '@/components/theme-toggle';
 import { AuthView } from '@/views/auth-view';
@@ -115,7 +107,6 @@ const App = () => {
   const [publishOpen, setPublishOpen] = React.useState(false);
   const [discardOpen, setDiscardOpen] = React.useState(false);
   const [deleteTarget, setDeleteTarget] = React.useState<RouteEntry | null>(null);
-  const [passwordOpen, setPasswordOpen] = React.useState(false);
 
   const reloadQuietly = React.useCallback(() => {
     void draft.reload();
@@ -296,13 +287,11 @@ const App = () => {
         <AuthView
           me={{
             user: null,
-            bootstrapable: session.state.bootstrapable,
             ...(session.state.accessEmail === undefined
               ? {}
               : { accessEmail: session.state.accessEmail }),
           }}
           loading={false}
-          onSignedIn={() => void session.refresh()}
         />
         <Toaster position="top-center" richColors />
       </>
@@ -412,14 +401,6 @@ const App = () => {
                     {user.subject}
                   </DropdownMenuLabel>
                   <DropdownMenuSeparator />
-                  {/* 走 Access 进来的账号没有密码可改（users.password 是 NULL），
-                      服务端会答 409。留着这一项只会让人点开一个必然失败的弹窗。 */}
-                  {user.via !== 'access' && (
-                    <DropdownMenuItem onClick={() => setPasswordOpen(true)}>
-                      <KeyRoundIcon />
-                      {t.account.changePassword}
-                    </DropdownMenuItem>
-                  )}
                   <DropdownMenuItem
                     variant="destructive"
                     onClick={() => {
@@ -543,8 +524,6 @@ const App = () => {
         onDismiss={() => setDeleteTarget(null)}
         onConfirm={() => void onDelete()}
       />
-
-      <ChangePasswordDialog open={passwordOpen} onOpenChange={setPasswordOpen} />
 
       <Toaster position="top-center" richColors />
     </div>

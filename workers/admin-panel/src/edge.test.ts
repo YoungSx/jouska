@@ -6,16 +6,16 @@
  * the first run is testing something already handled and proves nothing.
  */
 import { applyD1Migrations, env } from 'cloudflare:test';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import worker from './index.js';
 import type { AppEnv, Env } from './env.js';
 import { compileConfig } from './compile.js';
 import { dangerFlags } from './danger.js';
-import { verifyPassword } from './password.js';
-import { resolveSession } from './auth.js';
+import { openAccessDoor, type AccessDoor } from './test-access.js';
 
 const testEnv = env as unknown as Env;
-const appEnv = testEnv as unknown as AppEnv;
+let door: AccessDoor;
+let appEnv: AppEnv;
 const base = 'https://panel.test';
 
 interface ResponseLike {
@@ -40,64 +40,37 @@ const call = async (
     {} as ExecutionContext,
   ) as unknown as Promise<ResponseLike>;
 
-const PASSWORD = 'boundary-test-password';
+const ROOT = 'root@example.com';
 
-/** Bootstraps an admin and returns its session cookie header value. */
-const adminCookie = async (): Promise<string> => {
-  await call('POST', '/api/auth/bootstrap', { subject: 'root', password: PASSWORD });
-  const login = await call('POST', '/api/auth/login', { subject: 'root', password: PASSWORD });
-  const raw = login.headers.get('set-cookie');
-  if (raw === null) {
-    throw new Error('login returned no cookie');
-  }
-  return raw.split(';')[0]!;
+/** Admin headers; the first request on an empty table provisions the row. */
+const signInAdmin = async (): Promise<Record<string, string>> => {
+  const auth = await door.headers(ROOT);
+  const res = await call('GET', '/api/auth/me', undefined, auth);
+  expect(res.status).toBe(200);
+  return auth;
 };
 
 const VALID_ROUTE = { match: { host: 'a.example.com', path: '/' }, upstream: 'up.example.com' };
 
 beforeEach(async () => {
   await applyD1Migrations(testEnv.DB, TEST_MIGRATIONS);
-  for (const table of ['audit_log', 'sessions', 'routes', 'settings', 'mcp_tokens', 'users']) {
+  for (const table of ['audit_log', 'routes', 'settings', 'mcp_tokens', 'users']) {
     await testEnv.DB.prepare(`DELETE FROM ${table}`).run();
   }
   await testEnv.CONFIG_KV.delete('routes');
 });
 
 describe('input boundaries', () => {
-  it('rejects an empty subject at bootstrap', async () => {
-    const res = await call('POST', '/api/auth/bootstrap', { subject: '', password: PASSWORD });
-    expect(res.status).toBe(400);
-  });
-
-  it('rejects a whitespace-only subject at bootstrap', async () => {
-    const res = await call('POST', '/api/auth/bootstrap', { subject: '   ', password: PASSWORD });
-    expect(res.status).toBe(400);
-  });
-
-  it('rejects an absurdly long subject rather than storing it', async () => {
-    const res = await call('POST', '/api/auth/bootstrap', {
-      subject: 'a'.repeat(5000),
-      password: PASSWORD,
-    });
-    expect(res.status).toBe(400);
-  });
-
-  it('rejects a password long enough to be a CPU exhaustion lever', async () => {
-    const res = await call('POST', '/api/auth/bootstrap', {
-      subject: 'root',
-      password: 'x'.repeat(200_000),
-    });
-    expect(res.status).toBe(400);
-  });
-
   it('rejects an array body where an object is required', async () => {
     // readJsonObject collapses arrays to {} only if it checks Array.isArray;
-    // typeof [] === 'object', so an array otherwise slips through as a body.
+    // typeof [] === 'object', so an array otherwise slips through as a body and
+    // every field read off it is silently undefined.
+    const auth = await signInAdmin();
     const res = await worker.fetch(
-      new Request(`${base}/api/auth/bootstrap`, {
+      new Request(`${base}/api/users`, {
         method: 'POST',
-        headers: { origin: base, 'content-type': 'application/json' },
-        body: JSON.stringify([{ subject: 'root', password: PASSWORD }]),
+        headers: { origin: base, 'content-type': 'application/json', ...auth },
+        body: JSON.stringify([{ subject: 'someone@example.com', role: 'viewer' }]),
       }),
       appEnv,
       {} as ExecutionContext,
@@ -108,50 +81,50 @@ describe('input boundaries', () => {
 
 describe('route definition boundaries', () => {
   it('rejects an array as a route definition', async () => {
-    const cookie = await adminCookie();
-    const res = await call('PUT', '/api/routes/arr', { definition: [1, 2, 3] }, { cookie });
+    const auth = await signInAdmin();
+    const res = await call('PUT', '/api/routes/arr', { definition: [1, 2, 3] }, auth);
     expect(res.status).toBe(400);
   });
 
   it('rejects a definition too large to be a sane route', async () => {
-    const cookie = await adminCookie();
+    const auth = await signInAdmin();
     const res = await call(
       'PUT',
       '/api/routes/huge',
       { definition: { ...VALID_ROUTE, note: 'x'.repeat(200_000) } },
-      { cookie },
+      auth,
     );
     expect(res.status).toBe(400);
   });
 
   it('rejects a non-boolean enabled instead of silently disabling', async () => {
-    const cookie = await adminCookie();
+    const auth = await signInAdmin();
     // `enabled: 'yes'` is truthy to a human and false to `=== true`, so a typo
     // would quietly park the route out of production.
     const res = await call(
       'PUT',
       '/api/routes/typo',
       { definition: VALID_ROUTE, enabled: 'yes' },
-      { cookie },
+      auth,
     );
     expect(res.status).toBe(400);
   });
 
   it('rejects duplicate ids in a reorder', async () => {
-    const cookie = await adminCookie();
-    await call('PUT', '/api/routes/a', { definition: VALID_ROUTE }, { cookie });
-    await call('PUT', '/api/routes/b', { definition: VALID_ROUTE }, { cookie });
+    const auth = await signInAdmin();
+    await call('PUT', '/api/routes/a', { definition: VALID_ROUTE }, auth);
+    await call('PUT', '/api/routes/b', { definition: VALID_ROUTE }, auth);
     // ['a','a'] has the right length and every id is known, but it leaves b
     // unpositioned and gives a and b the same slot.
-    const res = await call('PUT', '/api/routes-order', { ids: ['a', 'a'] }, { cookie });
+    const res = await call('PUT', '/api/routes-order', { ids: ['a', 'a'] }, auth);
     expect(res.status).toBe(400);
   });
 });
 
 describe('numeric query boundaries', () => {
   const auditLimit = async (query: string): Promise<number> => {
-    const cookie = await adminCookie();
-    const res = await call('GET', `/api/audit${query}`, undefined, { cookie });
+    const auth = await signInAdmin();
+    const res = await call('GET', `/api/audit${query}`, undefined, auth);
     expect(res.status).toBe(200);
     return ((await res.json()) as { entries: unknown[] }).entries.length;
   };
@@ -172,7 +145,7 @@ describe('numeric query boundaries', () => {
 
 describe('corrupt stored state', () => {
   it('reports unparsable stored JSON instead of throwing a 500', async () => {
-    const cookie = await adminCookie();
+    const auth = await signInAdmin();
     // A definition column can only get here by hand or by a failed migration,
     // but when it does, listing routes must degrade rather than 500.
     await testEnv.DB.prepare(
@@ -180,42 +153,48 @@ describe('corrupt stored state', () => {
     )
       .bind('broken', '{not json', 'test')
       .run();
-    const res = await call('GET', '/api/routes', undefined, { cookie });
+    const res = await call('GET', '/api/routes', undefined, auth);
     expect(res.status).toBe(200);
   });
 
-  it('treats a malformed stored password hash as a failed login, not a crash', async () => {
-    await expect(verifyPassword('anything', 'not-a-hash')).resolves.toBe(false);
-    await expect(verifyPassword('anything', 'pbkdf2$abc$xx$yy')).resolves.toBe(false);
-    await expect(verifyPassword('anything', '')).resolves.toBe(false);
-  });
-
   it('treats a corrupt settings value as absent rather than throwing', async () => {
-    const cookie = await adminCookie();
+    const auth = await signInAdmin();
     await testEnv.DB.prepare('INSERT INTO settings (key, value) VALUES (?, ?)')
       .bind('defaults', '{not json')
       .run();
-    const res = await call('GET', '/api/defaults', undefined, { cookie });
+    const res = await call('GET', '/api/defaults', undefined, auth);
     expect(res.status).toBe(200);
   });
 });
 
-describe('session edge cases', () => {
-  it('ignores a cookie header that names the session with an empty value', async () => {
-    await expect(resolveSession(testEnv.DB, 'jouska_session=')).resolves.toBeUndefined();
+describe('when the row disappears from under a caller', () => {
+  it('stops recognising a caller whose row was deleted', async () => {
+    const auth = await signInAdmin();
+    // A second row so the table does not empty — that case is below, and it
+    // behaves differently on purpose.
+    await testEnv.DB.prepare("INSERT INTO users (subject, role, created_at) VALUES (?, 'admin', ?)")
+      .bind('spare@example.com', Math.floor(Date.now() / 1000))
+      .run();
+    await testEnv.DB.prepare('DELETE FROM users WHERE subject = ?').bind(ROOT).run();
+
+    const res = await call('GET', '/api/routes', undefined, auth);
+    expect(res.status).toBe(403);
+    expect((await res.json()) as unknown).toMatchObject({ error: 'no_panel_account' });
   });
 
-  it('does not match a cookie whose name merely ends with the session name', async () => {
-    // `other_jouska_session=x` startsWith-matches nothing, but a substring
-    // search would find it; assert the distinction holds.
-    await expect(resolveSession(testEnv.DB, 'other_jouska_session=x')).resolves.toBeUndefined();
-  });
-
-  it('rejects a session whose user was deleted', async () => {
-    const cookie = await adminCookie();
+  it('reopens first-run provisioning when the table is emptied out of band', async () => {
+    const auth = await signInAdmin();
     await testEnv.DB.prepare('DELETE FROM users').run();
-    const res = await call('GET', '/api/routes', undefined, { cookie });
-    expect(res.status).toBe(401);
+
+    // Not a bug, and the reason `DELETE /api/users/:id` refuses to remove the
+    // last row: an empty table means the next address Access admits becomes
+    // admin. Asserted here so that stops being a surprise.
+    const res = await call('GET', '/api/routes', undefined, auth);
+    expect(res.status).toBe(200);
+    const row = await testEnv.DB.prepare('SELECT role FROM users WHERE subject = ?')
+      .bind(ROOT)
+      .first<{ role: string }>();
+    expect(row?.role).toBe('admin');
   });
 });
 
@@ -257,8 +236,8 @@ describe('compile boundaries', () => {
 
 describe('empty and confirmation states over the API', () => {
   it('reports a fresh deployment as empty, not as a broken config', async () => {
-    const cookie = await adminCookie();
-    const res = await call('GET', '/api/preview', undefined, { cookie });
+    const auth = await signInAdmin();
+    const res = await call('GET', '/api/preview', undefined, auth);
     const body = (await res.json()) as { ok: boolean; empty?: boolean };
     expect(res.status).toBe(200);
     expect(body.ok).toBe(false);
@@ -266,27 +245,27 @@ describe('empty and confirmation states over the API', () => {
   });
 
   it('refuses to publish an empty table and says so as empty', async () => {
-    const cookie = await adminCookie();
-    const res = await call('POST', '/api/publish', {}, { cookie });
+    const auth = await signInAdmin();
+    const res = await call('POST', '/api/publish', {}, auth);
     expect(res.status).toBe(422);
     expect(((await res.json()) as { empty?: boolean }).empty).toBe(true);
   });
 
   it('demands confirmation for a dangerous route before writing KV', async () => {
-    const cookie = await adminCookie();
+    const auth = await signInAdmin();
     await call(
       'PUT',
       '/api/routes/dang',
       { definition: { ...VALID_ROUTE, upstreamHeaders: { 'x-secret': 'v' } } },
-      { cookie },
+      auth,
     );
     // Without `confirm`, publish must refuse -- and must not have written KV.
-    const refused = await call('POST', '/api/publish', {}, { cookie });
+    const refused = await call('POST', '/api/publish', {}, auth);
     expect(refused.status).toBe(409);
     expect(((await refused.json()) as { error?: string }).error).toBe('confirmation_required');
     expect(await testEnv.CONFIG_KV.get('routes')).toBeNull();
     // With it, the same publish succeeds.
-    const accepted = await call('POST', '/api/publish', { confirm: true }, { cookie });
+    const accepted = await call('POST', '/api/publish', { confirm: true }, auth);
     expect(accepted.status).toBe(200);
     expect(await testEnv.CONFIG_KV.get('routes')).not.toBeNull();
   });
@@ -329,4 +308,9 @@ describe('danger classification boundaries', () => {
     const empty = dangerFlags({ bodyRewrite: { replace: [] } });
     expect(empty.some((f) => f.path === 'bodyRewrite.replace')).toBe(false);
   });
+});
+
+beforeAll(async () => {
+  door = await openAccessDoor('edge-suite');
+  appEnv = door.env();
 });

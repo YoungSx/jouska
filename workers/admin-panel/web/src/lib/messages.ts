@@ -43,31 +43,6 @@ export const t = {
     viewerReadonly: '观察者身份，只读',
     logout: '退出登录',
     menu: '账号菜单',
-    changePassword: '修改密码…',
-  },
-
-  /**
-   * 修改自己的密码。当前会话保留（服务端只吊销其他会话），所以成功后的下一句话
-   * 是「其他标签页要重新登录」而不是「请重新登录」—— 这个区别是真实的安全承诺，
-   * 措辞不能含糊。
-   */
-  changePassword: {
-    title: '修改密码',
-    lead: '改完之后，其他标签页和其他设备的登录会失效，当前这一页不受影响。',
-    current: '当前密码',
-    new: '新密码',
-    confirm: '再输一遍新密码',
-    mismatch: '两次输入的新密码不一样',
-    action: '确认修改',
-    pending: '修改中…',
-    ok: '密码已修改，其他标签页需要重新登录。',
-    errors: {
-      wrong_password: '当前密码不对。',
-      no_password: '这个账号不是用密码登录的（比如走了 SSO），改不了密码。',
-      locked: (minutes: number) => `试错太多次，账号已锁定，${minutes} 分钟后再试。`,
-      invalid_input: (min: number, max: number) => `新密码需要 ${min}-${max} 位。`,
-      unknown: (message: string) => `修改失败：${message}`,
-    },
   },
 
   /**
@@ -76,14 +51,15 @@ export const t = {
    */
   users: {
     title: '用户',
-    description: '账号、角色与会话。停用是可逆的，删除不可逆。',
+    description: '账号与角色。停用是可逆的，删除不可逆。',
     refresh: '刷新',
     create: '新建用户',
+    subject: '账号',
+    subjectHint: '与 Cloudflare Access 认到的邮箱一字不差，否则这个人进来还是查无此人。',
     columns: {
       subject: '账号',
       role: '角色',
       status: '状态',
-      sessions: '会话',
       createdAt: '创建时间',
       lastSeen: '最后登录',
       actions: '操作',
@@ -91,76 +67,55 @@ export const t = {
     status: {
       normal: '正常',
       disabled: '已停用',
-      locked: '已锁定',
-      lockedUntil: (when: string) => `锁定至 ${when}`,
       never: '从未登录',
     },
     roleAdmin: '管理员',
     roleViewer: '观察者',
     selfNote: '这是你自己的账号',
     createTitle: '新建用户',
-    createDescription: '密码请通过安全渠道交给对方；对方首次登录后可自行修改。',
+    createDescription: '填对方在 Cloudflare Access 里的邮箱。没有密码要设——门在平台那边。',
     editTitle: (subject: string) => `编辑用户 ${subject}`,
     editRole: '角色',
     editRoleHint: '降级最后一个可用管理员会被拒绝 —— 面板需要至少一个能开门的人。',
     editDisabled: '停用这个账号',
-    editDisabledHint: '停用后无法登录，已有会话立刻失效；可以随时恢复。',
-    unlock: '解除锁定',
-    unlockHint: '清除失败计数并立即解锁。',
+    editDisabledHint: '停用后立刻进不来，Access 那边放不放人都一样；可以随时恢复。',
     save: '保存修改',
     rowMenu: (subject: string) => `${subject} 的操作`,
     edit: '编辑',
     remove: '删除',
     deleteTitle: (subject: string) => `删除用户 ${subject}？`,
-    deleteBody: '立即生效：会话全部作废，账号不可恢复。最后一个用户不可删除。',
+    deleteBody: '立即生效，不可恢复。最后一个用户不可删除。',
     deleteSelfNote: '这是你自己的账号。删除后你会立刻退出。',
     confirm: '删除',
-    created: (subject: string) => `${subject} 已创建，密码请通过安全渠道交给对方。`,
+    created: (subject: string) => `${subject} 已创建，对方现在可以通过 Access 进来了。`,
     updated: (subject: string) => `${subject} 已更新`,
     deleted: (subject: string) => `${subject} 已删除`,
-    unlocked: (subject: string) => `${subject} 已解锁`,
     errors: {
       subject_taken: '这个账号名已经有人用了。',
       last_admin: '面板需要至少一个可用的管理员，这个改动被拒绝。',
       last_user: '至少要保留一个用户 —— 删空会重新打开首次部署入口。',
       not_found: '这个用户已经不存在了，刷新一下列表。',
       forbidden: '这个操作需要管理员权限。',
-      invalid_input: '输入不合法：账号 1-128 字符，密码 12-1024 位，角色是 admin 或 viewer。',
-      no_password: '这个账号不是用密码登录的（比如走了 SSO）。',
+      invalid_input: '输入不合法：账号 1-128 字符，角色是 admin 或 viewer。',
       unknown: (message: string) => `操作失败：${message}`,
     },
     loadFailed: (message: string) => `加载用户列表失败：${message}`,
     empty: {
       title: '没有其他用户',
-      description: '新建一个用户，把账号和密码通过安全渠道交给对方。',
+      description: '新建一个用户，填对方在 Cloudflare Access 里的邮箱。',
     },
   },
 
-  auth: {
-    loginTitle: '登录',
-    loginAction: '登录',
-    loginPending: '登录中…',
-    bootstrapTitle: '首次部署',
-    bootstrapLead: '数据库里还没有账号。创建第一个管理员，之后这个入口会永久关闭。',
-    bootstrapAction: '创建管理员并登录',
-    bootstrapPending: '创建中…',
-    toBootstrap: '首次部署？创建管理员账号',
-    toLogin: '已经有账号了，去登录',
-    subject: '账号',
-    password: '密码',
-    passwordHint: (min: number) => `至少 ${min} 位`,
-    bootstrapOk: '管理员已创建，正在登录…',
-    errors: {
-      invalid_credentials: '账号或密码不对。',
-      locked: (minutes: number) => `试错太多次，账号已锁定，${minutes} 分钟后再试。`,
-      account_disabled: '这个账号已被停用。',
-      already_bootstrapped: '已经初始化过了，直接登录即可。',
-      invalid_input: (min: number) => `账号不能为空，密码至少 ${min} 位。`,
-      missing_origin: '请求被同源校验拦下了。请从面板自身的地址访问。',
-      cross_origin: '请求被同源校验拦下了。请从面板自身的地址访问。',
-      unknown: (message: string) => `登录失败：${message}`,
-    },
-    lockoutNote: (max: number, minutes: number) => `连续 ${max} 次失败会锁定 ${minutes} 分钟。`,
+  /**
+   * 请求身上连 Access 身份都没有。
+   *
+   * 两种成因说的是同一句话：这一页给不出任何能改变现状的动作。所以文案不提「重
+   * 试」，也不提凭据 —— 要动的是 Access 应用的配置，不在这个浏览器里。
+   */
+  accessRequired: {
+    title: '这个面板走 Cloudflare Access',
+    lead: '请求里没有 Access 身份，所以面板不知道你是谁，也没有登录表单可以给你。',
+    hint: '要么这个部署还没接上 Access 应用，要么这条路径绕过了它。请找部署的人确认。',
   },
 
   /**
@@ -174,42 +129,6 @@ export const t = {
     lead: (email: string) => `Cloudflare Access 认了 ${email}，但面板的用户表里没有这个地址。`,
     hint: '让面板的管理员在「用户」页面把这个地址加进来，然后刷新本页。',
     refresh: '刷新',
-  },
-
-  /**
-   * 带外恢复。密码丢了或账号锁死时用 settings 表里的一次性令牌重置。
-   *
-   * 服务端刻意把「没开窗口 / 令牌不对 / 已过期 / 账号名不对」压成同一个错误码，
-   * 所以这里的失败文案必须把四种可能一起列出来 —— 替它猜是哪一种，就把它刻意
-   * 隐藏的信息泄回去了。
-   */
-  recover: {
-    toggle: '密码丢了？用恢复令牌重置',
-    title: '用恢复令牌重置密码',
-    lead: '需要能访问数据库的人先开一个一次性令牌窗口。令牌用过即失效。',
-    subject: '要重置的账号',
-    token: '恢复令牌',
-    tokenHint: '至少 16 位',
-    newPassword: '新密码',
-    submit: '重置并登录',
-    pending: '重置中…',
-    ok: '密码已重置，正在登录…',
-    howToTitle: '怎么开这个窗口',
-    howToLead: '有账号权限的人执行下面任一种：',
-    howToCi: 'CI：手动触发 admin-reset 工作流，按提示打字确认。',
-    howToSql: '或者直接对 D1 写一行 settings（把占位换成真实值）：',
-    sqlNote: '教学示意：把 <> 里的占位换成真实值再执行。',
-    sqlTokenNote: (tokenLabel: string, tokenHint: string) =>
-      `-- ${tokenLabel}（${tokenHint}；一次性，用过即失效）`,
-    sqlExpiresAtNote: '过期时间，毫秒级时间戳；过期之后这个令牌不再可用',
-    sqlPlaceholderToken: '你自己生成的令牌',
-    sqlPlaceholderSubject: '账号名',
-    errors: {
-      recovery_unavailable:
-        '没能重置。可能是：还没有人开恢复窗口、令牌写错了、令牌已过期，或者账号名和开窗口时指定的不一致。',
-      invalid_input: (min: number) => `新密码至少 ${min} 位，令牌至少 16 位。`,
-      unknown: (message: string) => `重置失败：${message}`,
-    },
   },
 
   /** 草稿与生产的区别是这个面板的核心概念，措辞在各处必须一致。 */
@@ -751,6 +670,8 @@ export const t = {
       'config.publish': '发布配置',
       'config.rollback': '回滚配置',
       'config.discard': '舍弃草稿',
+      // 密码那扇门关了之后这两个动作不会再写进来，标签留着是为了还在库里的历史行 ——
+      // 删掉只会让旧记录退化成裸的动作码。
       'auth.password': '修改密码',
       'auth.recover': '恢复令牌重置',
       'user.create': '新建用户',

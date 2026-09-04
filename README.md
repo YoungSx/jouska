@@ -1826,15 +1826,15 @@ These are Workers limits, not choices, and they shape the architecture:
 `workers/admin-panel` is the operator UI for the remote route table: a Hono API
 and a no-build vanilla SPA deployed as one Worker with static assets. It
 supports multiple users out of the box, and stays inside the free tier (D1 for
-users, sessions and the audit log; one KV key for the published document).
+users and the audit log; one KV key for the published document).
 
 ### Sign-in
 
-Two doors, and they are not equal.
+One door: Cloudflare Access.
 
-**Cloudflare Access, preferred.** Set `ACCESS_TEAM` and `ACCESS_AUD` and the
-platform authenticates every request before this Worker runs. There is no
-password to store and no hash to budget CPU for, and adding a login method —
+Set `ACCESS_TEAM` and `ACCESS_AUD` and the platform authenticates every request
+before this Worker runs. There is no password to store and no hash to budget CPU
+for, and adding a login method —
 Cloudflare's own identity provider, a one-time email PIN, GitHub, Google, Okta,
 generic OIDC, generic SAML — is a change in the Zero Trust dashboard rather than
 a change in this repository. Hardware keys are Access's per-application MFA, not
@@ -1862,20 +1862,24 @@ Both variables or neither. A team name without an audience proves a token was
 signed by the right organisation but not that it was issued for _this_
 application, and any other app in the same team could then admit a caller.
 
-**Password, the older door.** Without those two variables the panel
-authenticates itself: the first caller to `/api/auth/bootstrap` becomes the
-initial admin, sessions live in D1 as SHA-256 digests of a 32-byte cookie token,
-five consecutive failures park an account for 15 minutes, and a lost password is
-recovered out of band through a one-time token an operator writes into
-`settings`.
+There is no second door. The panel used to carry its own password login —
+bootstrap, cookie sessions in D1, a lockout counter, an out-of-band recovery
+token — and that half is gone: no `/api/auth/login`, no `sessions` table, no
+password column. What replaces it is not a smaller login form but the absence of
+one, and the absence is the feature. A refusal is final, so nothing a request
+carries can shop for a softer opinion, and turning authentication off is a change
+in the Zero Trust dashboard rather than something an attacker attempts per
+request. An unobtainable JWKS answers `503`, never `401` — without verification
+material there is no safe way to say yes — and a deployment whose Access
+application is missing is locked out rather than quietly downgraded.
 
-The two coexist so a deployment can migrate without a flag day, and the order
-between them is load-bearing: a credential that was _presented_ and failed is
-refused outright, and only an absent one falls through to the cookie. Otherwise
-a bad token could shop for a second opinion, and turning Access off would be
-something an attacker does per request instead of something the operator does in
-the dashboard. An unobtainable JWKS answers `503`, never `401` — without
-verification material there is no safe way to say yes.
+Two consequences worth stating plainly. Signing out is the platform's to
+perform: `POST /api/auth/logout` destroys nothing and returns the team's
+sign-out URL, because `CF_Authorization` lives on the team domain and a panel
+that answered "logged out" without sending the browser there would put the
+operator back in on the next reload. And emptying the `users` table reopens
+first-run provisioning to whichever address the Access policy admits next, which
+is why `DELETE /api/users/:id` refuses to remove the last row.
 
 ### MCP access
 
@@ -1887,9 +1891,10 @@ never recovered. Every token carries a fixed expiry, 365 days at most, and can
 be revoked at any time.
 
 MCP answers on `/mcp`, same origin as the panel, authenticated by
-`Authorization: Bearer <token>` and nothing else — the Cookie session and its
-same-origin rules do not apply there, and a browser cookie cannot stand in for a
-token. Scopes are granted per token:
+`Authorization: Bearer <token>` and nothing else. The panel's own door does not
+open this one: an Access token proves a human at a browser, and accepting it here
+would turn every operator's platform session into an MCP key nobody can revoke by
+id. Scopes are granted per token:
 
 - **`config:read`** — the draft, the defaults, and preview output.
 - **`config:write`** — edits the draft. It does not publish.
@@ -1911,7 +1916,8 @@ against the body — a header and a body that disagree are two different request
 to whatever sits in between, so they are refused rather than reconciled. A
 client that opens with `initialize` is answered with the version list instead,
 which is the only diagnostic a handshake-era client can show its user. `GET` and
-`DELETE` answer `405` (the revision removed the GET stream and sessions), a body
+`DELETE` answer `405` (the revision removed the GET stream and protocol-level
+sessions), a body
 that is not `application/json` answers `415`, and one over 256 kB answers `413`
 while it is still arriving.
 
@@ -2023,10 +2029,11 @@ what a screen for authoring `match.host` should show.
 - **The proxy keeps winning merges.** The panel writes the same document shape
   `resolveConfig` reads, so `merge: 'byId'` with a code table continues to
   work: code wins ties, git stays the reviewable fallback.
-- **Sessions are D1 rows, not JWTs.** Revocation is instant (logout deletes the
-  row), passwords are PBKDF2 with 30k iterations — sized for the Workers CPU
-  budget, verified by a timing test — and login locks after five consecutive
-  failures.
+- **Authentication is not this Worker's job.** Cloudflare Access answers _who_
+  before the Worker runs; the `users` table answers _what they may do_. Keeping
+  those two apart is what lets `role`, `disabled` and the last-admin guard mean
+  something — collapse them and every address the Access policy admits becomes
+  an admin.
 - **CSRF is a server-side same-origin check** on every mutation; the SPA is
   same-origin by construction and needs no tokens.
 

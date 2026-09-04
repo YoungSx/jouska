@@ -1,17 +1,12 @@
 /**
  * Auth and CSRF middleware for the admin API.
  *
- * Two doors, and they are not equal. When `ACCESS_TEAM` and `ACCESS_AUD` are
- * set, Cloudflare Access has already authenticated every request before this
- * Worker ran, and the panel only has to decide what that identity is allowed to
- * do. The session cookie is the older door, kept for deployments that have not
- * turned Access on yet — a migration state, not a permanent equal.
- *
- * The order between them is load-bearing. A credential that was *presented*
- * and did not hold up is refused outright; only an absent one falls through to
- * the cookie. Otherwise a bad token could shop for a second opinion, and
- * turning Access off would be something an attacker could do per-request
- * instead of something the operator does in the dashboard.
+ * One door: Cloudflare Access. With `ACCESS_TEAM` and `ACCESS_AUD` set, the
+ * platform has already authenticated every request before this Worker ran, and
+ * the panel only has to decide what that identity is allowed to do. There is no
+ * second credential to fall through to, which is the point — nothing an
+ * attacker presents can shop for a softer opinion, and no per-request input can
+ * turn authentication off.
  *
  * CSRF posture: the SPA and the API share an origin, and every mutating
  * request must carry a same-origin `Origin` header. The check is a deny on
@@ -20,7 +15,6 @@
  */
 import type { Context } from 'hono';
 import { createMiddleware } from 'hono/factory';
-import { resolveSession } from './auth.js';
 import type { AppEnv, Vars } from './env.js';
 import { resolveIdentity, type AccessIdentity, type AccessOverrides } from './identity.js';
 import { findUserBySubject, provisionFirstAdmin, touchLastSeen, type UserRecord } from './store.js';
@@ -69,8 +63,11 @@ const executionCtxOf = (c: Context<AppEnv>): unknown => {
 
 /**
  * The panel account behind an Access identity, provisioning it only on first
- * run. `provisionFirstAdmin` refuses once the table is non-empty, so an
- * unknown caller past that point stays unknown here.
+ * run. `provisionFirstAdmin` refuses once the table is non-empty, so an unknown
+ * caller past that point stays unknown here. That split is deliberate: Access
+ * answers *who*, the users table answers *what they may do*, and folding the
+ * second into the first would silently make every address an Access policy
+ * admits into a panel admin.
  */
 const accountFor = async (
   db: D1Database,
@@ -127,7 +124,7 @@ export const authenticate = async (c: Context<AppEnv>): Promise<AuthOutcome> => 
     await touchLastSeen(c.env.DB, record.id);
     return {
       ok: true,
-      user: { userId: record.id, subject: record.subject, role: record.role, via: 'access' },
+      user: { userId: record.id, subject: record.subject, role: record.role },
     };
   }
 
@@ -140,19 +137,11 @@ export const authenticate = async (c: Context<AppEnv>): Promise<AuthOutcome> => 
   if (access.reason === 'forbidden') {
     return { ok: false, status: 403, error: 'forbidden' };
   }
-  if (access.reason === 'invalid' || access.reason === 'too_long') {
-    return { ok: false, status: 401, error: 'unauthenticated' };
-  }
-
-  // `not_configured` (Access is off) or `missing` (no token on this request):
-  // nothing was presented, so the older door is still open.
-  // resolveSession does its own cookie-name matching, so it wants the raw
-  // Cookie header — getCookie would strip the name it needs to see.
-  const session = await resolveSession(c.env.DB, c.req.header('cookie'));
-  if (session === undefined) {
-    return { ok: false, status: 401, error: 'unauthenticated' };
-  }
-  return { ok: true, user: { ...session, via: 'session' } };
+  // Everything still standing answers the same way, because there is nothing
+  // else to try: a token that did not verify (`invalid`, `too_long`), no token
+  // at all (`missing`), or Access never configured (`not_configured`). One
+  // refusal, no second door to hint at.
+  return { ok: false, status: 401, error: 'unauthenticated' };
 };
 
 /** Resolves the caller to `c.var.user`, or refuses with the reason why. */

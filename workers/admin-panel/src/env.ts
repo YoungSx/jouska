@@ -67,13 +67,6 @@ export interface Vars {
     userId: number;
     subject: string;
     role: 'admin' | 'viewer';
-    /**
-     * Which door proved this caller: the platform's Access token, or the
-     * panel's own session cookie. Recorded because the two coexist while a
-     * deployment migrates, and "who changed the route table, through which
-     * door" is a question the audit log should be able to answer.
-     */
-    via: 'access' | 'session';
   };
 }
 

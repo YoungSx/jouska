@@ -3,22 +3,13 @@
  *
  * These are not schema validation — `configSchema` does that for route
  * *shape*. These are the limits that keep unbounded input from becoming a
- * resource problem: a 200 kB password is a CPU bill on the free tier's 10 ms
- * budget, and a 200 kB route definition is a KV document that stops fitting.
+ * resource problem: a 200 kB route definition is a KV document that stops
+ * fitting, and a 200 kB login name is an audit row nobody can read.
  * Rejecting at the edge costs one length check.
  */
 
 /** Longest accepted login name. Generous for an email, far below a payload. */
 export const MAX_SUBJECT_LENGTH = 128;
-
-/**
- * Longest accepted password. PBKDF2 cost is dominated by iterations, not input
- * length, but the input is still hashed and copied — and no human types 1 kB.
- */
-export const MAX_PASSWORD_LENGTH = 1024;
-
-/** Shortest accepted password; short ones are the ones that get guessed. */
-export const MIN_PASSWORD_LENGTH = 12;
 
 /**
  * Longest accepted single route definition, serialized. The KV value limit is

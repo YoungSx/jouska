@@ -89,17 +89,8 @@ const deleteMessageFor = (error: ApiError): string => {
   }
 };
 
-/** 锁定与停用是两种不同的病：前者是服务的保护，后者是人的决定 —— 不共用文案。 */
+/** 停用是人的决定，也是这一页唯一能记录的非正常状态 —— 锁定随密码门一起消失了。 */
 const statusBadge = (user: UserEntry) => {
-  if (user.lockedUntil !== null && user.lockedUntil * 1000 > Date.now()) {
-    return (
-      <Badge variant="destructive">
-        <span title={t.users.status.lockedUntil(timeExact(user.lockedUntil))}>
-          {t.users.status.locked}
-        </span>
-      </Badge>
-    );
-  }
   if (user.disabled) {
     return <Badge variant="secondary">{t.users.status.disabled}</Badge>;
   }
@@ -288,7 +279,6 @@ const UsersTable = ({ users, selfSubject, onEdit, onDelete }: UsersTableProps) =
           <TableHead className="w-36">{t.users.columns.subject}</TableHead>
           <TableHead className="w-20">{t.users.columns.role}</TableHead>
           <TableHead className="w-24">{t.users.columns.status}</TableHead>
-          <TableHead className="w-16">{t.users.columns.sessions}</TableHead>
           <TableHead className="w-36">{t.users.columns.createdAt}</TableHead>
           <TableHead className="w-36">{t.users.columns.lastSeen}</TableHead>
           <TableHead className="w-12">
@@ -311,7 +301,6 @@ const UsersTable = ({ users, selfSubject, onEdit, onDelete }: UsersTableProps) =
                 {user.role === 'admin' ? t.users.roleAdmin : t.users.roleViewer}
               </TableCell>
               <TableCell>{statusBadge(user)}</TableCell>
-              <TableCell className="text-xs">{String(user.sessions)}</TableCell>
               <TableCell className="text-muted-foreground text-xs">
                 <Tooltip>
                   <TooltipTrigger render={<span>{timeAgo(user.createdAt)}</span>} />

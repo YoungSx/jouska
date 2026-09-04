@@ -9,10 +9,11 @@
  * so the tests also document what a clean slate means for this schema.
  */
 import { applyD1Migrations, env } from 'cloudflare:test';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import worker from './index.js';
 import proxy, { __resetConfigCache } from '../../reverse-proxy/index.js';
 import type { AppEnv, Env } from './env.js';
+import { openAccessDoor, type AccessDoor } from './test-access.js';
 
 /**
  * The pool types `env` from the wrangler config; without generated
@@ -21,7 +22,8 @@ import type { AppEnv, Env } from './env.js';
  */
 const testEnv = env as unknown as Env;
 /** Hono's typed env; the Variables bag is empty until the auth middleware runs. */
-const appEnv = testEnv as unknown as AppEnv;
+let door: AccessDoor;
+let appEnv: AppEnv;
 
 interface HeadersLike {
   get(name: string): string | null;
@@ -65,46 +67,22 @@ const get = async (path: string, headers: Record<string, string> = {}): Promise<
     {} as ExecutionContext,
   ) as unknown as Promise<ResponseLike>;
 
-let adminCookie = '';
-let viewerCookie = '';
+const ROOT = 'root@example.com';
+const VIEWER = 'viewer@example.com';
 
-const login = async (subject: string, password: string): Promise<ResponseLike> => {
-  const res = await call('POST', '/api/auth/login', { subject, password });
-  const setCookie = res.headers.get('set-cookie') ?? '';
-  expect(/jouska_session=([^;]+)/.test(setCookie), 'login must set the session cookie').toBe(true);
-  return {
-    status: res.status,
-    headers: {
-      get: (n: string) => (n.toLowerCase() === 'set-cookie' ? setCookie : res.headers.get(n)),
-    },
-    json: () => res.json(),
-    text: () => res.text(),
-  };
-};
-
-const cookieFrom = (res: ResponseLike): string => {
-  const raw = res.headers.get('set-cookie') ?? '';
-  return `jouska_session=${/jouska_session=([^;]+)/.exec(raw)?.[1] ?? ''}`;
-};
-
-const bootstrapAdmin = async (): Promise<void> => {
-  const res = await call('POST', '/api/auth/bootstrap', {
-    subject: 'root',
-    password: 'correct-horse-battery',
-  });
-  expect(res.status, JSON.stringify(await res.json())).toBe(201);
+/** Admin headers; the first request on an empty table provisions the row. */
+const signInAdmin = async (): Promise<Record<string, string>> => {
+  const auth = await door.headers(ROOT);
+  const res = await get('/api/auth/me', auth);
+  expect(res.status, await res.text()).toBe(200);
+  return auth;
 };
 
 /** Creates the viewer through the panel's own admin API — the operator path. */
-// 参数名避开模块级 adminCookie（no-shadow）：这里直接收 auth 对象，与测试体同款。
-const createViewer = async (auth: { cookie: string }): Promise<void> => {
-  const res = await call(
-    'POST',
-    '/api/users',
-    { subject: 'viewer', password: 'viewer-password-123', role: 'viewer' },
-    auth,
-  );
+const createViewer = async (auth: Record<string, string>): Promise<Record<string, string>> => {
+  const res = await call('POST', '/api/users', { subject: VIEWER, role: 'viewer' }, auth);
   expect(res.status, JSON.stringify(await res.json())).toBe(201);
+  return await door.headers(VIEWER);
 };
 
 const theRoute = {
@@ -122,126 +100,49 @@ describe('admin panel end-to-end', () => {
     // `revisions` belongs here too: publish writes a row per revision, and a
     // leftover row makes the next test's counter start one higher — the
     // "revision 2" assertion below would red on the whole-file run only.
-    for (const table of [
-      'audit_log',
-      'sessions',
-      'routes',
-      'settings',
-      'mcp_tokens',
-      'users',
-      'revisions',
-    ]) {
+    for (const table of ['audit_log', 'routes', 'settings', 'mcp_tokens', 'users', 'revisions']) {
       await testEnv.DB.prepare(`DELETE FROM ${table}`).run();
     }
     // D1 is not the only durable state: publish writes KV, and a leftover
     // document would make the "nothing stored" assertions below lie.
     await testEnv.CONFIG_KV.delete('routes');
-    adminCookie = '';
-    viewerCookie = '';
     __resetConfigCache();
   });
 
-  it('health is open, everything else needs a session', async () => {
+  it('health is open, everything else needs an Access identity', async () => {
     expect((await get('/api/health')).status).toBe(200);
     expect((await get('/api/routes')).status).toBe(401);
-    expect((await call('POST', '/api/auth/login', { subject: 'x', password: 'y' })).status).toBe(
-      401,
-    );
+    // No endpoint accepts a credential any more, so there is nothing to POST at.
+    expect((await call('POST', '/api/publish', {})).status).toBe(401);
   });
 
-  it('bootstrap is once-only and enforces the password floor', async () => {
-    expect(
-      (await call('POST', '/api/auth/bootstrap', { subject: 'root', password: 'short' })).status,
-    ).toBe(400);
-    await bootstrapAdmin();
-    expect(
-      (
-        await call('POST', '/api/auth/bootstrap', {
-          subject: 'eve',
-          password: 'another-long-password',
-        })
-      ).status,
-    ).toBe(409);
+  it('provisions the first identity only, and refuses the second by name', async () => {
+    const auth = await signInAdmin();
+    expect((await get('/api/routes', auth)).status).toBe(200);
+
+    const stranger = await get('/api/routes', await door.headers('eve@example.com'));
+    expect(stranger.status).toBe(403);
+    expect((await stranger.json()) as unknown).toMatchObject({ error: 'no_panel_account' });
   });
 
-  it('/me reports login state and whether bootstrap is still open', async () => {
-    const before = (await get('/api/auth/me')).json() as Promise<{
-      user: unknown;
-      bootstrapable?: boolean;
-    }>;
-    expect((await before).user).toBeNull();
-    expect((await before).bootstrapable).toBe(true);
+  it('/me reports login state without asking the caller for anything', async () => {
+    const before = (await (await get('/api/auth/me')).json()) as { user: unknown };
+    expect(before.user).toBeNull();
 
-    await bootstrapAdmin();
-    const after = (await get('/api/auth/me')).json() as Promise<{
-      user: unknown;
-      bootstrapable?: boolean;
-    }>;
-    expect((await after).user).toBeNull();
-    expect((await after).bootstrapable).toBe(false);
+    const auth = await signInAdmin();
+    const after = (await (await get('/api/auth/me', auth)).json()) as {
+      user: { subject: string; role: string } | null;
+    };
+    expect(after.user).toMatchObject({ subject: ROOT, role: 'admin' });
   });
 
-  it('wrong passwords never reveal which part was wrong', async () => {
-    await bootstrapAdmin();
-    expect(
-      (
-        await call('POST', '/api/auth/login', {
-          subject: 'nobody',
-          password: 'correct-horse-battery',
-        })
-      ).status,
-    ).toBe(401);
-    expect(
-      (await call('POST', '/api/auth/login', { subject: 'root', password: 'wrong-password-long' }))
-        .status,
-    ).toBe(401);
-  });
-
-  it('locks the account after five consecutive failures and unlocks on success', async () => {
-    await bootstrapAdmin();
-    for (let i = 0; i < 5; i += 1) {
-      expect(
-        (
-          await call('POST', '/api/auth/login', {
-            subject: 'root',
-            password: 'wrong-password-long',
-          })
-        ).status,
-      ).toBe(401);
-    }
-    const locked = await call('POST', '/api/auth/login', {
-      subject: 'root',
-      password: 'correct-horse-battery',
-    });
-    expect(locked.status).toBe(429);
-    const body = (await locked.json()) as { retryAfterSeconds?: number };
-    expect(body.retryAfterSeconds).toBeGreaterThan(0);
-    expect(body.retryAfterSeconds).toBeLessThanOrEqual(15 * 60);
-
-    // An operator clears the lockout; the next good password works and resets
-    // the counter.
-    await testEnv.DB.prepare(
-      'UPDATE users SET failed_attempts = 0, locked_until = NULL WHERE subject = ?',
-    )
-      .bind('root')
-      .run();
-    const ok = await login('root', 'correct-horse-battery');
-    expect(ok.status).toBe(200);
-    adminCookie = cookieFrom(ok);
-
-    // Wrong password again: the counter starts from zero, so no lock.
-    expect(
-      (await call('POST', '/api/auth/login', { subject: 'root', password: 'wrong-password-long' }))
-        .status,
-    ).toBe(401);
-  });
-
-  it('rejects cross-origin and missing-Origin mutations, login included', async () => {
-    await bootstrapAdmin();
+  it('rejects cross-origin and missing-Origin mutations, Access token or not', async () => {
+    const auth = await signInAdmin();
     const noOrigin = (await worker.fetch(
-      new Request(`${base}/api/auth/login`, {
-        method: 'POST',
-        body: JSON.stringify({ subject: 'root', password: 'correct-horse-battery' }),
+      new Request(`${base}/api/routes/app`, {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json', ...auth },
+        body: JSON.stringify({ definition: theRoute }),
       }),
       appEnv,
       {} as ExecutionContext,
@@ -249,20 +150,19 @@ describe('admin panel end-to-end', () => {
     expect(noOrigin.status).toBe(403);
 
     const evil = await call(
-      'POST',
-      '/api/auth/login',
-      { subject: 'root', password: 'correct-horse-battery' },
-      { origin: 'https://evil.test' },
+      'PUT',
+      '/api/routes/app',
+      { definition: theRoute },
+      { ...auth, origin: 'https://evil.test' },
     );
     expect(evil.status).toBe(403);
+    // Neither attempt wrote anything.
+    const after = (await (await get('/api/routes', auth)).json()) as { routes: unknown[] };
+    expect(after.routes).toHaveLength(0);
   });
 
   it('runs the full operator loop and the proxy serves what was published', async () => {
-    await bootstrapAdmin();
-    const loginRes = await login('root', 'correct-horse-battery');
-    expect(loginRes.status).toBe(200);
-    adminCookie = cookieFrom(loginRes);
-    const auth = { cookie: adminCookie };
+    const auth = await signInAdmin();
 
     // Unauthenticated reads are still closed even after bootstrap.
     expect((await get('/api/routes')).status).toBe(401);
@@ -333,9 +233,7 @@ describe('admin panel end-to-end', () => {
   });
 
   it('refuses a no-op publish, still publishes real changes, and self-heals a wiped KV', async () => {
-    await bootstrapAdmin();
-    adminCookie = cookieFrom(await login('root', 'correct-horse-battery'));
-    const auth = { cookie: adminCookie };
+    const auth = await signInAdmin();
     expect((await call('PUT', '/api/routes/app', { definition: theRoute }, auth)).status).toBe(200);
     const first = await call('POST', '/api/publish', { note: 'first' }, auth);
     expect(first.status).toBe(200);
@@ -372,14 +270,8 @@ describe('admin panel end-to-end', () => {
   });
 
   it('viewers may read but not write', async () => {
-    await bootstrapAdmin();
-    adminCookie = cookieFrom(await login('root', 'correct-horse-battery'));
-    await createViewer({ cookie: adminCookie });
-    const viewerLogin = await login('viewer', 'viewer-password-123');
-    expect(viewerLogin.status).toBe(200);
-    viewerCookie = cookieFrom(viewerLogin);
-    const vAuth = { cookie: viewerCookie };
-    const aAuth = { cookie: adminCookie };
+    const aAuth = await signInAdmin();
+    const vAuth = await createViewer(aAuth);
 
     expect((await get('/api/routes', vAuth)).status).toBe(200);
     expect((await call('PUT', '/api/routes/app', { definition: theRoute }, vAuth)).status).toBe(
@@ -395,9 +287,7 @@ describe('admin panel end-to-end', () => {
   });
 
   it('dangerous switches block publish without confirm', async () => {
-    await bootstrapAdmin();
-    adminCookie = cookieFrom(await login('root', 'correct-horse-battery'));
-    const auth = { cookie: adminCookie };
+    const auth = await signInAdmin();
     await call(
       'PUT',
       '/api/routes/risky',
@@ -425,9 +315,7 @@ describe('admin panel end-to-end', () => {
   });
 
   it('invalid routes fail preview and publish with row-mapped issues', async () => {
-    await bootstrapAdmin();
-    adminCookie = cookieFrom(await login('root', 'correct-horse-battery'));
-    const auth = { cookie: adminCookie };
+    const auth = await signInAdmin();
     // `/*` trips the panel's own prefix-semantics guard; a route with no host
     // and no path would fail the schema. Either must block publish.
     await call(
@@ -450,12 +338,25 @@ describe('admin panel end-to-end', () => {
     expect(kv).toBeNull();
   });
 
-  it('logout invalidates the session server-side', async () => {
-    await bootstrapAdmin();
-    adminCookie = cookieFrom(await login('root', 'correct-horse-battery'));
-    const auth = { cookie: adminCookie };
+  it('logout points at the platform, because that is where the session lives', async () => {
+    const auth = await signInAdmin();
     expect((await get('/api/routes', auth)).status).toBe(200);
-    expect((await call('POST', '/api/auth/logout', undefined, auth)).status).toBe(200);
-    expect((await get('/api/routes', auth)).status).toBe(401);
+
+    const out = await call('POST', '/api/auth/logout', undefined, auth);
+    expect(out.status).toBe(200);
+    expect((await out.json()) as unknown).toEqual({
+      ok: true,
+      accessLogout: `https://${door.team}.cloudflareaccess.com/cdn-cgi/access/logout`,
+    });
+
+    // And the token still works, which is the honest part: this panel cannot end
+    // an Access session, so it must not pretend the call did. Only visiting that
+    // URL ends it — until then `CF_Authorization` is still on the team domain.
+    expect((await get('/api/routes', auth)).status).toBe(200);
   });
+});
+
+beforeAll(async () => {
+  door = await openAccessDoor('e2e-suite');
+  appEnv = door.env();
 });

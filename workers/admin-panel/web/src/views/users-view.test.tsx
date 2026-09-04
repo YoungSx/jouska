@@ -20,9 +20,6 @@ const makeUser = (over: Partial<UserEntry>): UserEntry => ({
   disabled: false,
   createdAt: NOW - 86400,
   lastSeen: NOW - 60,
-  failedAttempts: 0,
-  lockedUntil: null,
-  sessions: 2,
   ...over,
 });
 
@@ -49,7 +46,7 @@ describe('UsersView', () => {
   beforeEach(() => {
     vi.spyOn(api, 'listUsers').mockResolvedValue([
       makeUser({ id: 1, subject: 'op', role: 'admin' }),
-      makeUser({ id: 2, subject: 'guest', role: 'viewer', lastSeen: null, sessions: 0 }),
+      makeUser({ id: 2, subject: 'guest', role: 'viewer', lastSeen: null }),
     ]);
     vi.spyOn(api, 'deleteUser').mockResolvedValue(undefined);
     vi.spyOn(api, 'updateUser').mockResolvedValue(undefined);
