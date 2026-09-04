@@ -187,7 +187,9 @@ export const auditStmt = (
       nowSeconds(),
       actor,
       action,
-      target,
+      // D1 rejects `undefined` outright (the vitest D1 shim does not, so only
+      // a real workerd run catches this); NULL is what the column wants.
+      target === undefined ? null : target,
       detail === undefined ? null : JSON.stringify(detail),
     );
 
