@@ -1832,9 +1832,20 @@ users and the audit log; one KV key for the published document).
 
 One door: Cloudflare Access.
 
-Set `ACCESS_TEAM` and `ACCESS_AUD` and the platform authenticates every request
-before this Worker runs. There is no password to store and no hash to budget CPU
-for, and adding a login method —
+Wiring it in takes one dashboard switch and two GitHub secrets. Turn on the
+Worker-level switch (Worker → Settings → Access policy → Restrict access) and
+its confirmation dialog shows the team domain and the application's AUD tag.
+Both are public, and neither is a secret to keep — they name where the signing
+keys live and which door the tokens were issued for. Put the team name — the
+`<team>` in `<team>.cloudflareaccess.com`, not the URL — and the AUD tag into
+the `ACCESS_TEAM` and `ACCESS_AUD` GitHub secrets, then deploy. (The dialog
+also names the JWKS endpoint, but only the team name is needed: the certs
+endpoint is derived from it.) With either variable missing the panel refuses
+everyone and the SPA says so, pointing the deployer at exactly these steps.
+
+With the variables set, the platform authenticates every request before this
+Worker runs. There is no password to store and no hash to budget CPU for, and
+adding a login method —
 Cloudflare's own identity provider, a one-time email PIN, GitHub, Google, Okta,
 generic OIDC, generic SAML — is a change in the Zero Trust dashboard rather than
 a change in this repository. Hardware keys are Access's per-application MFA, not
@@ -1955,12 +1966,17 @@ npm run cf:setup
 
 The CI `Deploy` workflow (on `v*` tags) runs the same provisioning step before
 migrating and deploying the panel, then the proxy — first deploy creates the
-resources, later deploys reuse them. Only the two Cloudflare secrets
-(`CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`) are needed; the patched ids
-live on the ephemeral runner, never in git. D1 migrations run first, then the
-Worker, then a `/api/health` probe must answer `{"ok":true}` on the deployed
-workers.dev URL before the job passes. Local development works against local
-simulators without any of this:
+resources, later deploys reuse them. Four secrets are read: the two Cloudflare
+ones (`CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`) plus `ACCESS_TEAM` and
+`ACCESS_AUD` for the panel's door (see Sign-in — a tag deploy without the
+Access pair deploys a panel that refuses everyone, and the job only warns).
+The patched ids live on the ephemeral runner, never in git. D1 migrations run
+first, then the Worker, then a `/api/health` probe must answer `{"ok":true}` on
+the deployed workers.dev URL before the job passes — once Access is switched
+on, an anonymous probe instead receives the 302/401/403 login redirect, and the
+job accepts that as "deployed and the door is closed": what it can no longer
+verify is health inside the door, which a signed-in browser visit checks.
+Local development works against local simulators without any of this:
 
 ```sh
 npx wrangler d1 migrations apply jouska-admin --local -c workers/admin-panel/wrangler.jsonc
