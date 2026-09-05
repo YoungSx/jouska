@@ -16,7 +16,7 @@ import { Switch } from '@/components/ui/switch';
 import { Textarea } from '@/components/ui/textarea';
 import { ApiError, NetworkError, api, type RevisionEntry } from '@/lib/api';
 import { t } from '@/lib/messages';
-import { DANGER_REASONS, LIMITS, type FieldRisk } from '@/lib/types';
+import { LIMITS, dangerReason, type FieldRisk } from '@/lib/types';
 
 /**
  * 回滚弹窗 —— 与发布弹窗同一套闸门，因为回滚就是一次发布。
@@ -36,9 +36,6 @@ interface RollbackDialogProps {
   /** 回滚成功后回调（带上新 revision）；关闭与刷新由调用方负责。 */
   readonly onRolledBack: (revision: number) => void;
 }
-
-/** 服务端的 reason 是英文；DANGER_REASONS 是面板自己的说法，优先用它。 */
-const reasonOf = (risk: FieldRisk): string => DANGER_REASONS[risk.path] ?? risk.reason;
 
 /** 409 响应体里的 dangers 是未知形状（来自服务端）；轻量守卫，宁缺勿崩。 */
 const asDangers = (raw: unknown): Record<string, readonly FieldRisk[]> => {
@@ -185,7 +182,7 @@ export const RollbackDialog = ({
                     <code className="font-mono text-xs">
                       {routeId}.{risk.path}
                     </code>
-                    <span className="text-muted-foreground text-xs">{reasonOf(risk)}</span>
+                    <span className="text-muted-foreground text-xs">{dangerReason(risk)}</span>
                   </li>
                 )),
               )}

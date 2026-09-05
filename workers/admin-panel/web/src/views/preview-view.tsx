@@ -22,7 +22,7 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { Spinner } from '@/components/ui/spinner';
 import type { PreviewResult } from '@/lib/api';
 import { t } from '@/lib/messages';
-import { DANGER_REASONS, type FieldRisk, type Issue } from '@/lib/types';
+import { dangerReason, type FieldRisk, type Issue } from '@/lib/types';
 
 /**
  * 发布预览。
@@ -52,9 +52,6 @@ interface PreviewViewProps {
   /** 空草稿时引导去路由页 —— 空是「还没开始」，不是「配置有错」。 */
   readonly onGoRoutes: () => void;
 }
-
-/** 服务端的 reason 是英文；DANGER_REASONS 是面板自己的说法（types.ts 注明了这一点），优先用它。 */
-const reasonOf = (risk: FieldRisk): string => DANGER_REASONS[risk.path] ?? risk.reason;
 
 /**
  * 一条校验问题的定位。
@@ -170,7 +167,7 @@ const DangerCard = ({
               {risk.level === 'high' ? t.preview.dangerHigh : t.preview.dangerMedium}
             </Badge>
           </div>
-          <p className="text-muted-foreground text-xs">{reasonOf(risk)}</p>
+          <p className="text-muted-foreground text-xs">{dangerReason(risk)}</p>
         </li>
       ))}
     </ul>

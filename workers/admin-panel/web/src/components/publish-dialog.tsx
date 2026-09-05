@@ -16,7 +16,7 @@ import { Switch } from '@/components/ui/switch';
 import { Textarea } from '@/components/ui/textarea';
 import { ApiError, NetworkError, api, type PreviewResult } from '@/lib/api';
 import { t } from '@/lib/messages';
-import { DANGER_REASONS, LIMITS, type FieldRisk } from '@/lib/types';
+import { LIMITS, dangerReason, type FieldRisk } from '@/lib/types';
 
 /**
  * 发布弹窗 —— 整个面板里唯一一处真正改变线上流量的按钮。
@@ -36,9 +36,6 @@ interface PublishDialogProps {
   /** 发布成功后回调（带上新 revision）；关闭弹窗与刷新由调用方负责。 */
   readonly onPublished: (revision: number) => void;
 }
-
-/** 服务端的 reason 是英文；DANGER_REASONS 是面板自己的说法，优先用它。 */
-const reasonOf = (risk: FieldRisk): string => DANGER_REASONS[risk.path] ?? risk.reason;
 
 /**
  * 409 响应体里的 dangers 是未知形状（来自服务端，且版本可能不同）。这里只做
@@ -179,7 +176,7 @@ export const PublishDialog = ({ open, onOpenChange, preview, onPublished }: Publ
                     <code className="font-mono text-xs">
                       {routeId}.{risk.path}
                     </code>
-                    <span className="text-muted-foreground text-xs">{reasonOf(risk)}</span>
+                    <span className="text-muted-foreground text-xs">{dangerReason(risk)}</span>
                   </li>
                 )),
               )}
