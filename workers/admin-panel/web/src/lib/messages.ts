@@ -775,8 +775,12 @@ export const t = {
    */
   history: {
     title: '发布历史',
-    description: '每一次发布都是一个 revision。选两张卡对比改动，或把任意一版重新发布。',
+    description: '每一次发布都是一个 revision。勾两个 revision 对比改动，或把任意一版重新发布。',
     refresh: '刷新',
+    total: (count: number) => `保留了最近 ${count} 次发布`,
+    showOlder: (count: number) => `显示更早的（还有 ${count} 条）`,
+    liveNotListed: (revision: number) =>
+      `正在服务流量的是 revision ${revision} —— 它已经滚出了保留窗口，所以下面的时间轴里没有它。`,
     liveBadge: '正在服务',
     rolledBackFrom: (revision: number) => `回滚自 #${revision}`,
     routes: (count: number) => `${count} 条路由`,
@@ -792,12 +796,22 @@ export const t = {
     loadFailed: (message: string) => `历史加载失败：${message}`,
 
     diff: {
-      select: '对比',
+      selectLabel: (revision: number) => `把 revision ${revision} 选进对比`,
       selected: (revision: number) => `已选 #${revision}`,
-      title: (a: number, b: number) => `对比 #${a} ↔ #${b}`,
+      olderSide: '原始版本',
+      newerSide: '较新版本',
+      pickedOne: (revision: number) => `已选 #${revision} —— 再勾一个 revision 就开始对比。`,
+      evictHint: '再勾一个会替换先勾的那个。',
+      title: (older: number, newer: number) => `对比 #${older} → #${newer}`,
+      /** 方向永远是时间序，所以两侧用绝对指称，不用「原值 / 新值」这种相对词。 */
+      valueOf: (revision: number) => `#${revision} 的值`,
+      summary: (count: number) => `${count} 项差异`,
+      summaryDanger: (count: number) => `其中 ${count} 项危险`,
+      /** 路由块上的徽章：与摘要句用不同措辞，同一屏不要出现两句一样的话。 */
+      dangerBadge: (count: number) => `${count} 项危险`,
       clear: '清除对比',
       loading: '正在对比…',
-      empty: '两版内容完全一致。',
+      empty: '两版内容完全一致。（回滚天生会造出内容相同的一对。）',
       failed: (message: string) => `对比失败：${message}`,
       groups: {
         added: '新增',
@@ -807,11 +821,15 @@ export const t = {
       } as Record<string, string>,
       defaultsTitle: '表级默认值',
       routesTitle: '路由',
-      fromLabel: '原值',
-      toLabel: '新值',
-      valueLabel: (value: string) => `改为 ${value}`,
+      otherTitle: '文档本身',
+      routeAdded: '整条路由是新增的',
+      routeRemoved: '整条路由被删掉了',
+      addedDangerCount: (count: number) => `这条新路由带着 ${count} 个危险开关`,
       positionLabel: (from: number, to: number) =>
         `第 ${String(from + 1)} 位 → 第 ${String(to + 1)} 位`,
+      positionHint: '顺序即优先级，第一个匹配到的路由胜出。',
+      absent: '（没有这个字段）',
+      showFull: '看全文',
       truncated: '（过长已截断）',
       unavailable: '有一侧没有快照，对比不了。',
       corrupt: '有一侧快照损坏，对比不了。',

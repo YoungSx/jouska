@@ -181,22 +181,33 @@ describe('revision history and rollback', () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     const changed = body.entries.filter((e: any) => e.kind === 'changed');
-    expect(changed).toContainEqual({
-      path: 'routes.alpha.upstream',
-      kind: 'changed',
-      from: 'a.internal.example.com',
-      to: 'a2.internal.example.com',
-    });
-    expect(body.entries.filter((e: any) => e.kind === 'added')).toContainEqual({
-      path: 'routes.beta',
-      kind: 'added',
-      to: {
-        id: 'beta',
-        match: { host: 'b.example.com', path: '/' },
-        upstream: 'b.internal.example.com',
-        timeoutMs: 5000,
-      },
-    });
+    // Ownership travels with the entry: the client never parses `path`, because
+    // a route id may itself contain dots.
+    expect(changed).toContainEqual(
+      expect.objectContaining({
+        path: 'routes.alpha.upstream',
+        kind: 'changed',
+        from: 'a.internal.example.com',
+        to: 'a2.internal.example.com',
+        routeId: 'alpha',
+        field: 'upstream',
+      }),
+    );
+    expect(body.entries.filter((e: any) => e.kind === 'added')).toContainEqual(
+      expect.objectContaining({
+        path: 'routes.beta',
+        kind: 'added',
+        routeId: 'beta',
+        to: {
+          id: 'beta',
+          match: { host: 'b.example.com', path: '/' },
+          upstream: 'b.internal.example.com',
+          timeoutMs: 5000,
+        },
+      }),
+    );
+    // Nothing here trips a danger rule, so no entry carries a classification.
+    expect(body.entries.every((e: any) => e.risk === undefined)).toBe(true);
 
     // Reverse direction is free — the rollback dialog asks exactly this.
     const back = await get('/api/revisions/diff?from=3&to=1', auth);

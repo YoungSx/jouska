@@ -371,6 +371,10 @@ export const DANGER_REASONS: Record<string, string> = {
     '没有列出 origin 会反射任何调用方的 origin，等于让别的站点通过这个代理读取带凭据的响应。',
   'bodyRewrite.contentTypes': '列表写宽了会把非文本响应改写成乱码。',
   'bodyRewrite.fallbackCharset': '用错的字符集解码会把响应体弄坏；猜错比不改写更糟。',
+  'bodyRewrite.inject':
+    '注入的标记会一字不改地送到每个访客眼前，而上游那条本来可能拦住它的 CSP 在发出去之前已经被摘掉了。',
+  'bodyRewrite.replace':
+    '按字面替换发出去的字节：页面里出现的 `from` 会被换成 `to` 写的任何东西，包括访客浏览器会执行的标记。',
   'ip.allow': 'allow 列表写错一个字符，就会放进本想排除的地址。',
   'ip.deny': 'deny 列表写错一个字符，就会挡掉正常的调用方。',
   'access.keys':
@@ -382,12 +386,30 @@ export const DANGER_REASONS: Record<string, string> = {
     '这些规则在代理改写之后跑，所以能把 Location 指回上游、能加回一条让改写后页面加载不了自己资源的 CSP、也能加回让客户端从自己缓存里取未改写正文的校验头。',
   'cache.contentTypes':
     '默认只缓存静态资源。把文档类型加进来，一个没带 cookie、也没标 private 的个性化页面就会被发给下一个访客。',
+  'cache.key.headers':
+    '这些头的每个不同取值都各占一份缓存。折进 user-agent 这类高基数头，等于给每个访客单开一份缓存，命中率归零。',
   'requestPolicy.allowedMethods':
     '列表写漏一个方法，用它的调用方全部收到 405 —— 拒绝是显式的，不会悄悄放行去别处。',
   'forwardAuth.url': '写 `http://` 意味着 cookie 和 authorization 以明文发往鉴权端点。',
   'forwardAuth.failOpen':
     '打开后鉴权端点挂了所有请求直接放行 —— 可用性高于准入，故障会变成全场免票。',
+  respond:
+    '这条路由在边缘直接作答，什么都不转发。忘了撤的维护页、或者匹配写宽了，都会让真实流量下线，而上游一无所知。',
+  'respond.redirect.allowExternal':
+    '跳转目标可以是任何 host。一个被改坏的值就把这条路由变成开放重定向，送去谁也没审过的地方。',
+  'mirror.methods':
+    '镜像会把请求在另一个目标上再跑一遍。非幂等的方法意味着一次访客动作变成两封邮件、两笔扣款、两条记录。',
+  'mirror.includeBody':
+    '请求体会被复制到镜像目标：它带着的东西（凭据、个人信息）从此也到了第二个主机，而缓冲它的内存算在 isolate 头上。',
 };
+
+/**
+ * 一条风险说给人听的说法。服务端的 `reason` 是英文，`DANGER_REASONS` 是面板
+ * 自己的语言，优先用后者 —— 但服务端可能认得面板还没收录的新字段，所以英文
+ * 原话是兜底而不是被丢掉。回滚弹窗与发布历史的 diff 说的是同一件事，因此这
+ * 个映射只能有一份。
+ */
+export const dangerReason = (risk: FieldRisk): string => DANGER_REASONS[risk.path] ?? risk.reason;
 
 /**
  * 请求方向的保留头：写或删都会被 schema 拒绝。

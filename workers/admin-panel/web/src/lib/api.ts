@@ -234,9 +234,17 @@ export const api = {
 
   /* ---------- 发布历史与回滚 ---------- */
 
-  listRevisions: async (): Promise<RevisionEntry[]> => {
+  /**
+   * 发布历史。`liveRevision` 是服务端说的「现在服务流量的是哪一版」，一并带
+   * 回来 —— 滚动保留 50 版之后线上那一版可能已经不在列表里，那时候时间轴需要
+   * 一句话交代「你在这」，而不是让人以为记录丢了。
+   */
+  listRevisions: async (): Promise<RevisionList> => {
     const data = await request('GET', '/api/revisions');
-    return Array.isArray(data.entries) ? asRevisions(data.entries) : [];
+    return {
+      entries: Array.isArray(data.entries) ? asRevisions(data.entries) : [],
+      liveRevision: typeof data.liveRevision === 'number' ? data.liveRevision : null,
+    };
   },
 
   diffRevisions: async (from: number, to: number): Promise<DiffEntry[]> => {
@@ -385,6 +393,10 @@ export interface RevisionEntry {
 /**
  * 服务端 diff 的一个字段。from/to 是快照里的原值（可能不是字符串），moved 的
  * 两侧是 0 起始的数组下标。值一律由调用方按需格式化，这里不做形状假设。
+ *
+ * `routeId` / `field` / `risk` 由服务端算好带下来：路由 id 本身可以含点，
+ * `routes.foo.bar` 在浏览器里无法切开；危险判定也只能有一份（服务端的
+ * `dangerFlags`，发布闸门用的就是它）。
  */
 export interface DiffEntry {
   readonly path: string;
@@ -393,6 +405,16 @@ export interface DiffEntry {
   readonly to?: unknown;
   readonly fromPosition?: number;
   readonly toPosition?: number;
+  readonly routeId?: string;
+  readonly field?: string;
+  readonly risk?: FieldRisk;
+  readonly riskCount?: number;
+}
+
+/** 历史列表连同「线上是哪一版」。 */
+export interface RevisionList {
+  readonly entries: readonly RevisionEntry[];
+  readonly liveRevision: number | null;
 }
 
 const asRevisions = (raw: readonly unknown[]): RevisionEntry[] => {
@@ -419,6 +441,22 @@ const asRevisions = (raw: readonly unknown[]): RevisionEntry[] => {
   return entries;
 };
 
+/** 服务端的风险条目形状未知（跨版本），轻量守卫；宁缺勿崩。 */
+const asRisk = (raw: unknown): FieldRisk | undefined => {
+  if (typeof raw !== 'object' || raw === null) {
+    return undefined;
+  }
+  const record = raw as Record<string, unknown>;
+  if (typeof record.path !== 'string' || typeof record.reason !== 'string') {
+    return undefined;
+  }
+  return {
+    path: record.path,
+    level: record.level === 'high' ? 'high' : 'medium',
+    reason: record.reason,
+  };
+};
+
 const asDiffEntries = (raw: readonly unknown[]): DiffEntry[] => {
   const entries: DiffEntry[] = [];
   for (const item of raw) {
@@ -430,6 +468,7 @@ const asDiffEntries = (raw: readonly unknown[]): DiffEntry[] => {
       continue;
     }
     const kind = record.kind;
+    const risk = asRisk(record.risk);
     entries.push({
       path: record.path,
       kind:
@@ -440,6 +479,10 @@ const asDiffEntries = (raw: readonly unknown[]): DiffEntry[] => {
       ...(record.to === undefined ? {} : { to: record.to }),
       ...(typeof record.fromPosition === 'number' ? { fromPosition: record.fromPosition } : {}),
       ...(typeof record.toPosition === 'number' ? { toPosition: record.toPosition } : {}),
+      ...(typeof record.routeId === 'string' ? { routeId: record.routeId } : {}),
+      ...(typeof record.field === 'string' ? { field: record.field } : {}),
+      ...(risk === undefined ? {} : { risk }),
+      ...(typeof record.riskCount === 'number' ? { riskCount: record.riskCount } : {}),
     });
   }
   return entries;
