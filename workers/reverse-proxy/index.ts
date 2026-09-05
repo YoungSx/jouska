@@ -44,6 +44,13 @@ export interface Env {
   ANALYTICS?: AnalyticsEngineDataset;
   /** Set to `"true"` to emit a structured log line per proxied request. */
   ACCESS_LOGS?: string;
+  /**
+   * Build identity injected at deploy time (`--var BUILD_ID:...` from CI's
+   * `git describe`). Stamped onto jouska's own responses so a caller the proxy
+   * turns away can name the build that refused them. Absent in local dev —
+   * the header is simply not sent.
+   */
+  BUILD_ID?: string;
 }
 
 /**
@@ -104,6 +111,7 @@ let app: Hono | undefined;
 let appConfig: Config | undefined;
 let appFetch: typeof fetch | undefined;
 let appSink: ProxySink | undefined;
+let appBuildId: string | undefined;
 
 /**
  * The observability fan-out, cached the same way the app is: cheap to build,
@@ -162,6 +170,7 @@ export const __resetConfigCache = (): void => {
   app = undefined;
   appConfig = undefined;
   appFetch = undefined;
+  appBuildId = undefined;
   sink = undefined;
   sinkAnalytics = undefined;
   sinkAccessLogs = undefined;
@@ -171,12 +180,14 @@ const getApp = (
   config: Config,
   fetchImpl: typeof fetch | undefined,
   proxySink: ProxySink | undefined,
+  buildId: string | undefined,
 ): Hono => {
   if (
     app === undefined ||
     appConfig !== config ||
     appFetch !== fetchImpl ||
-    appSink !== proxySink
+    appSink !== proxySink ||
+    appBuildId !== buildId
   ) {
     const next = new Hono();
     next.use(
@@ -185,12 +196,14 @@ const getApp = (
         config,
         ...(fetchImpl ? { fetchImpl } : {}),
         ...(proxySink ? { onProxy: proxySink } : {}),
+        ...(buildId !== undefined && buildId !== '' ? { buildId } : {}),
       }),
     );
     app = next;
     appConfig = config;
     appFetch = fetchImpl;
     appSink = proxySink;
+    appBuildId = buildId;
   }
   return app;
 };
@@ -208,8 +221,12 @@ export default {
       // No usable config means no routes, so say so plainly instead of
       // returning a confusing 404 from an empty table.
       console.error('jouska: no usable config', error);
-      return Response.json({ error: 'config_unavailable' }, { status: 503 });
+      const unavailable = Response.json({ error: 'config_unavailable' }, { status: 503 });
+      if (env.BUILD_ID !== undefined && env.BUILD_ID !== '') {
+        unavailable.headers.set('x-jouska-build', env.BUILD_ID);
+      }
+      return unavailable;
     }
-    return getApp(config, env.UPSTREAM_FETCH, getSink(env)).fetch(request, env, ctx);
+    return getApp(config, env.UPSTREAM_FETCH, getSink(env), env.BUILD_ID).fetch(request, env, ctx);
   },
 } satisfies ExportedHandler<Env>;

@@ -298,6 +298,20 @@ export interface JouskaOptions {
   /** Overridable for tests; defaults to the runtime `fetch`. */
   fetchImpl?: typeof fetch;
   /**
+   * Deployment build identity (e.g. `v0.16.0-3-ge77c95c` from `git describe`).
+   *
+   * When set, every response jouska builds itself is stamped with an
+   * `x-jouska-build` header — guard refusals, relayed forward-auth verdicts
+   * and assembled upstream failures included, so whoever the proxy turns away
+   * can name the build that refused them. Same precedent as the request ID:
+   * the header is added, the body of a relayed verdict is never touched. A
+   * response the upstream produced is the upstream's and is left untouched —
+   * the tag names the party refusing the request, not one forwarding it.
+   * Unset leaves the header off entirely, so the library's observable behavior
+   * does not change for callers that don't ask for it.
+   */
+  buildId?: string;
+  /**
    * Store backing the response cache. Defaults to `caches.default`.
    *
    * Overridable for tests, and for a deployment that wants a named cache. Only
@@ -355,6 +369,7 @@ export const jouska = ({
   fetchImpl,
   cacheImpl,
   onProxy,
+  buildId,
 }: JouskaOptions): MiddlewareHandler => {
   return async (c, next) => {
     const startedAt = Date.now();
@@ -379,6 +394,9 @@ export const jouska = ({
      */
     const stamped = (response: Response): Response => {
       stampRequestId(response.headers, requestId);
+      if (buildId !== undefined) {
+        response.headers.set('x-jouska-build', buildId);
+      }
       return response;
     };
 
@@ -719,6 +737,7 @@ export const jouska = ({
           limits,
           mirrorPlan?.request,
           mirror,
+          buildId,
         );
       });
       // A preflight is answered by the CORS middleware itself — the one
@@ -741,6 +760,7 @@ export const jouska = ({
       limits,
       mirrorPlan?.request,
       mirror,
+      buildId,
     );
   };
 };
@@ -913,6 +933,8 @@ const proxyRequest = async (
   forwardRequest?: Request,
   /** The running mirror copy, carried onto the event. Absent when not mirrored. */
   mirror?: Promise<MirrorReport>,
+  /** The deployment tag, stamped onto assembled failure responses. */
+  buildId?: string,
 ): Promise<Response> => {
   const { route } = match;
   // The bucket this caller was assigned to, as an authority. The cache key
@@ -1121,6 +1143,9 @@ const proxyRequest = async (
       // Built directly: `c.json` types only admit registered statuses.
       const response = c.json({ error: 'in_flight_limit', upstream: assigned }, 503);
       stampRequestId(response.headers, requestId);
+      if (buildId !== undefined) {
+        response.headers.set('x-jouska-build', buildId);
+      }
       return response;
     }
     try {
@@ -1242,9 +1267,19 @@ const proxyRequest = async (
   // The cookie rides only on a response the upstream itself produced: a 101's
   // headers are spent on the handshake, and jouska's own 5xx never reached the
   // bucket it would name.
-  return produced.fromUpstream && produced.status !== 101
-    ? withStickyCookie(produced.response, route, selection, produced.authority)
-    : produced.response;
+  const final =
+    produced.fromUpstream && produced.status !== 101
+      ? withStickyCookie(produced.response, route, selection, produced.authority)
+      : produced.response;
+  // An upstream failure response was assembled here, not upstream — the client
+  // holding a 502 was turned away by jouska, so it carries the build tag like
+  // the in-flight 503 above. Stamped at the return site rather than inside
+  // `produceResponse`: the response may already be cloned for the cache, and
+  // the tag names this deployment, not the stored bytes.
+  if (!produced.fromUpstream && buildId !== undefined) {
+    final.headers.set('x-jouska-build', buildId);
+  }
+  return final;
 };
 
 interface ProduceOptions {
