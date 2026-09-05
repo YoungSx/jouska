@@ -46,6 +46,9 @@ describe('ErrorBoundary', () => {
 
     expect(screen.getByText('这一页崩了')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: '重试这一页' })).toBeInTheDocument();
+    // 兜底页也报构建：崩掉的是本页 JS,版本串帮人把「哪个构建在崩」说进 issue。
+    // 不传 serverBuild——服务端没问题,也没人替它答话。
+    expect(screen.getByText(/本页 dev/)).toBeInTheDocument();
     expect(container).not.toBeEmptyDOMElement();
   });
 

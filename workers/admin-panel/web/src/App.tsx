@@ -2,6 +2,7 @@ import * as React from 'react';
 import { ChevronDownIcon, LogOutIcon, MenuIcon, RefreshCwIcon, Trash2Icon } from 'lucide-react';
 import { toast } from 'sonner';
 import { Toaster } from '@/components/ui/sonner';
+import { BuildTagFooter } from '@/components/build-tag';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
@@ -277,6 +278,8 @@ const App = () => {
             </Button>
           </CardContent>
         </Card>
+        {/* 连服务端都答不上话，剩下的唯一一串是浏览器里这份 JS 自己的。 */}
+        <BuildTagFooter />
       </div>
     );
   }
@@ -293,6 +296,7 @@ const App = () => {
             ...(session.state.identityNotConfigured === true
               ? { identityNotConfigured: true }
               : {}),
+            ...(session.state.build === undefined ? {} : { build: session.state.build }),
           }}
           loading={false}
         />

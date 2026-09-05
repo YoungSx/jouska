@@ -1,6 +1,7 @@
 import * as React from 'react';
 import { RefreshCwIcon, TriangleAlertIcon } from 'lucide-react';
 
+import { BuildTagFooter } from '@/components/build-tag';
 import { Button } from '@/components/ui/button';
 import {
   Empty,
@@ -105,6 +106,9 @@ const CrashCard = ({
         {error.stack ?? `${error.name}: ${error.message}`}
       </pre>
     </details>
+    {/* 兜底页报构建：崩掉的是本页这份 JS，版本串帮助把「哪个构建在崩」说进 issue。
+        这里不传 serverBuild —— 服务端没问题，也没人替它答话。 */}
+    <BuildTagFooter />
   </Empty>
 );
 
