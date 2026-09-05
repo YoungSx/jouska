@@ -1,5 +1,6 @@
 import type { AccessConfig } from '../config.js';
 import { base64UrlBytes } from './base64url.js';
+import { sha256Hex } from './digest.js';
 
 /**
  * Route-level identity checks: the CF Access JWT and the API key.
@@ -82,11 +83,6 @@ const jwksCache = new Map<string, CachedJwks>();
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
-
-const sha256Hex = async (value: string): Promise<string> => {
-  const digest = await crypto.subtle.digest('SHA-256', encoder.encode(value));
-  return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('');
-};
 
 /**
  * Byte-level comparison between the presented digest and a configured one.
