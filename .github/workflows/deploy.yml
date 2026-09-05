@@ -19,7 +19,12 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
+      # fetch-depth: 0 拉全历史与 tag——构建版本号来自 `git describe`，浅克隆
+      # 拿不到 tag 就会把 v0.16.0 部署成一行 sha 或干脆 'dev'，拒绝屏上的版本
+      # 串就成了谎话。
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
 
       - uses: actions/setup-node@v7
         with:
@@ -27,6 +32,13 @@ jobs:
           cache: npm
 
       - run: npm ci
+
+      # 构建版本号，算一次三处用：面板 Worker（--var）、反代 Worker（--var）、
+      # SPA（vite.config 自己跑同一条 git describe，同一 checkout 天然一致）。
+      # 不是机密——它命名的是「从哪个提交构建的」，这正是拒绝屏要报给用户的。
+      - name: Compute build id
+        run: |
+          echo "BUILD_ID=$(git describe --tags --always --dirty)" >> "$GITHUB_ENV"
 
       # Worker 的 index.ts 通过 `import 'jouska'` 引用库，而 jouska 的
       # exports 指向 ./dist/index.js——wrangler 打包前必须先产出 dist。
@@ -66,7 +78,7 @@ jobs:
           ACCESS_TEAM: ${{ secrets.ACCESS_TEAM }}
           ACCESS_AUD: ${{ secrets.ACCESS_AUD }}
         run: |
-          extra_vars=()
+          extra_vars=(--var BUILD_ID:"$BUILD_ID")
           for name in ACCESS_TEAM ACCESS_AUD; do
             if [ -n "${!name}" ]; then
               extra_vars+=(--var "$name:${!name}")
@@ -178,4 +190,6 @@ jobs:
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-        run: npx wrangler deploy
+        # BUILD_ID 跟着反代走：jouska 用它给自建的拒绝响应盖 x-jouska-build 头，
+        # 让被守卫挡下的调用方也能对上「哪个版本在拦我」。
+        run: npx wrangler deploy --var BUILD_ID:"$BUILD_ID"
