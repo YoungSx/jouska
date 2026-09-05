@@ -32,6 +32,11 @@ interface PublishBarProps {
   readonly onReview: () => void;
   /** 只有 dirty / blocked 才出现；clean 没有草稿可弃，empty 从未发布过。 */
   readonly onDiscard: () => void;
+  /**
+   * 外部布局用的类名。存在的唯一理由：路由编辑页在窄屏上接管整屏，这根栏要让位
+   * ——手机上没有空间同时讲两级闸门，而编辑页自己那句「保存进的是草稿」顶得上。
+   */
+  readonly className?: string;
 }
 
 interface BarFace {
@@ -114,6 +119,7 @@ export const PublishBar = ({
   onPublish,
   onReview,
   onDiscard,
+  className,
 }: PublishBarProps) => {
   const face = faceFor(gate);
   const Icon = face.icon;
@@ -133,7 +139,7 @@ export const PublishBar = ({
     <div
       // sticky 而非 fixed：fixed 会盖住页面最后一行内容，而这个面板的最后一行
       // 常常正是刚改的那条路由。
-      className="bg-background/95 sticky bottom-0 z-20 border-t backdrop-blur"
+      className={cn('bg-background/95 sticky bottom-0 z-20 border-t backdrop-blur', className)}
       // 状态变化要被读屏软件念出来 —— 发布栏是操作者判断改动是否上线的唯一依据。
       role="status"
       aria-live="polite"

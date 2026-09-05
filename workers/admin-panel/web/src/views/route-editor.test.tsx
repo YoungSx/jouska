@@ -2,7 +2,7 @@ import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { toast } from 'sonner';
-import { RouteEditor } from './route-editor';
+import { RouteEditorPage } from './route-editor';
 import { api, type DomainsResponse, type HostBinding } from '@/lib/api';
 import type { RouteDefinition } from '@/lib/types';
 
@@ -52,9 +52,7 @@ const renderEditor = (
   definition: RouteDefinition = { upstream: 'origin.example.com' },
 ) =>
   render(
-    <RouteEditor
-      open
-      onOpenChange={() => {}}
+    <RouteEditorPage
       initial={{
         id: 'new-route',
         definition,
@@ -62,6 +60,7 @@ const renderEditor = (
       }}
       createMode={createMode}
       onSaved={() => {}}
+      onExit={() => {}}
     />,
   );
 
@@ -156,36 +155,16 @@ describe('RouteEditor host 字段（issue #19）', () => {
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
   });
 
-  it('每次打开弹窗都重新拉取候选', async () => {
-    const { rerender } = renderEditor();
+  /*
+    页面化之后「每次打开」的形态变了：编辑器不再常驻 DOM 等着 open 翻转，而是
+    每次进入都新挂载一次。这条测试跟着改成卸载再挂载 —— 焊的还是同一件事：
+    候选域名不能吃上一次的缓存，因为它在两次编辑之间可能被绑上了。
+  */
+  it('每次进入编辑页都重新拉取候选', async () => {
+    const first = renderEditor();
     await waitFor(() => expect(api.domains).toHaveBeenCalledTimes(1));
-
-    rerender(
-      <RouteEditor
-        open={false}
-        onOpenChange={() => {}}
-        initial={{
-          id: 'new-route',
-          definition: { upstream: 'origin.example.com' },
-          enabled: true,
-        }}
-        createMode
-        onSaved={() => {}}
-      />,
-    );
-    rerender(
-      <RouteEditor
-        open
-        onOpenChange={() => {}}
-        initial={{
-          id: 'new-route',
-          definition: { upstream: 'origin.example.com' },
-          enabled: true,
-        }}
-        createMode
-        onSaved={() => {}}
-      />,
-    );
+    first.unmount();
+    renderEditor();
     await waitFor(() => expect(api.domains).toHaveBeenCalledTimes(2));
   });
 });
@@ -823,8 +802,19 @@ describe('RouteEditor 错误可见性（重设计）', () => {
 
     const timingCard = screen.getByRole('button', { name: /^超时与重试/ });
     expect(timingCard).toHaveTextContent('需修正');
-    // 卡展开时内联 FieldError 也是 alert，页脚摘要按完整文案精确点名。
-    expect(screen.getByText('保存还差一步：额外重试次数：0 – 100')).toBeInTheDocument();
+    /*
+      页脚那句一次性摘要换成了动作栏里的错误索引：计数点得开，清单里每条带字段名与
+      错误原文，点一条跳到那个字段。焊的东西比从前多一层 —— 从「有一句解释」变成
+      「每一条都有去处」。
+    */
+    await user.click(screen.getByRole('button', { name: /1 处待修/ }));
+    /*
+      清单条目分两行：标题是字段名，描述是剥掉字段名之后的那半句。焊的是「不复读」——
+      标题已经说了是哪个字段，描述再抄一遍只会让 320px 宽的浮层里全是重复的字。
+      内联的 FieldError 仍然是完整一句（它得能单独成句）。
+    */
+    expect(screen.getByText('额外重试次数：0 – 100')).toBeInTheDocument();
+    expect(screen.getByText('0 – 100')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: '保存到草稿' })).toBeDisabled();
   });
 
@@ -835,19 +825,25 @@ describe('RouteEditor 错误可见性（重设计）', () => {
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
   });
 
-  it('动过手错误就见人：打一个字再清空，upstream 红框与页脚摘要出现且不回头', async () => {
+  it('动过手错误就见人：打一个字再清空，upstream 红框与错误索引出现且不回头', async () => {
     const user = userEvent.setup();
     renderEditor(true, {});
     const upstream = screen.getByLabelText('upstream');
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    // pristine 时索引整个不渲染：一个常驻的「0 处待修」等于永久提醒一个不存在的问题。
+    expect(screen.queryByRole('button', { name: /处待修/ })).not.toBeInTheDocument();
 
     await user.type(upstream, 'x');
     await user.clear(upstream);
 
     expect(upstream).toBeInvalid();
-    // 内联 FieldError + 页脚摘要都是 alert；按文案精确断言页脚。
+    await user.click(screen.getByRole('button', { name: /1 处待修/ }));
     expect(
-      screen.getByText('保存还差一步：upstream 要写 host、host:port 或 host/base/path，不要写协议'),
+      screen.getByText('upstream 要写 host、host:port 或 host/base/path，不要写协议'),
+    ).toBeInTheDocument();
+    // 清单里的那半句：字段名归标题，描述只留后半。
+    expect(
+      screen.getByText('要写 host、host:port 或 host/base/path，不要写协议'),
     ).toBeInTheDocument();
     expect(screen.getByRole('button', { name: '保存到草稿' })).toBeDisabled();
   });
@@ -899,13 +895,12 @@ describe('RouteEditor 保存后的去发布引导（重设计）', () => {
     const onGoPublish = vi.fn();
     const user = userEvent.setup();
     render(
-      <RouteEditor
-        open
-        onOpenChange={() => {}}
+      <RouteEditorPage
         initial={{ id: 'new-route', definition: { upstream: 'origin.example.com' }, enabled: true }}
         createMode
         onSaved={onSaved}
         onGoPublish={onGoPublish}
+        onExit={() => {}}
       />,
     );
 
@@ -922,12 +917,11 @@ describe('RouteEditor 保存后的去发布引导（重设计）', () => {
     const onSaved = vi.fn();
     const user = userEvent.setup();
     render(
-      <RouteEditor
-        open
-        onOpenChange={() => {}}
+      <RouteEditorPage
         initial={{ id: 'new-route', definition: { upstream: 'origin.example.com' }, enabled: true }}
         createMode
         onSaved={onSaved}
+        onExit={() => {}}
       />,
     );
 

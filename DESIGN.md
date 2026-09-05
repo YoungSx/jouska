@@ -191,14 +191,20 @@ components:
 - **表格**：容器内横滚（`-mx-4 overflow-x-auto px-4 sm:mx-0`），窄屏不断行——这些值要逐字符核对，换行会读错。列宽用固定 `w-*` 约束序号、状态、时间、操作列。
 - **密度**：紧凑。空隙档位实测分布：gap-2（8px）最常用，其次 gap-1.5（6px）、gap-4（16px）；危险块、JSON 块内 `p-3`（12px）。
 - **响应式**：`sm:` 断点之上发布栏与顶栏转单行，之下转两行（图标+文案 / 按钮）。导航分两路：`sm:` 及以上平铺 Tabs 横滚（`nav-scroll` 右缘淡出提示还有未入屏项，滚到头即收）；窄屏收进一个官方 DropdownMenu——触发钮显示菜单图标与当前页名，菜单项是 CheckboxItem，当前页打勾（390px 视口下六个导航项挤进一条横滚缝，「现在在哪」不可见，故折叠）。两路指向同一份导航数据与同一个状态，不会漂移成两套导航。
-- **断点只有三档，两档是自定义变体**（`src/index.css`）：`sm`（`min-width: 40rem`）管宽度；`roomy`（`min-width: 40rem` **且** `min-height: 32rem`）管「够宽又够高」；`touch`（`pointer: coarse`）管手指。横屏手机是宽度断点看不见的那一格 —— 844×390 宽得过 `sm`，高只有 390px，居中弹窗在那里只放得下一个半字段（实测滚动区 32px）。凡是「屏幕够大所以可以摊开」的判断都走 `roomy`，不走 `sm`。
-- **路由编辑器弹窗**：`roomy` 之下是贯通上下的全高 sheet（`h-dvh`、上下贴边、`rounded-none`），水平方向始终 `left-1/2 -translate-x-1/2` 居中并限宽 `sm:max-w-2xl`——全高解决的是高度，不该让一行 host 输入框拉到 812px。`roomy` 之上恢复居中卡片（`max-h-[85dvh]`、`rounded-xl`）。弹窗内部只有三样东西常驻：标题、表单/JSON 切换、页脚；**标识（路由 ID 与启用开关）在滚动区内**，因为 ID 已经写在标题上，两份重复的 ID 在 iPhone SE 上要花掉 183px。页脚窄屏也横排且用不透明 `bg-muted`：它下面正滚着表单，半透明会让被切一半的那行字从按钮背后透出来。
-- **触摸命中区**：`touch` 下按钮、tab、开关用伪元素把可点面撑到 44px，视觉尺寸一个都不动（伪元素不参与布局，密度承诺不破）。只补高度不补宽度 —— 横向相邻的控件只隔 8px，向两边扩会让人点 A 命中 B。三个例外：换行的复选框组（HTTP 方法）靠 `<label>` 自己 `touch:py-3.5` 长到 44px，因为看不见的命中面在换行时会上下互吞（实测有效高度反而从 32px 掉到 2px）；弹窗关闭钮靠 `touch:size-11` 真的变大，因为全屏态的弹窗是 `overflow-hidden`，向外铺的那一圈会被裁掉；输入框保持 32px，它通栏宽，而给二十多个字段各加 12px 会把腾出来的可视区吃回去。
-- **软键盘**：viewport meta 带 `interactive-widget=resizes-content`，键盘弹起时 layout viewport 一起收缩，`dvh` 变小，全高 sheet 自己让开。iOS Safari 至今不认这个属性（会忽略），所以它只是加分项，全高 sheet 才是兜底。
+- **断点三档**（`src/index.css`）：`sm`（`min-width: 40rem`，Tailwind 原生）管「不再是手机」；`lg`（`min-width: 64rem`，Tailwind 原生）管「宽到可以分栏」；`touch`（`pointer: coarse`，自定义变体）管手指。`lg` 的判据是页面上最宽的那一行控件：路由编辑器的条件行一行五个控件，列宽不足 480px 就挤爆，而 `max-w-6xl`（1152px）双列每列约 552px、1024px 视口下约 484px —— 正好在 `lg` 落地。
+  - 曾有一个 `roomy`（`min-width: 40rem` **且** `min-height: 32rem`）变体，专治「居中弹窗在横屏手机上只放得下一个半字段」（844×390 实测滚动区 32px）。路由编辑器改成整页之后这个病症不存在了，变体也随之删除 —— 它是为一个具体症状发明的，症状消失就不该留在系统里当装饰。
+- **路由编辑器是一个页面，不是弹窗**：它占掉整个内容区（`main` 内，同一个 `max-w-6xl`），底部那根全局发布栏留在原位。这不是布局偏好而是论点的形态：顶部动作栏管「这一条路由 → 草稿」，底部发布栏管「整份草稿 → 生产」，两道闸同时可见，「保存 ≠ 上线」不再需要一句话来解释（弹窗时代它只能靠编辑器自带的一根草稿条重复说明）。
+  - **动作栏** sticky 在顶栏正下方：`top-0 sm:top-(--panel-header-height)`。顶栏高度是 `:root` 里的 `--panel-header-height`（3.5rem），顶栏用 `h-(--panel-header-height)` 而不是 `py-`，两处引用同一个变量 —— 顶栏改高时不会在缝里露出滚动的内容。
+  - **窄屏（`< sm`）编辑页接管整屏**：App 顶栏与发布栏都 `max-sm:hidden`。这正是从前全高 sheet 想要的效果，只是当时得靠 `h-dvh` / `rounded-none` / 焦点陷阱 / `interactive-widget` 一整套弹窗补丁才拿到。窄屏没有发布栏，所以动作栏下面补一行 12px 的「保存进的是草稿」—— 那句话在窄屏是唯一的解释处。
+  - **双列分区（`lg` 之上）**：左列是身份与去向（identity + destination），每一样都不填就上不了线；右列是谁能来（5 张守卫卡）+ 高级（3 张卡）+ 未识别字段，每一样都可以留空。`items-start` 让两列各按内容高度收。字段绝不左右穿插 —— 双列是分区，不是把一条链蛇形铺开。右栏一整栏「未设置」本身就是「你已经安全了」这句话的形态，也顺带充当了区块目录（八张卡头一眼扫完，不需要另立一栏导航）。
+  - **标识（路由 ID 与启用开关）在 tabs 之外**：它们不属于 definition，写原始 JSON 时也得能改。编辑模式下 ID 只读且已经写在动作栏的标题上，identity 区因此只剩启用开关。
+- **触摸命中区**：`touch` 下按钮、tab、开关用伪元素把可点面撑到 44px，视觉尺寸一个都不动（伪元素不参与布局，密度承诺不破）。只补高度不补宽度 —— 横向相邻的控件只隔 8px，向两边扩会让人点 A 命中 B。两个例外：换行的一组开关（HTTP 方法）用官方 ToggleGroup，item 自己 `touch:h-11` 真的变高，因为看不见的命中面在换行时会上下互吞（实测有效高度反而从 32px 掉到 2px），而按钮变高会把相邻的行推开；输入框保持 32px，它通栏宽，而给二十多个字段各加 12px 会把腾出来的可视区吃回去。
+  - 曾有第三个例外「弹窗关闭钮 `touch:size-11`」，理由是全屏态弹窗 `overflow-hidden` 会裁掉向外铺的那一圈。路由编辑器不再是弹窗，那个关闭钮也就不存在了。
+- **软键盘**：viewport meta 仍带 `interactive-widget=resizes-content`（iOS Safari 至今忽略它）。但编辑器整页化之后这条不再是关键路径：页面靠文档流滚动，键盘顶上来时浏览器自己把聚焦的字段滚进可视区 —— 从前需要 `dvh` 配合让开，是因为弹窗自己就是一个定高的滚动容器。
 
 ## Elevation & Depth
 
-本系统不用 box-shadow。深度由四个手段表达，按优先级：
+产品层不写 box-shadow。深度由四个手段表达，按优先级：
 
 1. **tonal 分层**：card 比 background 亮一档（oklch 0.205 vs 0.145），浮层（popover、下拉、toast）与 card 同色但由边界界定。
 2. **边界**：Card 用 `ring-1 ring-foreground/10`（1px 细环），区块与输入框用 `border-border`。
@@ -207,11 +213,12 @@ components:
 
 ### Shadow Vocabulary
 
-- 无。若未来确需阴影（如拖拽浮层），必须先回到这里补一条记录，不得就地引入。
+- 产品层没有阴影词汇；若未来确需（如拖拽浮层），必须先回到这里补一条记录，不得就地引入。
+- **例外是官方浮层件自带的那份**：`dropdown-menu`（`shadow-md` / `shadow-lg`）、`select`、`combobox`、`popover`（`shadow-md`）、`tabs`（`shadow-sm`）在 base-nova 的源码里就带着 shadow。它们是官方原样件，红线要求原样安装、不改一行 —— 所以这几处阴影是**既成事实，不是本系统的选择**。判据因此是「产品层不加阴影」，而不是「页面上不存在阴影」；后者不是真的，写成规则只会让人以为可以去改官方件。
 
 ### Named Rules
 
-**无边影规则。** 静止与交互态都不用 box-shadow。层次感来自灰阶差与 1px 边界；模糊只用于 sticky 栏的 backdrop-blur。
+**无边影规则。** 产品层写的静止与交互态都不用 box-shadow。层次感来自灰阶差与 1px 边界；模糊只用于 sticky 栏的 backdrop-blur。官方浮层件自带的 shadow 保留不动（见 Shadow Vocabulary）。
 
 **焦点环规则。** 焦点必须一眼可见：组件内 `focus-visible:ring-3 ring-ring/50`，原生元素由全局 `:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px }` 兜底。任何新控件不得移除焦点环。
 
@@ -224,7 +231,7 @@ components:
 - **8px（rounded-md）/ 6px（rounded-sm）**：卡片内再嵌一层的块（JSON `<pre>`、`<details>` 折叠块），内层比外层收敛。
 - **26px（rounded-4xl，胶囊）**：仅 Badge。小胶囊形是状态标签的专属剪影，其他元素不得使用。
 - 小尺寸按钮（sm/xs）用 `rounded-[min(var(--radius-md),12px)]` 收敛，避免矮控件显得过圆。
-- **0px（rounded-none）**：只有一处 —— 路由编辑器在 `roomy` 之下的全高 sheet。它上下贴着视口边，留着 14px 圆角只会在角上露出背景的三角。这是物理必然，不是新增一档形状语言。
+- **0px（rounded-none）**：现在一处都没有。它从前只用在路由编辑器的全高 sheet 上（上下贴着视口边，留 14px 圆角会在角上露出背景的三角）；编辑器成为页面之后不再有贴边的浮层，这一档随之退场。
 
 边框语言：1px 实线，统一 `border-border`；Card 用 ring 代替 border 以便 overflow 裁切。分隔用 `Separator` 或 border-t/b。没有斜切、没有异形。
 
@@ -277,6 +284,19 @@ components:
 ### Signature Component: 发布栏（PublishBar）
 
 常驻底部的 sticky 栏，是这个面板的论点本身。五态（loading / clean / empty / blocked / dirty[含 never-published 分支]），每态一个 Lucide 图标（CircleDashed / CircleCheck / CircleAlert）+ 一句 headline（14px medium）+ 一行 12px 细节；dirty/blocked 附 ghost「查看」按钮与发布按钮。图标颜色随 tone：bad → destructive，pending → foreground，neutral → muted-foreground。闸门翻转时图标重放 200ms 的 `gate-land` 落位动画（key 重挂驱动，静止零成本）——这是全系统唯一的自定义动效。整栏 `role="status" aria-live="polite"`。措辞集中在 `messages.ts`，四态词是操作者判断能否下班的依据，绝不编造服务端没给的改动计数。
+
+### 官方件清单（红线：只用 shadcn/ui 的 Base UI 版，不手搓）
+
+`components/ui/` 下的每一个文件都是 `npx shadcn add` 装进来的 base-nova 原样件（依赖纯 `@base-ui/react`，零 Radix），只经过安装期的两种转换：路径别名（`@/registry/base-nova/ui/x` → `@/components/ui/x`）与占位图标换成 Lucide，再加 prettier 排版。逐文件与 registry 源码规范化比对过，无一处产品改动。
+
+新装件与它们承担的语义：
+
+- **`popover`** —— 动作栏里的错误索引。计数点得开，清单每条是一个 `Item`（`ItemTitle` 是字段名，`ItemDescription` 是错误原文），点一条先展开所属手风琴卡再把焦点移到那个字段。浮层定位、Esc、外点关闭全归官方件。
+- **`toggle-group` + `toggle`** —— HTTP 方法七选（`multiple`，`value` 是 `string[]`）。取代从前七个手写 `<label>` 包 `Checkbox`：一组互不排斥的开关本来就是 ToggleGroup 的语义，键盘方向键与 aria 也由它给。
+- **`alert-dialog`** —— 放弃未保存改动的确认。语义就是「这一步要人明确答一句」：点外面不关、Esc 自己接、`AlertDialogCancel` 与 `AlertDialogAction` 是成对的官方子件。它取代了从前 Dialog 套 Dialog 的写法（那个套娃的唯一理由是借外层弹窗的 Esc 派发顺序，编辑器页面化之后理由消失）。
+- **`combobox` 的 chips 形态**（已装件的未用部分）—— 国家/地区多选。`ComboboxChips` / `ComboboxChip` / `ComboboxChipsInput` 是官方内建的多选呈现；选项对象用 `{ value, label }` 形状，官方据此自动拿 label 做显示与过滤，不需要 `itemToStringLabel`。
+
+**已知的一处灰区**：`HostProperty` 的根件是 Base UI 的 `Autocomplete.Root`，而非 shadcn 的 `Combobox`。理由写在组件注释里：官方 Combobox Root 是纯选择模型，类型层面没有 `inputValue` / `onInputValueChange`，既回填不了既有 host 也观察不了打字。所有可视子件仍是官方的 Combobox 族。这不是手搓组件（同一个 `@base-ui/react`，官方件本身也只是它的薄封装），但它是一处「绕过封装层」，记在这里以免被当成可以效仿的先例。
 
 ### Signature Component: 危险确认弹窗（PublishDialog）
 

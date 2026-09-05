@@ -5,12 +5,6 @@
 
 @custom-variant dark (&:is(.dark *));
 
-/* 编辑器只在屏幕又够宽又够高时才做居中卡片，否则全屏接管。单独的宽度断点看不见
-   横屏手机：844×390 宽得过 sm，高度却只有 390px —— 居中卡片在那里只放得下一个半
-   字段（实测滚动区 32px）。两个条件写在一个变体里，也就不必赌 sm 与高度变体谁先
-   进 CSS。32rem 是分界：iPhone 横屏 390–430px 落在下面，iPad 横屏 768px 在上面。 */
-@custom-variant roomy (@media (min-width: 40rem) and (min-height: 32rem));
-
 /* 手指在用这个界面的时候。命中区兜底在文件末尾按 data-slot 做，这个变体留给那些
    必须动布局才能变大的地方（比如换行的复选框组：命中面互相盖住不算变大）。 */
 @custom-variant touch (@media (pointer: coarse));
@@ -81,6 +75,15 @@
 }
 
 :root {
+  /*
+   * 顶栏高度是两根 sticky 之间的契约，不是装饰值。
+   *
+   * 路由编辑页的动作栏要停在顶栏正下方；两处都读这一个变量，顶栏改高时不会在
+   * 缝里露出滚动的内容。顶栏用 h-（不是 min-h-）把它当硬高度：内容是单行品牌
+   * 加一行副题（36px）+ py-2.5（20px），正好 56px。
+   */
+  --panel-header-height: 3.5rem;
+
   --background: oklch(1 0 0);
   --foreground: oklch(0.145 0 0);
   --card: oklch(1 0 0);
