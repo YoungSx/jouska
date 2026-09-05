@@ -34,9 +34,6 @@ export const t = {
     light: '浅色',
     dark: '深色',
     system: '跟随系统',
-    /** 快捷键提示；按键本身用 Kbd 渲染，这里只有它后面的说明。 */
-    shortcutKey: 'D',
-    shortcutHint: '快速切换深浅',
   },
 
   account: {

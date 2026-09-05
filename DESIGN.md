@@ -185,12 +185,12 @@ components:
 单列纵向流，`flex min-h-dvh flex-col` 夹住内容：
 
 - **容器**：`max-w-6xl`（72rem）居中，水平内边距统一 `px-4`（16px）。「进不来」那一屏（等管理员加号 / 未接 Access）收窄到 `max-w-sm`（24rem）居中。
-- **顶栏**：sticky top-0，`bg-background/95` + `backdrop-blur` + 底边框，z-30。品牌（左）+ 导航（中，见「响应式」）+ 主题切换与账号菜单（右）。高度由 `py-2.5` 决定，内容单行。
+- **顶栏**：sticky top-0，`bg-background/95` + `backdrop-blur` + 底边框，z-30。窄屏：菜单钮（左）+ 品牌（中，吃剩余空间）+ 账号菜单（右）；桌面：品牌 + 平铺 Tabs 导航（见「响应式」）+ 账号菜单（右）。高度为 `--panel-header-height`（3.5rem，与编辑页动作栏共享），内容单行。主题切换收在账号菜单里（Sub + RadioGroup）—— 一档显示偏好不值得独占常驻位置。
 - **发布栏**：sticky bottom-0，同样的半透明 + blur + 顶边框，z-20。左：状态图标 + 状态句 + （非 clean 时）线上 revision Badge；下挂一行 12px muted-foreground 细节。右：查看按钮（ghost sm）+ 发布按钮（sm）。sticky 而非 fixed——fixed 会盖住最后一行，而这个面板的最后一行常常正是刚改的那条路由。
 - **主体**：`pt-6 pb-8`（24px / 32px），页面内区块之间 `gap-6`（24px），Card 内元素 `gap-2`/`gap-1.5`（8px / 6px）。
 - **表格**：容器内横滚（`-mx-4 overflow-x-auto px-4 sm:mx-0`），窄屏不断行——这些值要逐字符核对，换行会读错。列宽用固定 `w-*` 约束序号、状态、时间、操作列。
 - **密度**：紧凑。空隙档位实测分布：gap-2（8px）最常用，其次 gap-1.5（6px）、gap-4（16px）；危险块、JSON 块内 `p-3`（12px）。
-- **响应式**：`sm:` 断点之上发布栏与顶栏转单行，之下转两行（图标+文案 / 按钮）。导航分两路：`sm:` 及以上平铺 Tabs 横滚（`nav-scroll` 右缘淡出提示还有未入屏项，滚到头即收）；窄屏收进一个官方 DropdownMenu——触发钮显示菜单图标与当前页名，菜单项是 CheckboxItem，当前页打勾（390px 视口下六个导航项挤进一条横滚缝，「现在在哪」不可见，故折叠）。两路指向同一份导航数据与同一个状态，不会漂移成两套导航。
+- **响应式**：`sm:` 断点之上发布栏与顶栏转单行，之下转两行（图标+文案 / 按钮）。导航分两路：`sm:` 及以上平铺 Tabs 横滚（`nav-scroll` 右缘淡出提示还有未入屏项，滚到头即收）；窄屏收进一个官方 DropdownMenu——触发钮排在品牌**左边**（官方顶栏的默认开法就是汉堡最左、先于品牌），显示菜单图标与当前页名，菜单项是 CheckboxItem，当前页打勾（390px 视口下六个导航项挤进一条横滚缝，「现在在哪」不可见，故折叠）。两路指向同一份导航数据与同一个状态，不会漂移成两套导航。品牌只有一份，用 `min-w-0 flex-1 sm:flex-none` 让两个断点的剩余空间各归其主，DOM 顺序在每个断点都等于视觉顺序。
 - **断点三档**（`src/index.css`）：`sm`（`min-width: 40rem`，Tailwind 原生）管「不再是手机」；`lg`（`min-width: 64rem`，Tailwind 原生）管「宽到可以分栏」；`touch`（`pointer: coarse`，自定义变体）管手指。`lg` 的判据是页面上最宽的那一行控件：路由编辑器的条件行一行五个控件，列宽不足 480px 就挤爆，而 `max-w-6xl`（1152px）双列每列约 552px、1024px 视口下约 484px —— 正好在 `lg` 落地。
   - 曾有一个 `roomy`（`min-width: 40rem` **且** `min-height: 32rem`）变体，专治「居中弹窗在横屏手机上只放得下一个半字段」（844×390 实测滚动区 32px）。路由编辑器改成整页之后这个病症不存在了，变体也随之删除 —— 它是为一个具体症状发明的，症状消失就不该留在系统里当装饰。
 - **路由编辑器是一个页面，不是弹窗**：它占掉整个内容区（`main` 内，同一个 `max-w-6xl`），底部那根全局发布栏留在原位。这不是布局偏好而是论点的形态：顶部动作栏管「这一条路由 → 草稿」，底部发布栏管「整份草稿 → 生产」，两道闸同时可见，「保存 ≠ 上线」不再需要一句话来解释（弹窗时代它只能靠编辑器自带的一根草稿条重复说明）。
@@ -245,7 +245,7 @@ components:
 - **Primary（default）:** `bg-primary text-primary-foreground`，hover 变 `primary/80`。用于发布、新建路由、确认弹窗的主动作。尺寸 sm（h-7, 0.8rem 字号）为主，发布/新建用 sm。
 - **Outline:** `border-border bg-background`，hover `bg-muted`。取消、刷新、重试等次级动作。弹窗页脚的取消键固定是它。
 - **Destructive:** 刻意是淡染不是实底——`bg-destructive/10 text-destructive`（深色 /20），hover 加深到 /20（深色 /30）。用于删除路由确认。危险不尖叫，只变重。
-- **Ghost:** 透明底，hover `bg-muted`。行内图标按钮（行菜单 icon-sm、主题切换 icon-sm）、发布栏的「查看发布内容」。
+- **Ghost:** 透明底，hover `bg-muted`。行内图标按钮（行菜单 icon-sm）、顶栏的导航菜单钮与账号菜单钮（sm）、发布栏的「查看发布内容」。
 - **Focus:** `focus-visible:ring-3 ring-ring/50`；aria-invalid 时描边与环转 destructive。
 - **Disabled:** `opacity-50 pointer-events-none`，且保留在原位配 `title` 说明。
 

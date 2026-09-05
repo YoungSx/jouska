@@ -1,5 +1,4 @@
 import * as React from 'react';
-import { ChevronDownIcon, LogOutIcon, MenuIcon, RefreshCwIcon, Trash2Icon } from 'lucide-react';
 import { toast } from 'sonner';
 import { Toaster } from '@/components/ui/sonner';
 import { BuildTagFooter } from '@/components/build-tag';
@@ -15,13 +14,28 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog';
 import {
+  ChevronDownIcon,
+  LogOutIcon,
+  MenuIcon,
+  MonitorIcon,
+  MoonIcon,
+  RefreshCwIcon,
+  SunIcon,
+  Trash2Icon,
+} from 'lucide-react';
+import {
   DropdownMenu,
   DropdownMenuCheckboxItem,
   DropdownMenuContent,
   DropdownMenuGroup,
   DropdownMenuItem,
   DropdownMenuLabel,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
   DropdownMenuSeparator,
+  DropdownMenuSub,
+  DropdownMenuSubContent,
+  DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import { Skeleton } from '@/components/ui/skeleton';
@@ -30,7 +44,7 @@ import { PublishBar } from '@/components/publish-bar';
 import { PublishDialog } from '@/components/publish-dialog';
 import { DiscardDialog } from '@/components/discard-dialog';
 import { ViewErrorBoundary } from '@/components/error-boundary';
-import { ThemeToggle } from '@/components/theme-toggle';
+import { useTheme } from '@/components/theme-provider';
 import { AuthView } from '@/views/auth-view';
 import { AuditView } from '@/views/audit-view';
 import { DomainsView } from '@/views/domains-view';
@@ -78,6 +92,7 @@ const NAV_ITEMS: readonly NavItem[] = [
 
 const App = () => {
   const session = useSession();
+  const { theme, setTheme } = useTheme();
   const [view, setView] = React.useState<View>('routes');
 
   /* 顶栏导航在窄屏下可横滚；「滚到头了没有」只驱动右缘淡出的显示，不参与渲染分支。 */
@@ -347,45 +362,10 @@ const App = () => {
         )}
       >
         <div className="mx-auto flex h-(--panel-header-height) max-w-6xl items-center gap-2.5 px-4 sm:gap-4">
-          <div className="shrink-0">
-            <div className="text-sm leading-tight font-semibold tracking-tight">{t.app.name}</div>
-            <div className="text-muted-foreground text-xs leading-tight">{t.app.subtitle}</div>
-          </div>
-
-          {/* 桌面：导航全部平铺（Tabs）。窄屏：收进一个官方 DropdownMenu，当前页打勾。
-              两条路指向同一份 NAV_ITEMS 与同一个 view 状态，不会漂移成两套导航。 */}
-          <nav
-            ref={navRef}
-            onScroll={syncNavTail}
-            className="nav-scroll hidden min-w-0 flex-1 sm:block"
-            aria-label={t.app.title}
-          >
-            <Tabs value={view} onValueChange={(value) => setView(value as View)}>
-              <TabsList>
-                {NAV_ITEMS.filter((item) => item.adminOnly !== true || isAdmin).map((item) => (
-                  /*
-                    编辑期间导航停用而不是消失（DESIGN.md：disabled 留在原位配 title
-                    说明原因）。换页会卸载编辑页，未保存的改动就没了 —— 与其在这里
-                    再造一套跨组件的脏态确认，不如把这条路先关上，并说清怎么开。
-                  */
-                  <TabsTrigger
-                    key={item.id}
-                    value={item.id}
-                    disabled={editor !== null}
-                    title={editor !== null ? t.nav.blockedByEditor : undefined}
-                  >
-                    {item.label}
-                    {item.planned === true && (
-                      <Badge variant="secondary" className="ml-1.5 px-1.5 py-0 text-[10px]">
-                        {t.planned.badge}
-                      </Badge>
-                    )}
-                  </TabsTrigger>
-                ))}
-              </TabsList>
-            </Tabs>
-          </nav>
-          <nav className="min-w-0 flex-1 sm:hidden" aria-label={t.app.title}>
+          {/* 窄屏：导航收进官方 DropdownMenu，菜单钮排在品牌左边 —— 官方顶栏的默认
+              开法就是汉堡在最左、先于品牌。桌面：同一位置换成平铺 Tabs。两条路指向
+              同一份 NAV_ITEMS 与同一个 view 状态，不会漂移成两套导航。 */}
+          <nav className="shrink-0 sm:hidden" aria-label={t.app.title}>
             <DropdownMenu>
               <DropdownMenuTrigger
                 render={
@@ -419,8 +399,49 @@ const App = () => {
             </DropdownMenu>
           </nav>
 
-          <div className="flex shrink-0 items-center gap-1.5">
-            <ThemeToggle />
+          {/* 品牌只有一份：两个断点它都在场，只是谁吃剩余空间换人 —— 窄屏归品牌
+              （flex-1），桌面归 Tabs（sm:flex-none）。DOM 顺序在每个断点都等于视觉
+              顺序，读屏和 Tab 键都不用穿越隐藏件。 */}
+          <div className="min-w-0 flex-1 sm:flex-none">
+            <div className="text-sm leading-tight font-semibold tracking-tight">{t.app.name}</div>
+            <div className="text-muted-foreground text-xs leading-tight">{t.app.subtitle}</div>
+          </div>
+
+          {/* 桌面：导航全部平铺（Tabs），nav-scroll 管横溢淡出。 */}
+          <nav
+            ref={navRef}
+            onScroll={syncNavTail}
+            className="nav-scroll hidden min-w-0 flex-1 sm:block"
+            aria-label={t.app.title}
+          >
+            <Tabs value={view} onValueChange={(value) => setView(value as View)}>
+              <TabsList>
+                {NAV_ITEMS.filter((item) => item.adminOnly !== true || isAdmin).map((item) => (
+                  /*
+                    编辑期间导航停用而不是消失（DESIGN.md：disabled 留在原位配 title
+                    说明原因）。换页会卸载编辑页，未保存的改动就没了 —— 与其在这里
+                    再造一套跨组件的脏态确认，不如把这条路先关上，并说清怎么开。
+                  */
+                  <TabsTrigger
+                    key={item.id}
+                    value={item.id}
+                    disabled={editor !== null}
+                    title={editor !== null ? t.nav.blockedByEditor : undefined}
+                  >
+                    {item.label}
+                    {item.planned === true && (
+                      <Badge variant="secondary" className="ml-1.5 px-1.5 py-0 text-[10px]">
+                        {t.planned.badge}
+                      </Badge>
+                    )}
+                  </TabsTrigger>
+                ))}
+              </TabsList>
+            </Tabs>
+          </nav>
+
+          {/* 主题切换收进了账号菜单 —— 一档显示偏好不值得独占顶栏一个常驻位置。 */}
+          <div className="shrink-0">
             <DropdownMenu>
               <DropdownMenuTrigger
                 render={
@@ -446,6 +467,37 @@ const App = () => {
                   <DropdownMenuLabel className="font-mono text-xs">
                     {user.subject}
                   </DropdownMenuLabel>
+                  <DropdownMenuSeparator />
+                  {/* 官方开法：显示偏好类项目收进子菜单（Sub + RadioGroup），不摊平
+                      在顶层。原独立顶栏按钮已被收编到这里。 */}
+                  <DropdownMenuSub>
+                    <DropdownMenuSubTrigger>
+                      {theme === 'dark' ? (
+                        <MoonIcon />
+                      ) : theme === 'light' ? (
+                        <SunIcon />
+                      ) : (
+                        <MonitorIcon />
+                      )}
+                      {t.theme.label}
+                    </DropdownMenuSubTrigger>
+                    <DropdownMenuSubContent>
+                      <DropdownMenuRadioGroup value={theme} onValueChange={setTheme}>
+                        <DropdownMenuRadioItem value="light">
+                          <SunIcon />
+                          {t.theme.light}
+                        </DropdownMenuRadioItem>
+                        <DropdownMenuRadioItem value="dark">
+                          <MoonIcon />
+                          {t.theme.dark}
+                        </DropdownMenuRadioItem>
+                        <DropdownMenuRadioItem value="system">
+                          <MonitorIcon />
+                          {t.theme.system}
+                        </DropdownMenuRadioItem>
+                      </DropdownMenuRadioGroup>
+                    </DropdownMenuSubContent>
+                  </DropdownMenuSub>
                   <DropdownMenuSeparator />
                   <DropdownMenuItem
                     variant="destructive"
