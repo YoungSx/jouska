@@ -1,7 +1,21 @@
+import { execSync } from 'node:child_process';
 import path from 'node:path';
 import tailwindcss from '@tailwindcss/vite';
 import react from '@vitejs/plugin-react';
 import { defineConfig } from 'vite';
+
+/**
+ * 构建身份，与 CI 注入 Worker 的 BUILD_ID 出自同一条 `git describe`（同一个
+ * checkout，天然一致）。失败兜底 'dev'：浅克隆拿不到 tag、源码包没有 git，
+ * 此时显示 dev 是诚实值而不是猜测。
+ */
+const buildId = (() => {
+  try {
+    return execSync('git describe --tags --always --dirty', { encoding: 'utf8' }).trim();
+  } catch {
+    return 'dev';
+  }
+})();
 
 /**
  * 构建产物直接落进 ../public —— 那正是 wrangler.jsonc 里 `assets.directory`
@@ -12,6 +26,9 @@ import { defineConfig } from 'vite';
  */
 export default defineConfig({
   plugins: [react(), tailwindcss()],
+  define: {
+    __BUILD_ID__: JSON.stringify(buildId),
+  },
   resolve: {
     alias: {
       '@': path.resolve(import.meta.dirname, './src'),
