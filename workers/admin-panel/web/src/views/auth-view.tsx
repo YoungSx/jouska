@@ -1,4 +1,5 @@
 import { Alert, AlertTitle } from '@/components/ui/alert';
+import { BuildTagFooter } from '@/components/build-tag';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
@@ -14,6 +15,9 @@ import { t } from '@/lib/messages';
  *
  * 「门没接上」那张卡是给部署者看的，说得出下一步；另外两张卡可能被任何扫到这个
  * 域名的陌生人看到，所以只说这个面板要什么，不解释内部如何接线。
+ *
+ * 三张卡（以及 loading 之外的每个落点）页脚都有构建标识：被挡住的人唯一问得出口
+ * 的诊断问题是「拦我的是哪个构建」。构建 id 不是接线细节，陌生人看到也无妨。
  */
 
 interface AuthViewProps {
@@ -27,6 +31,7 @@ export const AuthView = ({ me, loading }: AuthViewProps) => {
     return (
       <div className="mx-auto w-full max-w-sm px-4 py-16">
         <AccessPendingCard email={me.accessEmail} />
+        <BuildTagFooter serverBuild={me.build} />
       </div>
     );
   }
@@ -37,6 +42,7 @@ export const AuthView = ({ me, loading }: AuthViewProps) => {
     return (
       <div className="mx-auto w-full max-w-sm px-4 py-16">
         <AccessSetupCard />
+        <BuildTagFooter serverBuild={me.build} />
       </div>
     );
   }
@@ -69,6 +75,7 @@ export const AuthView = ({ me, loading }: AuthViewProps) => {
           </Alert>
         </CardContent>
       </Card>
+      <BuildTagFooter serverBuild={me?.build} />
     </div>
   );
 };
