@@ -98,6 +98,11 @@ export interface User {
 export interface MeResult {
   readonly user: User | null;
   /**
+   * 服务端报的构建身份。拒绝页拿它显示「拦住你的是哪个构建」——拒绝请求的是
+   * Worker,不是浏览器里这份 JS,所以以它为准。缺省说明服务端没说(旧版部署)。
+   */
+  readonly build?: string;
+  /**
    * Access 认了这个邮箱，但 users 表里没有它。这不是登录失败——平台已经回答过
    * 登录了——所以界面要说「找管理员把这个地址加进来」，而不是再给一张登录表单。
    */
@@ -128,8 +133,10 @@ export const api = {
     const data = await request('GET', '/api/auth/me');
     const accessEmail = typeof data.accessEmail === 'string' ? data.accessEmail : undefined;
     const notConfigured = data.identity === 'not_configured';
+    const build = typeof data.build === 'string' ? data.build : undefined;
     return {
       user: asUser(data.user),
+      ...(build === undefined ? {} : { build }),
       ...(accessEmail === undefined ? {} : { accessEmail }),
       ...(notConfigured ? { identityNotConfigured: true } : {}),
     };

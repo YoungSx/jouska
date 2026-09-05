@@ -72,6 +72,16 @@ export interface Env {
    * the account, so the narrow one is the point.
    */
   CF_API_TOKEN?: string;
+
+  /**
+   * Build identity of this deployment, injected by CI as a plain var
+   * (`--var BUILD_ID:...` from `git describe --tags --always --dirty`). Not a
+   * secret — it names the commit the Worker was built from, and it is exactly
+   * what the refusal screens report: when someone cannot get in, the version
+   * of the thing refusing them is the one diagnostic they can still see.
+   * Local dev leaves it unset; the endpoints then answer 'dev'.
+   */
+  BUILD_ID?: string;
 }
 
 /** Hono variables set by the auth middleware. */

@@ -130,10 +130,11 @@ describe('Access off', () => {
 
   it('keeps /me nameless when Access is wired but this request carried nothing', async () => {
     // Vars present, no header: the refusal is about the caller, so the only
-    // thing a stranger learns is what any 401 would have said.
+    // thing a stranger learns is what any 401 would have said — plus the build
+    // tag every refusal carries, which is not an internal detail.
     const res = await request('GET', '/api/auth/me', accessEnv('acme-silent', deadFetch));
     expect(res.status).toBe(200);
-    expect((await res.json()) as unknown).toStrictEqual({ user: null });
+    expect((await res.json()) as unknown).toStrictEqual({ user: null, build: 'dev' });
   });
 
   it('does not provision anybody on the way past', async () => {

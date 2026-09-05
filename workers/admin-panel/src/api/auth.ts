@@ -49,9 +49,14 @@ authRoutes.get('/me', async (c) => {
   // itself — it is the endpoint the SPA pings to discover login state. It runs
   // the same `authenticate` the middleware does, because a discovery endpoint
   // that reached a different verdict than the gate would be worse than none.
+  //
+  // Every branch carries the build identity: whoever /me refuses is stuck on a
+  // screen with no other way to ask which build is refusing them. CI injects
+  // it at deploy time; local dev answers 'dev', which is the honest value.
+  const build = c.env.BUILD_ID ?? 'dev';
   const outcome = await authenticate(c);
   if (outcome.ok) {
-    return c.json({ user: outcome.user });
+    return c.json({ user: outcome.user, build });
   }
 
   // Access vouched for someone the panel has never heard of. Whether that can
@@ -61,14 +66,14 @@ authRoutes.get('/me', async (c) => {
   // already has one. The SPA is told the address so it can name who needs
   // adding instead of offering a form that cannot help.
   if (outcome.error === 'no_panel_account') {
-    return c.json({ user: null, accessEmail: outcome.accessEmail }, 200);
+    return c.json({ user: null, accessEmail: outcome.accessEmail, build }, 200);
   }
 
   // A refusal that is about *this* caller has to be reported as itself: a
   // disabled account or an unverifiable Access token must not be flattened into
   // a generic auth error, which would send the operator into a loop.
   if (outcome.status !== 401) {
-    return c.json({ error: outcome.error }, outcome.status);
+    return c.json({ error: outcome.error, build }, outcome.status);
   }
 
   // No Access identity and no valid authentication. When the deployment has no
@@ -77,7 +82,9 @@ authRoutes.get('/me', async (c) => {
   // 200 with `user: null`, so a stranger probing it learns nothing beyond what
   // any 401 would have said.
   return c.json(
-    outcome.notConfigured === true ? { user: null, identity: 'not_configured' } : { user: null },
+    outcome.notConfigured === true
+      ? { user: null, identity: 'not_configured', build }
+      : { user: null, build },
     200,
   );
 });

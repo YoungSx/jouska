@@ -110,7 +110,11 @@ describe('admin panel end-to-end', () => {
   });
 
   it('health is open, everything else needs an Access identity', async () => {
-    expect((await get('/api/health')).status).toBe(200);
+    // Health answers even with no BUILD_ID var set — tests run without CI's
+    // injection, so the fallback string is what the refusal screens would show.
+    const health = (await (await get('/api/health')).json()) as { ok: boolean; build: string };
+    expect(health.ok).toBe(true);
+    expect(health.build).toBe('dev');
     expect((await get('/api/routes')).status).toBe(401);
     // No endpoint accepts a credential any more, so there is nothing to POST at.
     expect((await call('POST', '/api/publish', {})).status).toBe(401);
@@ -126,14 +130,19 @@ describe('admin panel end-to-end', () => {
   });
 
   it('/me reports login state without asking the caller for anything', async () => {
-    const before = (await (await get('/api/auth/me')).json()) as { user: unknown };
+    // The anonymous refusal carries the build too: whoever /me refuses is stuck
+    // on a screen whose only version question is answered right there.
+    const before = (await (await get('/api/auth/me')).json()) as { user: unknown; build: string };
     expect(before.user).toBeNull();
+    expect(before.build).toBe('dev');
 
     const auth = await signInAdmin();
     const after = (await (await get('/api/auth/me', auth)).json()) as {
       user: { subject: string; role: string } | null;
+      build: string;
     };
     expect(after.user).toMatchObject({ subject: ROOT, role: 'admin' });
+    expect(after.build).toBe('dev');
   });
 
   it('rejects cross-origin and missing-Origin mutations, Access token or not', async () => {

@@ -24,7 +24,7 @@ app.onError((error, c) => {
   return c.json({ error: 'internal_error' }, 500);
 });
 
-app.get('/api/health', (c) => c.json({ ok: true }));
+app.get('/api/health', (c) => c.json({ ok: true, build: c.env.BUILD_ID ?? 'dev' }));
 
 // MCP is a separate Bearer-only protocol surface. It must not pass through
 // the Cookie/CSRF middleware used by the browser API.
