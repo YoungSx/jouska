@@ -37,13 +37,14 @@ import { DomainsView } from '@/views/domains-view';
 import { HistoryView } from '@/views/history-view';
 import { McpTokensView } from '@/views/mcp-tokens-view';
 import { PreviewView } from '@/views/preview-view';
-import { RouteEditor } from '@/views/route-editor';
+import { RouteEditorPage } from '@/views/route-editor';
 import { RoutesView } from '@/views/routes-view';
 import { UsersView } from '@/views/users-view';
 import { useDraft } from '@/hooks/use-draft';
 import { errorCode, useSession } from '@/hooks/use-session';
 import { api, type RouteEntry, type User } from '@/lib/api';
 import { isUsableDefinition } from '@/lib/format';
+import { cn } from '@/lib/utils';
 import { t } from '@/lib/messages';
 import type { RouteDefinition } from '@/lib/types';
 
@@ -99,12 +100,18 @@ const App = () => {
   const draft = useDraft(session.state.status === 'authed', session.onUnauthenticated);
   const isAdmin = session.state.status === 'authed' && session.state.user.role === 'admin';
 
-  /* ---------- 弹窗状态：编辑器、发布、删除确认。 ---------- */
+  /* ---------- 弹窗状态：发布、删除确认。编辑器不在其中——它是一个页面。 ---------- */
   const [editor, setEditor] = React.useState<{
     initial: { id: string; definition: RouteDefinition; enabled: boolean };
     createMode: boolean;
   } | null>(null);
-  const [editorOpen, setEditorOpen] = React.useState(false);
+  /**
+   * 编辑器是页面而不是弹窗，所以没有 open 状态：`editor !== null` 就是「正在编辑」。
+   *
+   * 焦点得自己还回去 —— 从前是 Dialog 免费做的。进编辑器时记下当时聚焦的那个元素
+   * （通常是某一行的编辑按钮），回列表时把焦点放回去，键盘用户不会掉到页首。
+   */
+  const editorReturnFocus = React.useRef<HTMLElement | null>(null);
   const [publishOpen, setPublishOpen] = React.useState(false);
   const [discardOpen, setDiscardOpen] = React.useState(false);
   const [deleteTarget, setDeleteTarget] = React.useState<RouteEntry | null>(null);
@@ -143,8 +150,19 @@ const App = () => {
     initial: { id: string; definition: RouteDefinition; enabled: boolean },
     createMode: boolean,
   ) => {
+    // 记下从哪儿进来的，退出时把焦点还回去。
+    editorReturnFocus.current =
+      document.activeElement instanceof HTMLElement ? document.activeElement : null;
     setEditor({ initial, createMode });
-    setEditorOpen(true);
+  };
+
+  /** 退出编辑页：清状态并把焦点还给当初那个按钮（它可能已经不在，所以是可选调用）。 */
+  const closeEditor = () => {
+    setEditor(null);
+    const target = editorReturnFocus.current;
+    editorReturnFocus.current = null;
+    // 等列表重新挂上再还焦点，否则聚焦的是一个正在被卸载的节点。
+    window.setTimeout(() => target?.focus(), 0);
   };
 
   const onCreate = () => {
@@ -317,8 +335,18 @@ const App = () => {
         {t.nav.skipToContent}
       </a>
 
-      <header className="bg-background/95 sticky top-0 z-30 border-b backdrop-blur">
-        <div className="mx-auto flex max-w-6xl items-center gap-2.5 px-4 py-2.5 sm:gap-4">
+      {/*
+        编辑期间窄屏让位：手机上编辑页接管整屏（那正是从前全高 sheet 想要的效果，
+        只是它当时得靠一堆弹窗补丁才拿到）。高度写成 h-（不是 py-），因为
+        --panel-header-height 是这根栏和编辑页动作栏之间的契约。
+      */}
+      <header
+        className={cn(
+          'bg-background/95 sticky top-0 z-30 border-b backdrop-blur',
+          editor !== null && 'max-sm:hidden',
+        )}
+      >
+        <div className="mx-auto flex h-(--panel-header-height) max-w-6xl items-center gap-2.5 px-4 sm:gap-4">
           <div className="shrink-0">
             <div className="text-sm leading-tight font-semibold tracking-tight">{t.app.name}</div>
             <div className="text-muted-foreground text-xs leading-tight">{t.app.subtitle}</div>
@@ -335,7 +363,17 @@ const App = () => {
             <Tabs value={view} onValueChange={(value) => setView(value as View)}>
               <TabsList>
                 {NAV_ITEMS.filter((item) => item.adminOnly !== true || isAdmin).map((item) => (
-                  <TabsTrigger key={item.id} value={item.id}>
+                  /*
+                    编辑期间导航停用而不是消失（DESIGN.md：disabled 留在原位配 title
+                    说明原因）。换页会卸载编辑页，未保存的改动就没了 —— 与其在这里
+                    再造一套跨组件的脏态确认，不如把这条路先关上，并说清怎么开。
+                  */
+                  <TabsTrigger
+                    key={item.id}
+                    value={item.id}
+                    disabled={editor !== null}
+                    title={editor !== null ? t.nav.blockedByEditor : undefined}
+                  >
                     {item.label}
                     {item.planned === true && (
                       <Badge variant="secondary" className="ml-1.5 px-1.5 py-0 text-[10px]">
@@ -362,6 +400,7 @@ const App = () => {
                   <DropdownMenuCheckboxItem
                     key={item.id}
                     checked={item.id === view}
+                    disabled={editor !== null}
                     onCheckedChange={() => setView(item.id)}
                     // Base UI 对 CheckboxItem 的默认是点了留在菜单里（多选语义）；
                     // 导航是单选，点了就得走。
@@ -427,50 +466,79 @@ const App = () => {
 
       <main id="main" className="mx-auto w-full max-w-6xl flex-1 px-4 pt-6 pb-8">
         {/* 视图级兜底。头部与发布栏留在 boundary 外面，所以「这一页崩了」不会
-            连带退出登录一起消失。key={view} 让换页时重建 boundary —— 它不会
-            自己复位，缺了 key 就会一直停在错误卡片上。 */}
-        <ViewErrorBoundary key={view}>
-          {view === 'routes' && (
-            <RoutesView
-              routes={draft.routes}
-              defaults={draft.defaults}
-              loading={draft.loading}
-              isAdmin={isAdmin}
-              dangersByRoute={dangersByRoute}
-              onCreate={onCreate}
-              onEdit={onEdit}
-              onDuplicate={onDuplicate}
-              onDelete={setDeleteTarget}
-              onMove={(index, direction) => void onMove(index, direction)}
-              onSaveDefaults={onSaveDefaults}
+            连带退出登录一起消失。key 换了就重建 boundary —— 它不会自己复位，
+            缺了 key 就会一直停在错误卡片上。 */}
+        {editor !== null ? (
+          /*
+            编辑器占掉整个内容区，而不是盖在它上面。这样底部那根真发布栏留在原位：
+            上面那道闸是「这一条路由 → 草稿」，下面那道是「整份草稿 → 生产」，
+            两道门同时看得见，「保存≠上线」不再需要靠一句话来解释。
+          */
+          <ViewErrorBoundary key="route-editor">
+            <RouteEditorPage
+              initial={editor.initial}
+              createMode={editor.createMode}
+              onSaved={() => {
+                closeEditor();
+                reloadQuietly();
+              }}
+              // 保存成功的 toast 带一扇「去发布」的门：草稿写完的下一步就是发布。
+              onGoPublish={() => {
+                reloadQuietly();
+                setPublishOpen(true);
+              }}
+              onExit={closeEditor}
             />
-          )}
-          {view === 'domains' && <DomainsView />}
-          {view === 'preview' && (
-            <PreviewView
-              preview={previewForPage}
-              liveRevision={draft.gate.kind === 'clean' ? draft.gate.live : null}
-              loading={draft.loading}
-              isAdmin={isAdmin}
-              onRefresh={() => void draft.recheck()}
-              onPublish={() => setPublishOpen(true)}
-              onGoRoutes={() => setView('routes')}
-            />
-          )}
-          {view === 'audit' && <AuditView />}
-          {view === 'history' && <HistoryView isAdmin={isAdmin} onConfigChanged={reloadQuietly} />}
-          {view === 'users' && (
-            <UsersView
-              selfSubject={user.subject}
-              onSelfRoleChanged={() => void session.refresh()}
-            />
-          )}
-          {view === 'mcp-tokens' && <McpTokensView onUnauthenticated={session.onUnauthenticated} />}
-        </ViewErrorBoundary>
+          </ViewErrorBoundary>
+        ) : (
+          <ViewErrorBoundary key={view}>
+            {view === 'routes' && (
+              <RoutesView
+                routes={draft.routes}
+                defaults={draft.defaults}
+                loading={draft.loading}
+                isAdmin={isAdmin}
+                dangersByRoute={dangersByRoute}
+                onCreate={onCreate}
+                onEdit={onEdit}
+                onDuplicate={onDuplicate}
+                onDelete={setDeleteTarget}
+                onMove={(index, direction) => void onMove(index, direction)}
+                onSaveDefaults={onSaveDefaults}
+              />
+            )}
+            {view === 'domains' && <DomainsView />}
+            {view === 'preview' && (
+              <PreviewView
+                preview={previewForPage}
+                liveRevision={draft.gate.kind === 'clean' ? draft.gate.live : null}
+                loading={draft.loading}
+                isAdmin={isAdmin}
+                onRefresh={() => void draft.recheck()}
+                onPublish={() => setPublishOpen(true)}
+                onGoRoutes={() => setView('routes')}
+              />
+            )}
+            {view === 'audit' && <AuditView />}
+            {view === 'history' && (
+              <HistoryView isAdmin={isAdmin} onConfigChanged={reloadQuietly} />
+            )}
+            {view === 'users' && (
+              <UsersView
+                selfSubject={user.subject}
+                onSelfRoleChanged={() => void session.refresh()}
+              />
+            )}
+            {view === 'mcp-tokens' && (
+              <McpTokensView onUnauthenticated={session.onUnauthenticated} />
+            )}
+          </ViewErrorBoundary>
+        )}
       </main>
 
       {/* 闸门轨道：无论在哪一页，草稿与线上的差异都摆在这里。 */}
       <PublishBar
+        className={editor !== null ? 'max-sm:hidden' : undefined}
         gate={draft.gate}
         canPublish={isAdmin}
         publishing={false}
@@ -478,32 +546,6 @@ const App = () => {
         onReview={() => setView('preview')}
         onDiscard={() => setDiscardOpen(true)}
       />
-
-      {editor !== null && (
-        <RouteEditor
-          open={editorOpen}
-          onOpenChange={(open: boolean) => {
-            setEditorOpen(open);
-            if (!open) {
-              setEditor(null);
-            }
-          }}
-          initial={editor.initial}
-          createMode={editor.createMode}
-          onSaved={() => {
-            setEditorOpen(false);
-            setEditor(null);
-            reloadQuietly();
-          }}
-          // 保存成功的 toast 带一扇「去发布」的门：草稿写完的下一步就是发布。
-          onGoPublish={() => {
-            setEditorOpen(false);
-            setEditor(null);
-            reloadQuietly();
-            setPublishOpen(true);
-          }}
-        />
-      )}
 
       <PublishDialog
         open={publishOpen}

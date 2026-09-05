@@ -23,7 +23,8 @@
     "noFallthroughCasesInSwitch": true,
     "paths": {
       "@/*": ["./src/*"],
-      "@jouska/timing-presets": ["../../../packages/jouska/src/presets.ts"]
+      "@jouska/timing-presets": ["../../../packages/jouska/src/presets.ts"],
+      "@jouska/digest": ["../../../packages/jouska/src/internal/digest.ts"]
     }
   },
   "include": ["src"]

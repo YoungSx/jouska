@@ -40,6 +40,14 @@ export default defineConfig({
         import.meta.dirname,
         '../../../packages/jouska/src/presets.ts',
       ),
+      // 同一条理由的第二个放行：面板要生成 API key 并把它的 SHA-256 存进
+      // `access.keys`，而反代在热路径上会拿明文再算一次做比对。两边算法差一个
+      // 字节，生成出来的每把 key 都会在边缘被静默拒掉 —— 所以摘要只能有一份
+      // 实现。digest.ts 也是零依赖单文件。
+      '@jouska/digest': path.resolve(
+        import.meta.dirname,
+        '../../../packages/jouska/src/internal/digest.ts',
+      ),
     },
   },
   build: {

@@ -7,12 +7,17 @@ import { defineConfig } from 'vitest/config';
  * 见 vite.config.ts），测试里 `@/` 与预设 import 才能解析。
  */
 const jouskaPresets = path.resolve(import.meta.dirname, '../../../packages/jouska/src/presets.ts');
+const jouskaDigest = path.resolve(
+  import.meta.dirname,
+  '../../../packages/jouska/src/internal/digest.ts',
+);
 
 export default defineConfig({
   resolve: {
     alias: {
       '@': path.resolve(import.meta.dirname, './src'),
       '@jouska/timing-presets': jouskaPresets,
+      '@jouska/digest': jouskaDigest,
     },
   },
   test: {

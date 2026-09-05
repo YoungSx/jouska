@@ -16,6 +16,8 @@ export const t = {
   },
 
   nav: {
+    /** 编辑页开着时导航停用的原因 —— 停用控件必须自己解释为什么。 */
+    blockedByEditor: '先保存或取消当前的路由编辑',
     routes: '路由',
     domains: '域名',
     preview: '发布',
@@ -248,8 +250,17 @@ export const t = {
     /** jsonc-parser 只给 offset，行号在这里换算；两个数字都是 1 起始。 */
     jsonErrorAt: (line: number, column: number) => `第 ${line} 行第 ${column} 列附近`,
     jsonEscape: '放弃 JSON 里的改动，回到表单那份定义',
+    /** 排版按钮：只在文档能解析时可用，所以它永远不会改变定义。 */
+    jsonFormat: '格式化',
+    jsonFormatBlocked: 'JSON 还没修好，格式化会照着坏掉的结构重排',
     /** 保存被拦时，页脚摘要引用 collectErrors 的第一条错误原文。 */
     saveBlocked: (reason: string) => `保存还差一步：${reason}`,
+    /** 返回路由列表 —— 编辑器是一个页面，得给出回去的路。 */
+    backToRoutes: '路由',
+    /** 动作栏里的错误索引：点开是清单，点一条跳到那个字段。 */
+    errorIndexCount: (count: number) => `${count} 处待修`,
+    /** 保存按钮的原生 tooltip：快捷键得有人告诉才存在。 */
+    saveShortcut: '保存到草稿（⌘S / Ctrl+S）',
     /** 常驻草稿条：编辑器开着 ≠ 会改变线上。 */
     draftBanner: '草稿中 · 线上不受影响',
     draftBannerHint: '保存进的是草稿；发布之后线上才会变。',
@@ -261,7 +272,7 @@ export const t = {
     saveFailed: (message: string) => `保存失败：${message}`,
     tooBig: (kb: number) => `定义太大，上限 ${kb} KB`,
     discardTitle: '放弃未保存的改动？',
-    discardBody: '这个弹窗里的修改还没有存进草稿。',
+    discardBody: '这一页的修改还没有存进草稿。',
     discardConfirm: '放弃改动',
     discardCancel: '继续编辑',
     /**
@@ -450,9 +461,21 @@ export const t = {
       fallbackCharsetHelp:
         '响应没声明字符集、或者声明了一个这个运行时解不了的，就按这个解码。猜错比不改写更糟。',
     },
+    /**
+     * 国家选择器的可访问文案。Base UI 明说它不 ship 这些字符串：chip 怎么删、
+     * 选了几个、怎么用键盘选到它们，读屏用户全靠这几句。
+     */
+    countryPicker: {
+      placeholder: '搜国家名或代码',
+      empty: '没有匹配的国家或地区',
+      chipHint: '按 Backspace 或 Delete 移除',
+      selected: (count: number) => `已选 ${count} 个，从输入框开头按左方向键可以选到它们`,
+      remove: (label: string) => `移除 ${label}`,
+    },
+
     blockCountries: {
       label: '拒绝这些国家',
-      help: 'ISO 3166-1 alpha-2 代码，逗号分隔。命中的请求返回 403。',
+      help: '搜国家名或代码都行，存进配置的是 ISO 3166-1 alpha-2 代码。命中的请求返回 403。',
       /** 术语 tooltip：ISO 国家码是两字母缩写，第一次见的人需要两个例子的锚。 */
       tip: 'ISO 3166-1 alpha-2 是两位字母的国家码，如 CN=中国、SG=新加坡、US=美国。',
       placeholder: 'CU, IR',
@@ -482,9 +505,11 @@ export const t = {
     ip: {
       label: 'IP 规则',
       allow: 'allow（CIDR 或地址）',
-      allowHelp: 'allow 列表写错一个字符，就会放进本想排除的地址。',
+      allowHelp:
+        'allow 列表写错一个字符，就会放进本想排除的地址。这里不校验写法 —— 判定归反代实际使用的那一份匹配实现，面板另写一套只会给出与线上不一致的意见。',
       deny: 'deny（CIDR 或地址）',
-      denyHelp: 'deny 列表写错一个字符，就会挡掉正常的调用方。',
+      denyHelp:
+        'deny 列表写错一个字符，就会挡掉正常的调用方。同样不在这里校验写法：认不出的条目在线上不拦任何请求，而不是报错。',
       /** 术语 tooltip：CIDR 记法第一次见的人需要「前缀位数」的白话解释。 */
       tip: 'CIDR 用「地址/前缀位数」表示一段 IP，如 10.0.0.0/8 覆盖 10.x.x.x 全部；单个地址不带斜杠。',
     },
@@ -504,7 +529,15 @@ export const t = {
       emailsPlaceholder: 'alice@example.com',
       keys: 'API key 的 SHA-256 哈希',
       keysHelp:
-        '存的是哈希，不是 key 本身。终端里生成一对：openssl rand -base64 32 | sha256sum，左边明文只显示这一次，右边 64 位 hex 粘到这里。',
+        '存的是哈希，不是 key 本身。下面那个按钮能当场生成一把 —— 明文只显示这一次，哈希自动填进来。也可以把别处算好的 64 位 hex 直接粘进来。',
+      /** 一键生成：把「去开个终端」这一步从必经之路降级成一条备用路。 */
+      keyGenerate: '生成一把新 key',
+      keyPlaintext: 'key 明文（只显示这一次）',
+      keyPlaintextHint:
+        '现在就复制给调用方。它不会存进草稿、也不会进任何日志 —— 关掉这张卡就真的没了，只有上面那串哈希留下。',
+      keyCopy: '复制 key 明文',
+      /** 备用路：拿不到 crypto（老浏览器、非安全上下文）时仍然有办法。 */
+      keyManualHint: '也可以在终端里生成一对：openssl rand -base64 32 | tr -d "\\n" | sha256sum',
       keysPlaceholder: '9f86d081884c7d659a2feaa0c55ad015…（64 位 hex）',
       header: 'key 所在的请求头',
       headerHelp: '默认 authorization（取 Bearer 后面的值）。自定义头填头名，值就是 key 本身。',
