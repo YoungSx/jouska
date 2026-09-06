@@ -121,7 +121,18 @@ export type SectionKey = 'bodyRewrite' | 'cors' | 'ip' | 'access' | 'forwardAuth
 
 /** 本地校验的错误集：键是字段，值是直接展示的文案。 */
 export type FieldErrors = Partial<
-  Record<'id' | 'upstream' | 'scheme' | 'matchConditions' | NumericKey, string>
+  Record<
+    | 'id'
+    | 'upstream'
+    | 'scheme'
+    | 'matchConditions'
+    | NumericKey
+    | 'accessKeys'
+    | 'accessTeam'
+    | 'accessEmails'
+    | 'accessHeader',
+    string
+  >
 >;
 
 /**

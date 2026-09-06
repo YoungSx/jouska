@@ -247,8 +247,11 @@ export const NUMERIC_BOUNDS = {
   streamIdleTimeoutMs: { min: 0, max: 600_000, default: 60_000 },
   retries: { min: 0, max: 100, default: 0 },
   retryBackoffMs: { min: 0, max: 5_000, default: 100 },
-  /** 委托鉴权子请求的时限；schema 上限 5000，默认 2000。 */
-  authTimeoutMs: { min: 1, max: 5_000, default: 2_000 },
+  /**
+   * 委托鉴权子请求的时限；schema 上限 5000，默认 2000。
+   * min 为 0：0 = 不设限（schema 放行；见 b311db1，运行时会先把 0 拦下来）。
+   */
+  authTimeoutMs: { min: 0, max: 5_000, default: 2_000 },
 } as const;
 
 /**
@@ -294,6 +297,15 @@ export const HTTP_METHODS = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'O
 
 /** 路由 ID 的合法形状，与服务端 `routeIdFrom` 的正则一致。 */
 export const ROUTE_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+
+/**
+ * access 块凭据字段的合法形状。三份正则逐字符对齐
+ * `packages/jouska/src/config.ts` 的 access schema —— 本地校验的意见必须与
+ * 服务端一致，所以这里抄的是同一份字符类，不是自己另写一套。
+ */
+export const ACCESS_TEAM_PATTERN = /^[a-z0-9][a-z0-9-]{0,62}[a-z0-9]$/;
+export const ACCESS_KEY_DIGEST_PATTERN = /^[0-9a-f]{64}$/;
+export const HEADER_TOKEN_PATTERN = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
 
 /** 服务端 validate.ts 的输入上限。 */
 export const LIMITS = {
