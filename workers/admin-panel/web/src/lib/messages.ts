@@ -992,4 +992,14 @@ export const t = {
     forbidden: '这个操作需要管理员权限。',
     unknownError: '出了点问题',
   },
+
+  json: {
+    /** 收起的容器摘牌 —— 数字多少个一眼可见，不必展开去数。 */
+    keys: (n: number) => `${n} 个键`,
+    items: (n: number) => `${n} 项`,
+    /** 工具栏徽章。 */
+    entries: (n: number) => `${n} 个顶层条目`,
+    expandAll: '全部展开',
+    collapseAll: '收起全部',
+  },
 } as const;

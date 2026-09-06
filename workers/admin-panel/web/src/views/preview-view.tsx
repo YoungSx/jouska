@@ -20,6 +20,7 @@ import {
 } from '@/components/ui/empty';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Spinner } from '@/components/ui/spinner';
+import { JsonViewer } from '@/components/json-viewer';
 import type { PreviewResult } from '@/lib/api';
 import { t } from '@/lib/messages';
 import { dangerReason, type FieldRisk, type Issue } from '@/lib/types';
@@ -180,10 +181,8 @@ const DocumentDetails = ({ doc }: { readonly doc: unknown }) => (
       {t.preview.documentTitle}
     </summary>
     <p className="text-muted-foreground mt-1 text-xs">{t.preview.documentHint}</p>
-    {/* 反代热路径读的就是这份 JSON，逐字符可核对，所以要等宽与横向滚动。 */}
-    <pre className="mt-2 max-h-96 overflow-auto rounded-md bg-muted p-3 font-mono text-xs">
-      {JSON.stringify(doc, null, 2)}
-    </pre>
+    {/* 反代热路径读的就是这份 JSON：折叠着看结构，展开核对细节，复制拿原文。 */}
+    <JsonViewer value={doc} className="mt-2" />
   </details>
 );
 

@@ -35,6 +35,7 @@ import {
 } from '@/components/ui/select';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Spinner } from '@/components/ui/spinner';
+import { JsonViewer } from '@/components/json-viewer';
 import {
   Table,
   TableBody,
@@ -280,18 +281,36 @@ interface AuditDetailDialogProps {
   readonly onClose: () => void;
 }
 
-const AuditDetailDialog = ({ entry, onClose }: AuditDetailDialogProps) => (
-  <Dialog open={entry !== null} onOpenChange={(open) => (open ? undefined : onClose())}>
-    <DialogContent className="sm:max-w-lg">
-      <DialogHeader>
-        <DialogTitle>{t.audit.detailTitle}</DialogTitle>
-      </DialogHeader>
-      <pre className="bg-muted max-h-96 overflow-auto rounded-md p-3 font-mono text-xs break-words whitespace-pre-wrap">
-        {entry?.detail}
-      </pre>
-      <DialogFooter>
-        <DialogClose render={<Button variant="outline" />}>{t.common.close}</DialogClose>
-      </DialogFooter>
-    </DialogContent>
-  </Dialog>
-);
+const AuditDetailDialog = ({ entry, onClose }: AuditDetailDialogProps) => {
+  // detail 存库前是 JSON.stringify 的产物，九成九能 parse 回树。万一是别的东西
+  // （老数据、手写坏行），原样摆出来，别为了好看把真内容吞了。
+  const parsed = React.useMemo(() => {
+    if (entry?.detail === null || entry?.detail === undefined) return null;
+    try {
+      const value: unknown = JSON.parse(entry.detail);
+      return typeof value === 'object' && value !== null ? value : null;
+    } catch {
+      return null;
+    }
+  }, [entry?.detail]);
+
+  return (
+    <Dialog open={entry !== null} onOpenChange={(open) => (open ? undefined : onClose())}>
+      <DialogContent className="sm:max-w-lg">
+        <DialogHeader>
+          <DialogTitle>{t.audit.detailTitle}</DialogTitle>
+        </DialogHeader>
+        {parsed !== null ? (
+          <JsonViewer value={parsed} />
+        ) : (
+          <pre className="bg-muted max-h-96 overflow-auto rounded-md p-3 font-mono text-xs break-words whitespace-pre-wrap">
+            {entry?.detail}
+          </pre>
+        )}
+        <DialogFooter>
+          <DialogClose render={<Button variant="outline" />}>{t.common.close}</DialogClose>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+};
