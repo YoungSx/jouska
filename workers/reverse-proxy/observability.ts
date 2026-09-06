@@ -87,7 +87,17 @@ const analyticsReceiver =
     });
   };
 
-/** One structured JSON line per proxied request, consumed by Workers Logs. */
+/**
+ * One structured JSON line per proxied request, consumed by Workers Logs.
+ *
+ * A second line follows once the body stream ends (`proxy_stream`): the request
+ * line is emitted while the body is still in flight, so `outcome: "ok"` there
+ * says nothing about whether the stream stayed alive. Everything that can cut a
+ * stream the client already saw as `200 OK` — an idle deadline, a first-chunk
+ * deadline, an upstream reset, the client hanging up — arrives only in the
+ * stream report, which is what makes the pair of lines the honest record of a
+ * streamed response.
+ */
 const logsReceiver =
   (log: (line: string) => void): ProxySink =>
   (event) => {
@@ -111,6 +121,31 @@ const logsReceiver =
         // carries the field when there is a cache to report on.
         cache: event.cache,
       }),
+    );
+    // A streamed body reports its ending separately, once it has one. Waiting
+    // for it here would hold the request line until the client had finished
+    // reading — on an LLM answer that is minutes. Workers keeps the isolate
+    // alive for the life of the response body, so the promise resolves on its
+    // own; a rejected one cannot exist (the library resolves every ending,
+    // deadline included), and a rejection would mean a bug worth seeing.
+    void event.stream?.then(
+      (report) => {
+        log(
+          JSON.stringify({
+            message: 'proxy_stream',
+            routeId: event.routeId,
+            requestId: event.requestId,
+            upstream: event.upstream,
+            path: clip(event.path, LOG_PATH_LIMIT),
+            outcome: report.outcome,
+            bytes: report.bytes,
+            durationMs: report.durationMs,
+          }),
+        );
+      },
+      (error: unknown) => {
+        console.error('jouska: stream report rejected', error);
+      },
     );
   };
 
