@@ -1323,8 +1323,8 @@ const forwardAuthSchema = z.object({
    * identity reaches the upstream (`x-user-id` is the usual case).
    */
   copyResponseHeaders: authHeaderNames('forwardAuth.copyResponseHeaders').nonempty().default([]),
-  /** Deadline for the auth exchange, shorter than any upstream attempt default. */
-  timeoutMs: z.number().int().positive().max(5_000).default(2_000),
+  /** Deadline for the auth exchange, shorter than any upstream attempt default. `0` disables it. */
+  timeoutMs: z.number().int().min(0).max(5_000).default(2_000),
   /**
    * Serve the upstream even when the auth endpoint cannot be reached. Absent
    * means fail closed — the default exists so that an auth outage is an outage,
@@ -1905,13 +1905,16 @@ const routeBehaviour = {
    * then a dead socket, and the event reported a successful 200. The body now
    * has deadlines of its own; see `firstChunkTimeoutMs` and
    * `streamIdleTimeoutMs`.
-   *
    * The ceiling is 120s rather than 30s because an upstream may be slow to
    * answer at all: a cold-starting container or a queued request can take a
    * minute to produce headers, and there is nothing this proxy can do about it
    * except wait or give up.
+   *
+   * `0` disables the deadline: no head timer is armed at all. The number means
+   * "off", not "fire immediately" — which is what a raw `setTimeout(0)` would
+   * do, and why the runtime guards the value instead of passing it through.
    */
-  timeoutMs: z.number().int().positive().max(120_000).default(10_000),
+  timeoutMs: z.number().int().min(0).max(120_000).default(10_000),
   /**
    * Ceiling on all attempts combined, including backoff — still to headers.
    *
@@ -1926,8 +1929,11 @@ const routeBehaviour = {
    * not for the transmission of the whole response" — for its entire history,
    * and a total-duration cap is what makes a long streamed answer fail for no
    * reason. The idle deadlines below are the bound instead.
+   *
+   * `0` disables the budget entirely: the walk has no overall deadline and runs
+   * until a per-attempt or body deadline ends it.
    */
-  totalTimeoutMs: z.number().int().positive().max(300_000).default(30_000),
+  totalTimeoutMs: z.number().int().min(0).max(300_000).default(30_000),
   /**
    * How long to wait for the **first byte of the body** after headers arrive.
    *
@@ -1939,8 +1945,10 @@ const routeBehaviour = {
    *
    * A non-streaming response sends headers and body together, so this never
    * fires for one.
+   *
+   * `0` disables the deadline — the first byte may take as long as it takes.
    */
-  firstChunkTimeoutMs: z.number().int().positive().max(600_000).default(60_000),
+  firstChunkTimeoutMs: z.number().int().min(0).max(600_000).default(60_000),
   /**
    * How long the body may go without a byte once it has started.
    *
@@ -1952,8 +1960,11 @@ const routeBehaviour = {
    * jouska never injects keep-alives of its own. Feeding this deadline from
    * inside the proxy would guarantee it never fires, which is the opposite of
    * knowing whether the upstream is alive.
+   *
+   * `0` disables the deadline — a stream that goes quiet is then the client's
+   * problem to notice, not the proxy's.
    */
-  streamIdleTimeoutMs: z.number().int().positive().max(600_000).default(60_000),
+  streamIdleTimeoutMs: z.number().int().min(0).max(600_000).default(60_000),
   /**
    * Extra attempts after the first failure. Only idempotent methods retry.
    *
@@ -2456,7 +2467,14 @@ export const configSchema = z
    */
   .superRefine((config, ctx) => {
     config.routes.forEach((entry, index) => {
-      if (entry.timeoutMs > entry.totalTimeoutMs) {
+      // A `0` on either side means that deadline is disabled — an off deadline
+      // cannot be exceeded, so the contradiction only exists between two
+      // numbers that are both actually armed.
+      if (
+        entry.timeoutMs > 0 &&
+        entry.totalTimeoutMs > 0 &&
+        entry.timeoutMs > entry.totalTimeoutMs
+      ) {
         ctx.addIssue({
           code: 'custom',
           path: ['routes', index, 'timeoutMs'],

@@ -239,12 +239,12 @@ export interface FieldRisk {
 
 /* ---------- schema 边界（对齐 config.ts） ---------- */
 
-/** number 字段的取值范围与默认值，与 routeBehaviour 一致。 */
+/** number 字段的取值范围与默认值，与 routeBehaviour 一致。超时类字段 min 为 0：0 表示不设限。 */
 export const NUMERIC_BOUNDS = {
-  timeoutMs: { min: 1, max: 120_000, default: 10_000 },
-  totalTimeoutMs: { min: 1, max: 300_000, default: 30_000 },
-  firstChunkTimeoutMs: { min: 1, max: 600_000, default: 60_000 },
-  streamIdleTimeoutMs: { min: 1, max: 600_000, default: 60_000 },
+  timeoutMs: { min: 0, max: 120_000, default: 10_000 },
+  totalTimeoutMs: { min: 0, max: 300_000, default: 30_000 },
+  firstChunkTimeoutMs: { min: 0, max: 600_000, default: 60_000 },
+  streamIdleTimeoutMs: { min: 0, max: 600_000, default: 60_000 },
   retries: { min: 0, max: 100, default: 0 },
   retryBackoffMs: { min: 0, max: 5_000, default: 100 },
   /** 委托鉴权子请求的时限；schema 上限 5000，默认 2000。 */

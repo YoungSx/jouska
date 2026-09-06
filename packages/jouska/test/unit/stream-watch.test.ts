@@ -106,6 +106,31 @@ describe('watchStream', () => {
     expect(reports[0]!.outcome).toBe('complete');
   });
 
+  it('lets a stream that goes silent live when both deadlines are disabled', async () => {
+    // `0` means the deadline is off. `setTimeout(0)` would have fired on the
+    // next tick and read as an instant abort, which is why the monitor guards
+    // the value rather than arming the timer anyway. The upstream here pauses
+    // 150ms mid-stream — long enough that any armed deadline, including one
+    // misread as 0, would have cut it.
+    const encoder = new TextEncoder();
+    const body = new ReadableStream<Uint8Array>({
+      async start(controller) {
+        controller.enqueue(encoder.encode('data: a\n\n'));
+        // oxlint-disable-next-line no-await-in-loop
+        await new Promise((resolve) => setTimeout(resolve, 150));
+        controller.enqueue(encoder.encode('data: b\n\n'));
+        controller.close();
+      },
+    });
+    const { stream, reports, aborts } = watched(body, 0, 0);
+    const seen = await drain(stream);
+
+    expect(seen.text).toBe('data: a\n\ndata: b\n\n');
+    expect(seen.error).toBeUndefined();
+    expect(reports[0]!.outcome).toBe('complete');
+    expect(aborts).toEqual([]);
+  });
+
   it('fails the stream when no first byte arrives, and cuts the upstream', async () => {
     const { stream, reports, aborts } = watched(upstream(FRAMES, 10, { stallAfter: 0 }), 50, 1_000);
     const seen = await drain(stream);

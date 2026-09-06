@@ -390,22 +390,22 @@ export const t = {
     timeoutMs: {
       label: '单次尝试等响应头',
       unit: '毫秒',
-      help: '只管到上游发出响应头为止；正文有自己的两个时限。',
+      help: '只管到上游发出响应头为止；正文有自己的两个时限。填 0 表示不设限。',
     },
     totalTimeoutMs: {
       label: '重试总时限',
       unit: '毫秒',
-      help: '所有尝试加退避的总上限，同样只管到响应头。',
+      help: '所有尝试加退避的总上限，同样只管到响应头。填 0 表示不设限。',
     },
     firstChunkTimeoutMs: {
       label: '等正文第一个字节',
       unit: '毫秒',
-      help: '响应头之后等首字节；模型思考很久属于正常，这里要给够。',
+      help: '响应头之后等首字节；模型思考很久属于正常，这里要给够。填 0 表示不设限。',
     },
     streamIdleTimeoutMs: {
       label: '正文空闲时限',
       unit: '毫秒',
-      help: '两个字节之间最长静默；只要还在滴数据就一直转发，没有总时长上限。',
+      help: '两个字节之间最长静默；只要还在滴数据就一直转发，没有总时长上限。填 0 表示不设限。',
     },
     retries: {
       label: '额外重试次数',
@@ -551,7 +551,7 @@ export const t = {
       copyResponseHeaders: '从鉴权响应抄进上游请求的头',
       copyResponseHeadersHelp: '比如 `x-user-id`——鉴权端点认完人之后，用这些头告诉上游「是谁」。',
       timeoutMs: '鉴权请求超时',
-      timeoutMsHelp: '超过就按端点不可用处理。留空按默认的 2000 毫秒。',
+      timeoutMsHelp: '超过就按端点不可用处理。留空按默认的 2000 毫秒；填 0 表示不设限。',
       failOpen: '端点不可达时放行',
       failOpenHelp:
         '关闭时端点挂了返回 503；打开后端点挂了所有请求直接放行——只在「可用性高于准入」时才考虑。',

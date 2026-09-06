@@ -67,9 +67,9 @@ export class StreamDeadlineError extends Error {
 export interface WatchStreamOptions {
   /** The upstream body to monitor. */
   body: ReadableStream<Uint8Array>;
-  /** Deadline for the first byte, measured from response headers. */
+  /** Deadline for the first byte, measured from response headers. `0` disables it. */
   firstChunkTimeoutMs: number;
-  /** Deadline between bytes, once the first has arrived. */
+  /** Deadline between bytes, once the first has arrived. `0` disables it. */
   streamIdleTimeoutMs: number;
   /**
    * Cuts the upstream connection when a deadline expires.
@@ -153,6 +153,11 @@ export const watchStream = ({
   return body.pipeThrough(
     new TransformStream<Uint8Array, Uint8Array>({
       start(controller) {
+        // `0` disables the deadline — `setTimeout(fn, 0)` fires on the next tick
+        // and would read as an instant abort rather than "never".
+        if (firstChunkTimeoutMs === 0) {
+          return;
+        }
         arm(
           firstChunkTimeoutMs,
           'first_chunk_timeout',
@@ -162,6 +167,10 @@ export const watchStream = ({
       },
       transform(chunk, controller) {
         bytes += chunk.byteLength;
+        if (streamIdleTimeoutMs === 0) {
+          controller.enqueue(chunk);
+          return;
+        }
         arm(
           streamIdleTimeoutMs,
           'idle_timeout',

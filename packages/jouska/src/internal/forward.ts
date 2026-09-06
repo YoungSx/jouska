@@ -359,7 +359,13 @@ export const forward = async ({
   // retry: the ratio is retries over requests, and only the walked ones belong
   // in the denominator.
   limits?.onRequest();
-  const remaining = (): number => route.totalTimeoutMs - (Date.now() - startedAt);
+  // `totalTimeoutMs: 0` disables the overall budget, so the remaining time is
+  // unbounded rather than immediately negative — a plain subtraction would
+  // break out of the walk before the first attempt.
+  const remaining = (): number =>
+    route.totalTimeoutMs === 0
+      ? Number.POSITIVE_INFINITY
+      : route.totalTimeoutMs - (Date.now() - startedAt);
   let lastError: unknown;
   let held: ForwardResult | undefined;
 
@@ -423,7 +429,10 @@ export const forward = async ({
       limits?.onRetry();
     }
 
-    const budget = Math.min(route.timeoutMs, remaining());
+    // `timeoutMs: 0` disables the head deadline; the attempt then answers only
+    // to the overall budget that is still left.
+    const headCap = route.timeoutMs === 0 ? Number.POSITIVE_INFINITY : route.timeoutMs;
+    const budget = Math.min(headCap, remaining());
     if (budget <= 0) {
       lastError = new TotalTimeoutError(
         `upstream did not respond within totalTimeoutMs=${route.totalTimeoutMs}`,
@@ -595,13 +604,18 @@ const attemptFetch = async ({
   const controller = new AbortController();
   // Fires only while the headers are outstanding; cleared below the moment they
   // arrive, which is what makes this cancellable where `AbortSignal.timeout` is
-  // not.
-  let headDeadline: ReturnType<typeof setTimeout> | undefined = setTimeout(() => {
-    headDeadline = undefined;
-    controller.abort(
-      new HeadTimeoutError(`upstream did not send response headers within timeoutMs=${budget}`),
-    );
-  }, budget);
+  // not. An infinite budget means both deadlines are disabled (`timeoutMs: 0`
+  // with an unspent overall budget) — no timer is armed, because a runtime
+  // clamps an oversized `setTimeout` delay down to ~1ms, turning "never" into
+  // "immediately".
+  let headDeadline: ReturnType<typeof setTimeout> | undefined = Number.isFinite(budget)
+    ? setTimeout(() => {
+        headDeadline = undefined;
+        controller.abort(
+          new HeadTimeoutError(`upstream did not send response headers within timeoutMs=${budget}`),
+        );
+      }, budget)
+    : undefined;
   const clearHeadDeadline = (): void => {
     if (headDeadline !== undefined) {
       clearTimeout(headDeadline);

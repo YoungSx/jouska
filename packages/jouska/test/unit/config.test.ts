@@ -164,6 +164,39 @@ describe('defineConfig', () => {
     expect(config.routes[0]!.streamIdleTimeoutMs).toBe(60_000);
   });
 
+  it('accepts zero as a disabled deadline', () => {
+    // `0` means the deadline is off, not instantaneous — which is what a raw
+    // `setTimeout(0)` would have made it, and why the runtime guards the value.
+    const config = defineConfig({
+      routes: [
+        {
+          match: { path: '/a' },
+          upstream: 'o.test',
+          timeoutMs: 0,
+          totalTimeoutMs: 0,
+          firstChunkTimeoutMs: 0,
+          streamIdleTimeoutMs: 0,
+        },
+      ],
+    });
+    expect(config.routes[0]!.timeoutMs).toBe(0);
+    expect(config.routes[0]!.totalTimeoutMs).toBe(0);
+    expect(config.routes[0]!.firstChunkTimeoutMs).toBe(0);
+    expect(config.routes[0]!.streamIdleTimeoutMs).toBe(0);
+  });
+
+  it('does not read a per-attempt deadline as exceeding a disabled budget', () => {
+    // With `totalTimeoutMs: 0` there is no budget to exceed, so the
+    // contradiction the cross-field check exists for cannot arise.
+    expect(() =>
+      defineConfig({
+        routes: [
+          { match: { path: '/a' }, upstream: 'o.test', timeoutMs: 60_000, totalTimeoutMs: 0 },
+        ],
+      }),
+    ).not.toThrow();
+  });
+
   it('defaults both body deadlines to a minute', () => {
     const config = defineConfig({ routes: [{ match: { path: '/a' }, upstream: 'o.test' }] });
     // The same figure nginx uses for `proxy_read_timeout`, measured the same way.

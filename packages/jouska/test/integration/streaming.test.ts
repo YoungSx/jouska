@@ -174,6 +174,29 @@ describe('streaming responses', () => {
     expect(events[0]!.stream).toBeUndefined();
   });
 
+  it('treats zero deadlines as disabled, not instantaneous', async () => {
+    // A raw `setTimeout(0)` fires on the next tick, which would have aborted
+    // every attempt before the fetch even ran. The stream here also pauses
+    // mid-body, which any armed body deadline would have cut.
+    const upstream = sseUpstream({
+      frames: ['data: a\n\n', 'data: b\n\n'],
+      gapMs: 150,
+    });
+    const { app, events } = proxied(
+      route({ timeoutMs: 0, totalTimeoutMs: 0, firstChunkTimeoutMs: 0, streamIdleTimeoutMs: 0 }),
+      upstream.fetchImpl,
+    );
+
+    const response = await app.request('https://p.dev/v1/messages');
+    const seen = await read(response);
+
+    expect(response.status).toBe(200);
+    expect(seen.error).toBeUndefined();
+    expect(seen.text).toBe('data: a\n\ndata: b\n\n');
+    expect(upstream.aborted()).toBe(false);
+    await expect(events[0]!.stream).resolves.toMatchObject({ outcome: 'complete' });
+  });
+
   it('cuts a stream that never sends a first byte, and says so', async () => {
     const upstream = sseUpstream({ stallAfter: 0 });
     const { app, events } = proxied(
