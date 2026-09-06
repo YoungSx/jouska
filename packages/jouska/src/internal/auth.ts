@@ -57,7 +57,10 @@ const runForwardAuth = async (
   headers.set('x-forwarded-method', request.method);
   headers.set('x-forwarded-uri', `${requestUrl.pathname}${requestUrl.search}`);
 
-  const signals: AbortSignal[] = [AbortSignal.timeout(config.timeoutMs)];
+  // `timeoutMs: 0` disables the deadline; `AbortSignal.timeout(0)` would abort
+  // immediately rather than never, so the signal is omitted instead.
+  const authDeadline = config.timeoutMs === 0 ? undefined : AbortSignal.timeout(config.timeoutMs);
+  const signals: AbortSignal[] = authDeadline === undefined ? [] : [authDeadline];
   if (request.signal !== null && request.signal !== undefined) {
     signals.push(request.signal);
   }
@@ -68,7 +71,8 @@ const runForwardAuth = async (
       new Request(config.url, {
         method: request.method,
         headers,
-        signal: signals.length > 1 ? AbortSignal.any(signals) : signals[0]!,
+        signal:
+          signals.length === 0 ? null : signals.length > 1 ? AbortSignal.any(signals) : signals[0]!,
       }),
     );
   } catch (error) {

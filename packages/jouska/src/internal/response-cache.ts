@@ -660,11 +660,17 @@ const flights = new Map<string, { done: Promise<void>; release: () => void }>();
  * fetches on its own, exactly as it would have without the lock. Resolving
  * says nothing about whether an entry appeared; the waiter re-reads the cache
  * and decides that for itself, which is why the flight carries no payload.
+ *
+ * `0` disables the bound: the waiter waits the leader out for as long as it
+ * takes, which is the reading `totalTimeoutMs: 0` has everywhere else.
  */
 export const joinFlight = (key: Request, totalTimeoutMs: number): Promise<void> => {
   const flight = flights.get(key.url);
   if (flight === undefined) {
     return Promise.resolve();
+  }
+  if (totalTimeoutMs === 0) {
+    return flight.done;
   }
   let timer: ReturnType<typeof setTimeout> | null = null;
   return Promise.race([
