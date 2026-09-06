@@ -736,6 +736,25 @@ Whether any of this ran on a given response is not something to infer from the
 page: the `onProxy` event reports `bodyRewritten`, `rewriteSkipped` and
 `redirectRewritten`. See Observability below.
 
+The rewrite spends CPU on every byte of the document, and on the free plan that
+budget is **10ms per request** — measured in CPU time, not wall time, so an
+upstream that is slow to answer does not help. A typical GitHub page busts it
+well before the body finishes streaming, and the runtime kills the isolate
+mid-stream: the client sees exactly the symptom no timeout setting can explain —
+headers arrived, `200 OK` was logged, then the body stops. Deadlines in the
+route config are irrelevant to this; no value of `timeoutMs` or
+`totalTimeoutMs` changes what the runtime charges for `HTMLRewriter`.
+
+The signature in Workers Logs is unmistakable: `outcome: "exceededCpu"` with
+`cpuTime` pinned at exactly 10ms on every occurrence (the paid tiers sit at a
+30-second default). The fixes, in order of preference: turn `bodyRewrite` off
+for routes whose upstream serves large documents; shield the route from
+crawlers, which are the traffic that fetches the largest pages; or move the
+deployment to a paid plan. Streaming responses (`text/event-stream` and kin)
+are exempt by design — they skip the rewriter entirely — which is why a rewrite
+route can be dying of CPU while LLM streams on the same deployment keep their
+own timeouts as configured.
+
 ### Injecting markup
 
 `inject` places operator markup at fixed anchors of the document structure:

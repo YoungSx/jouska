@@ -164,6 +164,76 @@ describe('access-logs receiver', () => {
     expect(createProxySink({ ACCESS_LOGS: '1' }, log)).toBeUndefined();
     expect(createProxySink({}, log)).toBeUndefined();
   });
+
+  it('emits a proxy_stream line when the stream report resolves', async () => {
+    // The request line goes out while the body is still streaming; the stream
+    // line follows once the body ends. This pair is what makes a cut stream
+    // visible: the request line still reads `outcome: "ok"` with `status: 200`.
+    const { lines, log } = collectingLog();
+    const sink = createProxySink({ ACCESS_LOGS: 'true' }, log);
+    sink?.(
+      event({
+        path: '/v1/chat',
+        stream: Promise.resolve({
+          outcome: 'idle_timeout',
+          bytes: 512,
+          durationMs: 9800,
+        }),
+      }),
+    );
+
+    expect(lines).toHaveLength(1);
+    expect(JSON.parse(lines[0] ?? '{}')).toMatchObject({ message: 'proxy' });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(lines).toHaveLength(2);
+    expect(JSON.parse(lines[1] ?? '{}')).toMatchObject({
+      message: 'proxy_stream',
+      routeId: 'example',
+      requestId: '8f14e45fceea167a5a36dedd4bea2543',
+      upstream: 'origin.test',
+      path: '/v1/chat',
+      outcome: 'idle_timeout',
+      bytes: 512,
+      durationMs: 9800,
+    });
+  });
+
+  it('emits no proxy_stream line when nothing streamed from the upstream', () => {
+    // Refusals, cache hits and bodyless responses carry no report — and a
+    // static response should not be reading as "stream cut" in the log.
+    const { lines, log } = collectingLog();
+    const sink = createProxySink({ ACCESS_LOGS: 'true' }, log);
+    sink?.(event());
+
+    expect(lines).toHaveLength(1);
+  });
+
+  it('keeps a rejecting stream promise from taking the line down', async () => {
+    // The library resolves every ending, so a rejection would be a bug; the
+    // receiver's job is to surface it, not to die with it.
+    const errorLines: string[] = [];
+    vi.spyOn(console, 'error').mockImplementation((...args: unknown[]) => {
+      errorLines.push(args.map((arg) => String(arg)).join(' '));
+    });
+    const { lines, log } = collectingLog();
+    try {
+      const sink = createProxySink({ ACCESS_LOGS: 'true' }, log);
+      sink?.(
+        event({
+          stream: Promise.reject(new Error('report should never reject')),
+        }),
+      );
+      expect(lines).toHaveLength(1);
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(lines).toHaveLength(1);
+      expect(errorLines.some((line) => line.includes('stream report rejected'))).toBe(true);
+    } finally {
+      vi.restoreAllMocks();
+    }
+  });
 });
 
 describe('fan-out', () => {
