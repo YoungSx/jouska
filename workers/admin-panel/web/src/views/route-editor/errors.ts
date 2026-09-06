@@ -9,7 +9,10 @@
 import { ApiError, NetworkError } from '@/lib/api';
 import { t } from '@/lib/messages';
 import {
+  ACCESS_KEY_DIGEST_PATTERN,
+  ACCESS_TEAM_PATTERN,
   DANGEROUS_PATHS,
+  HEADER_TOKEN_PATTERN,
   LIMITS,
   NUMERIC_BOUNDS,
   RESERVED_REQUEST_HEADERS,
@@ -18,6 +21,9 @@ import {
 import type { RouteDefinition } from '@/lib/types';
 import { NUMERIC_FIELDS, NUMERIC_KEYS } from './constants';
 import type { AdvancedItem, FieldErrors, GuardsItem } from './constants';
+
+/** 报错里回显条目时截短到这个长度 —— 定位够了，又不至于把消息撑爆。 */
+const brief = (value: string): string => (value.length > 20 ? `${value.slice(0, 20)}…` : value);
 
 /** 把明显的错拦在一次网络往返之前；权威判定在服务端 /api/preview。 */
 export const collectErrors = (
@@ -73,6 +79,34 @@ export const collectErrors = (
       errors[key] = `${NUMERIC_FIELDS[key].label}：${String(bound.min)} – ${String(bound.max)}${
         unit === undefined ? '' : ` ${unit}`
       }`;
+    }
+  }
+  // access 块的凭据格式。team/keys/header 是与服务端一字不差的精确正则，本地
+  // 给出的意见与线上一致；邮箱只拦一眼能看出来的错 —— 邮箱合法性存在 IDN、
+  // 加号地址这类边缘，学 ip 规则的先例不装权威，判定归 /api/preview。
+  const access = definition.access;
+  if (access !== undefined) {
+    const team = access.cloudflare?.team;
+    if (team !== undefined && !ACCESS_TEAM_PATTERN.test(team)) {
+      errors.accessTeam = t.fields.access.teamError;
+    }
+    const emails = access.cloudflare?.emails;
+    if (emails !== undefined) {
+      const bad = emails.find((email) => !/\S+@\S+\.\S+/.test(email));
+      if (bad !== undefined) {
+        errors.accessEmails = t.fields.access.emailsError(bad);
+      }
+    }
+    const keys = access.keys;
+    if (keys !== undefined) {
+      const bad = keys.find((key) => !ACCESS_KEY_DIGEST_PATTERN.test(key));
+      if (bad !== undefined) {
+        errors.accessKeys = t.fields.access.keysError(brief(bad));
+      }
+    }
+    const header = access.header;
+    if (header !== undefined && !HEADER_TOKEN_PATTERN.test(header)) {
+      errors.accessHeader = t.fields.access.headerError(header);
     }
   }
   return errors;
@@ -192,5 +226,17 @@ export const ERROR_TARGETS: Record<keyof FieldErrors, ErrorTarget> = {
     fieldId: 'route-editor-retryBackoffMs',
     card: 'timing',
     label: NUMERIC_FIELDS.retryBackoffMs.label,
+  },
+  accessKeys: { fieldId: 'route-editor-access-keys', card: 'access', label: t.fields.access.keys },
+  accessTeam: { fieldId: 'route-editor-access-team', card: 'access', label: t.fields.access.team },
+  accessEmails: {
+    fieldId: 'route-editor-access-emails',
+    card: 'access',
+    label: t.fields.access.emails,
+  },
+  accessHeader: {
+    fieldId: 'route-editor-access-header',
+    card: 'access',
+    label: t.fields.access.header,
   },
 };

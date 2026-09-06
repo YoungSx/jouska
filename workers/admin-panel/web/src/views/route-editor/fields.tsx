@@ -232,6 +232,7 @@ export interface ListPropertyProps {
   readonly tip?: string;
   readonly placeholder?: string;
   readonly value: readonly string[] | undefined;
+  readonly error?: string;
   readonly onChange: (value: readonly string[] | undefined) => void;
 }
 
@@ -246,6 +247,7 @@ export const ListProperty = ({
   tip,
   placeholder,
   value,
+  error,
   onChange,
 }: ListPropertyProps) => {
   const signature = JSON.stringify(value ?? null);
@@ -258,13 +260,14 @@ export const ListProperty = ({
   }
 
   return (
-    <Field>
+    <Field data-invalid={hasText(error) ? true : undefined}>
       <PropertyLabel htmlFor={id} label={label} tip={tip} />
       <Input
         id={id}
         className="font-mono"
         value={text}
         placeholder={placeholder}
+        aria-invalid={hasText(error)}
         onChange={(event) => {
           const next = event.target.value;
           setText(next);
@@ -277,6 +280,7 @@ export const ListProperty = ({
       <FieldDescription>
         <Hint text={hint} />
       </FieldDescription>
+      {hasText(error) && <FieldError>{error}</FieldError>}
     </Field>
   );
 };

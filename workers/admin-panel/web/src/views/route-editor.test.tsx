@@ -931,3 +931,111 @@ describe('RouteEditor 保存后的去发布引导（重设计）', () => {
     expect(toast.success).toHaveBeenCalledWith('new-route 已存入草稿', { action: undefined });
   });
 });
+
+/*
+ * 身份认证的四处修补（本轮审计的结论）：
+ *
+ * 1. 超时填 0 得活着到草稿 —— NUMERIC_BOUNDS 的 min 曾是 1，文案却说「0 = 不设
+ *    限」，输入框悄悄把 0 丢回默认。这里的断言盯的是落库数据，不是报错。
+ * 2. 生成卡里明文旁边必须有摘要：多把 key 并存时，这对并排的值是唯一能把
+ *    「哪串哈希属于哪把明文」说清楚的地方。jsdom 的 crypto.subtle 是全的
+ *    （digest 与 getRandomValues 都实测可用），生成路径可以直接走真的。
+ * 3. 凭据格式在本地就要开口：正则与服务端 config.ts 逐字符对齐，所以坏值必须
+ *    在保存之前被点出来 —— 保存按钮禁用，错误一条不少。
+ */
+describe('RouteEditor 身份认证的修补', () => {
+  beforeEach(() => {
+    vi.spyOn(api, 'domains').mockResolvedValue(configured([]));
+    vi.spyOn(api, 'putRoute').mockResolvedValue(undefined);
+    vi.spyOn(toast, 'success').mockImplementation(() => 1);
+    vi.spyOn(toast, 'error').mockImplementation(() => 1);
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('forwardAuth 超时填 0 会原样落进草稿，不再被换回默认', async () => {
+    const user = userEvent.setup();
+    renderEditor(false, {
+      upstream: 'origin.example.com',
+      forwardAuth: { url: 'https://sso.example.com/check' },
+    });
+    await ensureOpen(user, '委托鉴权');
+
+    const timeout = screen.getByLabelText(/鉴权请求超时/);
+    await user.clear(timeout);
+    await user.type(timeout, '0');
+
+    expect(await saveDraft(user)).toMatchObject({
+      forwardAuth: { url: 'https://sso.example.com/check', timeoutMs: 0 },
+    });
+  });
+
+  it('坏凭据四条错误当场点名，保存按钮禁用', async () => {
+    renderEditor(false, {
+      upstream: 'origin.example.com',
+      access: {
+        cloudflare: { team: 'My_Team', emails: ['bad-email'] },
+        keys: ['nothex'],
+        header: 'not a token',
+      },
+    });
+    await ensureOpen(userEvent.setup(), '身份验证');
+
+    expect(screen.getByText(/拼错就取不到 JWKS/)).toBeInTheDocument();
+    expect(screen.getByText(/“bad-email” 不是合法的邮箱地址/)).toBeInTheDocument();
+    expect(screen.getByText(/nothex 不是 64 位小写 hex/)).toBeInTheDocument();
+    expect(screen.getByText(/not a token 不是合法的头名/)).toBeInTheDocument();
+
+    expect(screen.getByRole('button', { name: '保存到草稿' })).toBeDisabled();
+  });
+
+  it('合法凭据不拦人，保存照常', async () => {
+    const user = userEvent.setup();
+    renderEditor(false, {
+      upstream: 'origin.example.com',
+      access: {
+        cloudflare: { team: 'my-team', emails: ['alice@example.com'] },
+        keys: ['a'.repeat(64)],
+        header: 'x-api-key',
+      },
+    });
+    await ensureOpen(user, '身份验证');
+
+    expect(screen.queryByText(/拼错就取不到 JWKS/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/不是合法的邮箱地址/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/不是 64 位小写 hex/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/不是合法的头名/)).not.toBeInTheDocument();
+
+    expect(await saveDraft(user)).toMatchObject({
+      access: {
+        cloudflare: { team: 'my-team', emails: ['alice@example.com'] },
+        keys: ['a'.repeat(64)],
+        header: 'x-api-key',
+      },
+    });
+  });
+
+  it('生成 key 后明文旁边有摘要，且摘要已进 keys 列表', async () => {
+    const user = userEvent.setup();
+    renderEditor(false, { upstream: 'origin.example.com', access: {} });
+    await ensureOpen(user, '身份验证');
+
+    await user.click(screen.getByRole('button', { name: '生成一把新 key' }));
+
+    const plaintext = await screen.findByLabelText('key 明文（只显示这一次）');
+    const digest = screen.getByLabelText('这把 key 的 SHA-256 摘要') as HTMLInputElement;
+
+    // 32 字节 base64url 去 padding 是 43 字符。toHaveValue 只认字面值不吃正则，
+    // 所以先取值再匹配。
+    const plain = (plaintext as HTMLInputElement).value;
+    expect(plain).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    expect(digest.value).toMatch(/^[0-9a-f]{64}$/);
+    expect(digest.value).not.toBe(plain);
+
+    expect(await saveDraft(user)).toMatchObject({
+      access: { keys: [digest.value] },
+    });
+  });
+});

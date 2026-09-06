@@ -42,6 +42,7 @@ export const SectionGuards = ({ draft }: { readonly draft: RouteDraft }) => {
     setSectionOff,
     setSectionKey,
     setAccessCloudflareKey,
+    shownErrors,
     forwardAuthReservedRequest,
     forwardAuthReservedResponse,
   } = draft;
@@ -282,6 +283,7 @@ export const SectionGuards = ({ draft }: { readonly draft: RouteDraft }) => {
                         hint={t.fields.access.teamHelp}
                         value={definition.access.cloudflare.team ?? ''}
                         mono
+                        error={shownErrors.accessTeam}
                         onChange={(value) =>
                           setAccessCloudflareKey('team', value === '' ? undefined : value)
                         }
@@ -303,6 +305,7 @@ export const SectionGuards = ({ draft }: { readonly draft: RouteDraft }) => {
                         hint={t.fields.access.emailsHelp}
                         placeholder={t.fields.access.emailsPlaceholder}
                         value={definition.access.cloudflare.emails}
+                        error={shownErrors.accessEmails}
                         onChange={(value) => setAccessCloudflareKey('emails', value)}
                       />
                     </>
@@ -314,6 +317,7 @@ export const SectionGuards = ({ draft }: { readonly draft: RouteDraft }) => {
                     hint={t.fields.access.keysHelp}
                     placeholder={t.fields.access.keysPlaceholder}
                     value={definition.access.keys}
+                    error={shownErrors.accessKeys}
                     onChange={(value) => setSectionKey('access', 'keys', value)}
                   />
                   <AccessKeyGenerator
@@ -329,6 +333,7 @@ export const SectionGuards = ({ draft }: { readonly draft: RouteDraft }) => {
                     hint={t.fields.access.headerHelp}
                     value={definition.access.header ?? ''}
                     mono
+                    error={shownErrors.accessHeader}
                     onChange={(value) =>
                       setSectionKey('access', 'header', value === '' ? undefined : value)
                     }

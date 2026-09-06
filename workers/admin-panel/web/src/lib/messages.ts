@@ -533,12 +533,24 @@ export const t = {
       keyPlaintextHint:
         '现在就复制给调用方。它不会存进草稿、也不会进任何日志 —— 关掉这张卡就真的没了，只有上面那串哈希留下。',
       keyCopy: '复制 key 明文',
-      /** 备用路：拿不到 crypto（老浏览器、非安全上下文）时仍然有办法。 */
-      keyManualHint: '也可以在终端里生成一对：openssl rand -base64 32 | tr -d "\\n" | sha256sum',
       keysPlaceholder: '9f86d081884c7d659a2feaa0c55ad015…（64 位 hex）',
       header: 'key 所在的请求头',
       headerHelp: '默认 authorization（取 Bearer 后面的值）。自定义头填头名，值就是 key 本身。',
       keysDanger: 'access.keys',
+      /** 生成卡里摘要那一栏：让明文与刚填进列表的哈希当场对得上号。 */
+      keyDigest: '这把 key 的 SHA-256 摘要',
+      keyDigestCopy: '复制 key 摘要',
+      keyDigestHint: '已经自动填进上面的哈希列表。以后要认出哪把 key 是这把，就看这一串。',
+      /** 本地校验的报错；都以字段 label 开头，error-index 的 stripLabel 靠这个去前缀。 */
+      teamError:
+        'team 名：只能用小写字母、数字和连字符，连字符不能放开头或结尾 —— 拼错就取不到 JWKS，所有请求都会 503',
+      emailsError: (item: string) =>
+        `邮箱白名单：“${item}” 不是合法的邮箱地址，写错了这个人会被挡在门外`,
+      keysError: (item: string) =>
+        `API key 的 SHA-256 哈希：${item} 不是 64 位小写 hex。这里要的是摘要，不是 key 本身`,
+      // 字符集是 RFC 9110 的 tchar，含一个反引号，没法整个塞进模板串。
+      headerError: (name: string) =>
+        `key 所在的请求头：${name} 不是合法的头名，只能用字母、数字和 !#$%&'*+-.^_\`|~`,
     },
     forwardAuth: {
       label: '委托鉴权',
