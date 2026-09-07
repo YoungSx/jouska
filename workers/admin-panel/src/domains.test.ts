@@ -216,6 +216,17 @@ describe('GET /api/domains', () => {
     expect(raw).not.toContain('read-only-token');
   });
 
+  it('exposes the account id, which is not a secret, only when configured', async () => {
+    // The account id is what the UI builds the dashboard deep link from; unlike
+    // the token it appears in every dashboard URL already.
+    const appEnv = configured({ workersDev: true });
+    expect((await domains(appEnv, await adminAuth(appEnv))).accountId).toBe('acct-1');
+
+    // Unconfigured responses name the reason but not the account.
+    const emptyEnv = envWith({ CF_ACCOUNT_ID: undefined, CF_API_TOKEN: undefined });
+    expect((await domains(emptyEnv, await adminAuth(emptyEnv))).accountId).toBeUndefined();
+  });
+
   it('marks a discovered host with the route ids that claim it', async () => {
     const appEnv = configured({
       customDomains: [{ hostname: 'mirror.example.com', service: SCRIPT }],

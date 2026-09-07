@@ -1,5 +1,5 @@
 import * as React from 'react';
-import { GlobeIcon, RefreshCwIcon, TriangleAlertIcon } from 'lucide-react';
+import { ExternalLinkIcon, GlobeIcon, RefreshCwIcon, TriangleAlertIcon } from 'lucide-react';
 import { Alert, AlertAction, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -82,6 +82,13 @@ const errorTitle = (error: LoadError): string => {
 /** kinds 表按 BindingKind 三键全覆盖，但服务端将来加新枚举时别渲染出 undefined。 */
 const kindLabel = (kind: BindingKind): string => t.domains.kinds[kind] ?? kind;
 
+/**
+ * Worker 在 Cloudflare 控制台的 Domains & Routes 标签页深链。accountId 非机密
+ * （本就出现在每个 dash URL 里），响应里专门为拼这个链接而暴露。
+ */
+const bindUrl = (accountId: string, script: string): string =>
+  `https://dash.cloudflare.com/${accountId}/workers/services/view/${encodeURIComponent(script)}/production/domains`;
+
 export const DomainsView = () => {
   const [data, setData] = React.useState<DomainsResponse | null>(null);
   const [error, setError] = React.useState<LoadError | null>(null);
@@ -111,6 +118,24 @@ export const DomainsView = () => {
         <CardTitle>{t.domains.title}</CardTitle>
         <CardDescription>{t.domains.description}</CardDescription>
         <CardAction>
+          {/* 去控制台绑域名是这页读数的下一步；缺 accountId（未配置凭据）就不显示，
+              不猜账户。外链用 render 透传成 <a>，Base UI 的按钮样式跟着走。 */}
+          {data?.configured === true && data.accountId !== undefined && (
+            <Button
+              variant="outline"
+              size="sm"
+              render={
+                <a
+                  href={bindUrl(data.accountId, data.script ?? 'jouska')}
+                  target="_blank"
+                  rel="noreferrer"
+                />
+              }
+            >
+              <ExternalLinkIcon />
+              {t.domains.goBind}
+            </Button>
+          )}
           <Button variant="outline" size="sm" disabled={refreshing} onClick={() => void load()}>
             {refreshing ? <Spinner /> : <RefreshCwIcon />}
             {refreshing ? t.domains.refreshing : t.domains.refresh}

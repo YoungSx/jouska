@@ -506,6 +506,8 @@ export interface DomainsResponse {
   readonly configured: boolean;
   readonly reason?: UnconfiguredReason;
   readonly script?: string;
+  /** 读到答案的 Cloudflare 账户。非机密（所有 dash URL 都带着），仅供拼深链；未配置时省略。 */
+  readonly accountId?: string;
   readonly hosts?: readonly HostBinding[];
   readonly failures?: readonly { readonly source: string; readonly message: string }[];
   readonly skippedZones?: readonly string[];
