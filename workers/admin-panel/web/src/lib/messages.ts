@@ -592,6 +592,7 @@ export const t = {
     description: '从 Cloudflare 账号读出真正能打到反代的 hostname，并和路由表对一遍。',
     refresh: '重新读取',
     refreshing: '读取中…',
+    goBind: '去绑定',
     scriptNote: (script: string) => `查询的是 Worker「${script}」的绑定。`,
     readOnlyNote: '只读查询，不写数据库也不进审计日志。',
     columns: {

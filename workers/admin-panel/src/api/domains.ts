@@ -79,6 +79,12 @@ export interface DomainsResponse {
   readonly reason?: UnconfiguredReason;
   /** Script name the answer is about, so the UI never has to guess. */
   readonly script?: string;
+  /**
+   * The Cloudflare account the answer was read from. Not a secret — it appears
+   * in every dashboard URL — and exposed only so the UI can build the deep
+   * link to the Worker's Custom Domains screen. Absent when unconfigured.
+   */
+  readonly accountId?: string;
   readonly hosts?: readonly HostBinding[];
   /** Sources that could not be read, named individually. */
   readonly failures?: readonly { readonly source: string; readonly message: string }[];
@@ -245,6 +251,7 @@ export const discoverDomains = async (env: Env, db: D1Database): Promise<Domains
   return {
     configured: true,
     script,
+    accountId: credentials.accountId,
     hosts,
     ...(result.failures.length > 0 ? { failures: result.failures } : {}),
     ...(result.skippedZones === undefined ? {} : { skippedZones: result.skippedZones }),
