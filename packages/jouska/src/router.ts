@@ -292,6 +292,8 @@ export const matchUrl = (
   headers: Headers,
 ): Match | undefined => {
   const host = url.hostname.toLowerCase();
+  const requestMethod = method.toUpperCase();
+  let cachedPathCandidates: string[] | undefined;
 
   for (let i = 0; i < config.routes.length; i++) {
     const route = config.routes[i]!;
@@ -300,13 +302,15 @@ export const matchUrl = (
     if (hostPattern !== undefined && !hostMatches(hostPattern, host)) {
       continue;
     }
-    if (
-      pathPrefix !== undefined &&
-      !pathCandidates(url.pathname).some((c) => pathMatches(pathPrefix, c))
-    ) {
-      continue;
+    if (pathPrefix !== undefined) {
+      if (cachedPathCandidates === undefined) {
+        cachedPathCandidates = pathCandidates(url.pathname);
+      }
+      if (!cachedPathCandidates.some((c) => pathMatches(pathPrefix, c))) {
+        continue;
+      }
     }
-    if (methods !== undefined && !methods.some((m) => m.toUpperCase() === method.toUpperCase())) {
+    if (methods !== undefined && !methods.some((m) => m.toUpperCase() === requestMethod)) {
       continue;
     }
     if (!conditionsHold(route, url, headers)) {
