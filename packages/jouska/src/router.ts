@@ -61,8 +61,9 @@ export const hostMatches = (pattern: string, host: string): boolean => {
     // empty — verified in workerd, the URL parser keeps that hostname verbatim,
     // so it arrives here rather than being rejected upstream. Requiring every
     // label to be non-empty is the check that says what was meant.
+    // Avoids array allocation on hot path.
     const consumed = host.slice(0, host.length - suffix.length);
-    return consumed.split('.').every((label) => label !== '');
+    return consumed.length > 0 && !consumed.includes('..') && !consumed.startsWith('.') && !consumed.endsWith('.');
   }
   return pattern === host;
 };
@@ -177,7 +178,10 @@ const normaliseOnce = (path: string): string => {
     out = out.replace(pattern, replacement);
   }
   // A path cut short at a query or fragment reaches the same handler.
-  out = out.split(/[?#]/)[0]!;
+  const q = out.search(/[?#]/);
+  if (q !== -1) {
+    out = out.slice(0, q);
+  }
   // Backslash as a separator, for upstreams that accept it.
   out = out.replaceAll('\\', '/');
   // Path parameters: `/admin;x` → `/admin`.
