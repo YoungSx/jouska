@@ -63,7 +63,12 @@ export const hostMatches = (pattern: string, host: string): boolean => {
     // label to be non-empty is the check that says what was meant.
     // Avoids array allocation on hot path.
     const consumed = host.slice(0, host.length - suffix.length);
-    return consumed.length > 0 && !consumed.includes('..') && !consumed.startsWith('.') && !consumed.endsWith('.');
+    return (
+      consumed.length > 0 &&
+      !consumed.includes('..') &&
+      !consumed.startsWith('.') &&
+      !consumed.endsWith('.')
+    );
   }
   return pattern === host;
 };
