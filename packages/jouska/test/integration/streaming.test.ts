@@ -177,7 +177,9 @@ describe('streaming responses', () => {
   it('treats zero deadlines as disabled, not instantaneous', async () => {
     // A raw `setTimeout(0)` fires on the next tick, which would have aborted
     // every attempt before the fetch even ran. The stream here also pauses
-    // mid-body, which any armed body deadline would have cut.
+    // mid-body, which any armed body deadline would have cut. Both body
+    // deadlines at 0 take the monitor off entirely — the body is relayed
+    // natively, so there is no stream report at all (see watchBody).
     const upstream = sseUpstream({
       frames: ['data: a\n\n', 'data: b\n\n'],
       gapMs: 150,
@@ -192,9 +194,56 @@ describe('streaming responses', () => {
 
     expect(response.status).toBe(200);
     expect(seen.error).toBeUndefined();
+    // Passthrough must not change the bytes or the ending — only who pays for
+    // the relaying.
     expect(seen.text).toBe('data: a\n\ndata: b\n\n');
     expect(upstream.aborted()).toBe(false);
-    await expect(events[0]!.stream).resolves.toMatchObject({ outcome: 'complete' });
+    expect(events[0]!.stream).toBeUndefined();
+  });
+
+  it('passes a both-zero body through without a script pipeline', async () => {
+    // The reason the shortcut exists: a TransformStream that never fires still
+    // charges CPU per chunk, which is what the free plan's 10 ms ceiling kills
+    // long streams on. Native relaying is the only mode they survive in.
+    const frames = Array.from({ length: 8 }, (_, i) => `data: ${i}\n\n`);
+    const upstream = sseUpstream({ frames, gapMs: 10 });
+    const { app, events } = proxied(
+      route({ firstChunkTimeoutMs: 0, streamIdleTimeoutMs: 0 }),
+      upstream.fetchImpl,
+    );
+
+    const response = await app.request('https://p.dev/v1/messages');
+    const seen = await read(response);
+
+    expect(response.status).toBe(200);
+    expect(seen.error).toBeUndefined();
+    expect(seen.text).toBe(frames.join(''));
+    expect(upstream.aborted()).toBe(false);
+    expect(events[0]!.stream).toBeUndefined();
+  });
+
+  it('still monitors when only one body deadline is zero', async () => {
+    // The shortcut requires both deadlines dead. One live deadline still needs
+    // the monitor, and half-shortcutting would read as 0 disabling one deadline
+    // while the other silently kept its per-chunk bill.
+    const upstream = sseUpstream({
+      frames: ['data: a\n\n', 'data: b\n\n'],
+      gapMs: 10,
+      // Falls silent after frame 0: with only one frame the loop exits and
+      // closes, so the stall needs a second frame it never reaches.
+      stallAfter: 1,
+    });
+    const { app, events } = proxied(
+      route({ firstChunkTimeoutMs: 0, streamIdleTimeoutMs: 40 }),
+      upstream.fetchImpl,
+    );
+
+    const response = await app.request('https://p.dev/v1/messages');
+    const seen = await read(response);
+
+    expect(response.status).toBe(200);
+    expect(seen.error).toBe('StreamDeadlineError');
+    await expect(events[0]!.stream).resolves.toMatchObject({ outcome: 'idle_timeout' });
   });
 
   it('cuts a stream that never sends a first byte, and says so', async () => {

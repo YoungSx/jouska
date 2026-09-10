@@ -39,6 +39,20 @@ export const TIMING_PRESETS = {
     firstChunkTimeoutMs: 180_000,
     streamIdleTimeoutMs: 180_000,
   },
+  /**
+   * For a stream that must not cost CPU per chunk: the plan-metered free tier.
+   * Both body deadlines at `0` takes the monitor off the body entirely — the
+   * response is relayed natively and the per-chunk CPU bill reads zero, which
+   * is the only mode a long token stream survives the free plan's 10 ms
+   * ceiling in. The costs are the mirror: a stalled stream cuts itself off
+   * nowhere (the client waits on its own timeout), and there is no
+   * `proxy_stream` observability line for the response. A route mirroring
+   * bodies or rewriting them keeps its script pipeline regardless.
+   */
+  passthrough: {
+    firstChunkTimeoutMs: 0,
+    streamIdleTimeoutMs: 0,
+  },
 } as const;
 
 export type TimingPresetName = keyof typeof TIMING_PRESETS;

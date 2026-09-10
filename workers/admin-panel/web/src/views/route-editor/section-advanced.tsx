@@ -33,7 +33,15 @@ import {
 import { HeadersEditor, ReplaceEditor } from './editors';
 import { dangerousSubPaths } from './errors';
 import { ListProperty, NumberProperty, SwitchProperty, TextProperty } from './fields';
-import { DangerNote, hasText, Hint, previewValue, RewriteNote, SectionCardTrigger } from './parts';
+import {
+  DangerNote,
+  hasText,
+  Hint,
+  PassthroughNote,
+  previewValue,
+  RewriteNote,
+  SectionCardTrigger,
+} from './parts';
 import type { RouteDraft } from './use-route-draft';
 
 export const SectionAdvanced = ({ draft }: { readonly draft: RouteDraft }) => {
@@ -114,6 +122,14 @@ export const SectionAdvanced = ({ draft }: { readonly draft: RouteDraft }) => {
               <FieldDescription>
                 <Hint text={t.fields.sections.presetHint} />
               </FieldDescription>
+
+              {definition.firstChunkTimeoutMs === 0 && definition.streamIdleTimeoutMs === 0 && (
+                <PassthroughNote
+                  undermined={
+                    definition.mirror !== undefined || definition.bodyRewrite !== undefined
+                  }
+                />
+              )}
 
               {NUMERIC_KEYS.map((key) => (
                 <NumberProperty

@@ -72,6 +72,27 @@ export const RewriteNote = () => (
   </Alert>
 );
 
+/**
+ * 两个正文时限都填 0 之后，时序卡片里出现的透传状态条。
+ *
+ * 双 0 不只是「两个不设限」，它换了一种运行模式：正文由运行时原生转发，几乎不占
+ * CPU 限额 —— 这种状态藏在两个数字框的组合里，不摆到明面上用户永远发现不了。
+ * 两段文案：生效时说清收益与代价；配置了镜像或正文改写时点明透传已被架空，CPU
+ * 照常计费 —— 那是最阴的坑，静默失效比不生效更糟。
+ */
+export const PassthroughNote = ({ undermined }: { readonly undermined: boolean }) => (
+  <Alert>
+    <InfoIcon />
+    <AlertDescription>
+      <Hint
+        text={
+          undermined ? t.fields.sections.passthroughUndermined : t.fields.sections.passthroughActive
+        }
+      />
+    </AlertDescription>
+  </Alert>
+);
+
 /** 表单未覆盖字段的值预览：只求认得出是什么，不求完整。 */
 export const previewValue = (value: unknown): string => {
   const raw = JSON.stringify(value) ?? 'undefined';

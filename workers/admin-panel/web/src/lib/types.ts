@@ -268,6 +268,7 @@ export const PRESET_NUMERIC_KEYS: Record<
 > = {
   llm: ['timeoutMs', 'totalTimeoutMs', 'retries'],
   streaming: ['firstChunkTimeoutMs', 'streamIdleTimeoutMs'],
+  passthrough: ['firstChunkTimeoutMs', 'streamIdleTimeoutMs'],
 };
 
 /** boolean 字段的 schema 默认值，用来在表单上显示"默认 X"。 */

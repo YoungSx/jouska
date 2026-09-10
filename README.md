@@ -365,10 +365,11 @@ at it, and once copied the numbers are ordinary route fields you can edit.
 Fields a preset does not name keep their defaults. Apply both when a route is
 an LLM upstream _and_ streams tokens — they move disjoint fields.
 
-| Preset      | For                                                                                   | Fields (copy into the route)                                 |
-| ----------- | ------------------------------------------------------------------------------------- | ------------------------------------------------------------ |
-| `llm`       | An upstream that thinks before answering: OpenAI-style APIs, a cold-starting HF Space | `timeoutMs: 90_000, totalTimeoutMs: 120_000, retries: 1`     |
-| `streaming` | A response that streams tokens for minutes                                            | `firstChunkTimeoutMs: 180_000, streamIdleTimeoutMs: 180_000` |
+| Preset        | For                                                                                   | Fields (copy into the route)                                 |
+| ------------- | ------------------------------------------------------------------------------------- | ------------------------------------------------------------ |
+| `llm`         | An upstream that thinks before answering: OpenAI-style APIs, a cold-starting HF Space | `timeoutMs: 90_000, totalTimeoutMs: 120_000, retries: 1`     |
+| `streaming`   | A response that streams tokens for minutes                                            | `firstChunkTimeoutMs: 180_000, streamIdleTimeoutMs: 180_000` |
+| `passthrough` | A long stream on a CPU-metered plan (the free tier's 10 ms ceiling)                   | `firstChunkTimeoutMs: 0, streamIdleTimeoutMs: 0`             |
 
 ```ts
 {
@@ -388,6 +389,13 @@ cannot be a status code: the client's stream errors instead, and
 promise is the only place a cut stream is visible — `status` will read `200` for
 it. The upstream connection is cut at the same moment, so a metered API stops
 generating into a stream nobody will read.
+
+Both body deadlines at `0` means more than "no deadline": the monitor comes off
+the body entirely and it is relayed natively, so the per-chunk CPU bill reads
+zero — the only mode a long token stream survives a CPU-metered plan's ceiling
+in. The trade: a stalled stream cuts itself off nowhere (the client waits on its
+own timeout), and there is no `ProxyEvent.stream` report for the response. A
+route that mirrors bodies or rewrites them keeps its script pipeline regardless.
 
 ### Streaming media
 
