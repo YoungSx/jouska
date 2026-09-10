@@ -214,9 +214,16 @@ export const JsonViewer = ({ value, className }: JsonViewerProps) => {
     );
   }
 
-  const count = branchCount(value);
-  const deep = hasDeepBranch(value);
-  const allKeys = new Set(collectPaths(value, () => true).map(pathKey));
+  // ⚡ Bolt Performance Optimization:
+  // Memoizing these computations prevents O(N) traversal of the JSON tree
+  // on every render (e.g. when toggling expansion states).
+  const { count, deep, allKeys } = React.useMemo(() => {
+    return {
+      count: branchCount(value),
+      deep: hasDeepBranch(value),
+      allKeys: new Set(collectPaths(value, () => true).map(pathKey)),
+    };
+  }, [value]);
 
   return (
     <div className={cn('rounded-md border bg-muted/50', className)}>
