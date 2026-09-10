@@ -317,13 +317,12 @@ export const t = {
       presetLabel: '套预设',
       presetHint:
         '把一组挑好的数字填进下面的框，之后随便改。预设不跟随配置，改了库里的预设也不会动已发布的路由。',
-      presetLlm: 'LLM 上游',
-      presetLlmDesc: '上游要想很久才回话：OpenAI 类 API、冷启动的 HF Space。',
-      presetStreaming: '长流式响应',
-      presetStreamingDesc: '正文一次流好几分钟：reasoning 模型的 token 流。',
-      presetPassthrough: '透传',
+      presetLlm: 'LLM（监控）',
+      presetLlmDesc:
+        'LLM 网关全套时限：响应头耐心等 90 秒、正文首字节与帧间隔各 3 分钟，保留流监控与日志。适合不差 CPU 限额的路由。',
+      presetPassthrough: 'LLM 透传',
       presetPassthroughDesc:
-        '免费版跑长流式的选择：正文由运行时原生转发，几乎不占 CPU 限额；卡死的流不会自动断开，也不再记录流日志。',
+        '免费版跑 LLM 长流式的选择：响应头同样耐心等 90 秒，正文由运行时原生转发，几乎不占 CPU 限额；代价是卡死的流不会自动断开，也不再记录流日志。',
       /** 两个正文时限都是 0 时，时序卡片里出现的状态条。分「生效」和「被架空」两段。 */
       passthroughActive:
         '正文透传已生效——正文由运行时原生转发，几乎不占 CPU 限额；卡死的流不会自动断开，客户端会等到它自己的超时。',

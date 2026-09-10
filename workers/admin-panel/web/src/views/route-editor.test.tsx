@@ -600,48 +600,44 @@ describe('RouteEditor 超时预设', () => {
     vi.restoreAllMocks();
   });
 
-  it('点 LLM 上游：三个框填上库里的数字，其余框不动', async () => {
+  it('点 LLM（监控）：五个框填上库里的数字，一次配齐 LLM 网关时限', async () => {
     const user = userEvent.setup();
     renderEditor(true, { upstream: 'origin.example.com' });
     await ensureOpen(user, '超时与重试');
 
-    await user.click(screen.getByRole('button', { name: 'LLM 上游' }));
+    await user.click(screen.getByRole('button', { name: 'LLM（监控）' }));
 
     expect(screen.getByLabelText('单次尝试等响应头（毫秒）')).toHaveValue(90000);
     expect(screen.getByLabelText('重试总时限（毫秒）')).toHaveValue(120000);
     expect(screen.getByLabelText('额外重试次数')).toHaveValue(1);
-    // 预设不覆盖的框保持未设置。
-    expect(screen.getByLabelText('等正文第一个字节（毫秒）')).toHaveValue(null);
+    expect(screen.getByLabelText('等正文第一个字节（毫秒）')).toHaveValue(180000);
+    expect(screen.getByLabelText('正文空闲时限（毫秒）')).toHaveValue(180000);
 
     expect(await saveDraft(user)).toMatchObject({
       timeoutMs: 90000,
       totalTimeoutMs: 120000,
       retries: 1,
+      firstChunkTimeoutMs: 180000,
+      streamIdleTimeoutMs: 180000,
     });
   });
 
-  it('点长流式响应：只动正文两个框，响应头时限留在默认', async () => {
+  it('点 LLM 透传：头时限与监控版相同，正文双 0，状态条摊开收益与代价', async () => {
     const user = userEvent.setup();
     renderEditor(true, { upstream: 'origin.example.com' });
     await ensureOpen(user, '超时与重试');
 
-    await user.click(screen.getByRole('button', { name: '长流式响应' }));
+    await user.click(screen.getByRole('button', { name: 'LLM 透传' }));
 
-    expect(screen.getByLabelText('等正文第一个字节（毫秒）')).toHaveValue(180000);
-    expect(screen.getByLabelText('正文空闲时限（毫秒）')).toHaveValue(180000);
-    expect(screen.getByLabelText('单次尝试等响应头（毫秒）')).toHaveValue(null);
-  });
-
-  it('点透传：两个正文框填 0，状态条摊开收益与代价', async () => {
-    const user = userEvent.setup();
-    renderEditor(true, { upstream: 'origin.example.com' });
-    await ensureOpen(user, '超时与重试');
-
-    await user.click(screen.getByRole('button', { name: '透传' }));
-
+    expect(screen.getByLabelText('单次尝试等响应头（毫秒）')).toHaveValue(90000);
+    expect(screen.getByLabelText('重试总时限（毫秒）')).toHaveValue(120000);
+    expect(screen.getByLabelText('额外重试次数')).toHaveValue(1);
     expect(screen.getByLabelText('等正文第一个字节（毫秒）')).toHaveValue(0);
     expect(screen.getByLabelText('正文空闲时限（毫秒）')).toHaveValue(0);
     expect(await saveDraft(user)).toMatchObject({
+      timeoutMs: 90000,
+      totalTimeoutMs: 120000,
+      retries: 1,
       firstChunkTimeoutMs: 0,
       streamIdleTimeoutMs: 0,
     });
@@ -678,7 +674,7 @@ describe('RouteEditor 超时预设', () => {
     renderEditor(true, { upstream: 'origin.example.com' });
     await ensureOpen(user, '超时与重试');
 
-    await user.click(screen.getByRole('button', { name: 'LLM 上游' }));
+    await user.click(screen.getByRole('button', { name: 'LLM（监控）' }));
     const total = screen.getByLabelText('重试总时限（毫秒）');
     await user.clear(total);
     await user.type(total, '60000');
