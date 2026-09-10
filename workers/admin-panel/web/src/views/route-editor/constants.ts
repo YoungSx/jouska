@@ -38,13 +38,9 @@ export const NUMERIC_FIELDS: Record<
   retryBackoffMs: { label: t.fields.retryBackoffMs.label, unit: t.fields.retryBackoffMs.unit },
 };
 
-/** 预设按钮的文案：名字查表，不写三元链 —— 加第三个预设时不用改条件。 */
+/** 预设按钮的文案：名字查表，不写三元链 —— 加预设时不用改条件。 */
 const TIMING_PRESET_COPY: Record<TimingPresetName, { label: string; description: string }> = {
   llm: { label: t.fields.sections.presetLlm, description: t.fields.sections.presetLlmDesc },
-  streaming: {
-    label: t.fields.sections.presetStreaming,
-    description: t.fields.sections.presetStreamingDesc,
-  },
   passthrough: {
     label: t.fields.sections.presetPassthrough,
     description: t.fields.sections.presetPassthroughDesc,
@@ -58,7 +54,7 @@ const TIMING_PRESET_COPY: Record<TimingPresetName, { label: string; description:
  * 在这里报错，逼着人确认新字段要不要进预设按钮，而不是静默漏掉。
  */
 export const TIMING_PRESET_BUTTONS = (
-  ['llm', 'streaming', 'passthrough'] as const satisfies readonly (keyof typeof TIMING_PRESETS)[]
+  ['llm', 'passthrough'] as const satisfies readonly (keyof typeof TIMING_PRESETS)[]
 ).map((name) => ({
   name,
   keys: PRESET_NUMERIC_KEYS[name],
