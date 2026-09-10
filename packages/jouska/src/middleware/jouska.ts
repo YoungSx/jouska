@@ -1555,6 +1555,19 @@ const produceResponse = async ({
  * it, and an ignored rejected promise is an unhandled rejection in the isolate.
  * Every ending — including a deadline and a reset — arrives as a resolved
  * {@link StreamReport}.
+ *
+ * Both body deadlines at `0` returns `undefined` — no monitored stream at all,
+ * the upstream body handed to the client as-is. The operator declaring both
+ * deadlines dead is declaring they do not care how this stream ends, and a
+ * TransformStream that never fires still charges CPU per chunk relayed — the
+ * thing the free plan's 10 ms ceiling kills long streams on (`exceededCpu`,
+ * measured). Native relaying keeps the per-chunk bill at zero, which is the
+ * only mode in which a long token stream survives that ceiling. The costs are
+ * the mirror of the gains: a stalled stream cuts itself off nowhere, the client
+ * waits on its own timeout, and there is no `stream` report to observe. Both
+ * deadlines have to be `0` — one live deadline still needs the monitor, and
+ * half-monitoring would read as `0` disabling one deadline while the other
+ * silently kept its TransformStream bill.
  */
 const watchBody = (
   upstream: Response,
@@ -1563,6 +1576,9 @@ const watchBody = (
 ): { response: Response; report: Promise<StreamReport> } | undefined => {
   const body = upstream.body;
   if (body === null) {
+    return undefined;
+  }
+  if (route.firstChunkTimeoutMs === 0 && route.streamIdleTimeoutMs === 0) {
     return undefined;
   }
   let settle: (report: StreamReport) => void;
