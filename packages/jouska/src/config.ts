@@ -1947,6 +1947,9 @@ const routeBehaviour = {
    * fires for one.
    *
    * `0` disables the deadline — the first byte may take as long as it takes.
+   * With `streamIdleTimeoutMs` also `0`, the body is not monitored at all: it
+   * is relayed natively, costs no per-chunk CPU, and produces no
+   * `ProxyEvent.stream` report.
    */
   firstChunkTimeoutMs: z.number().int().min(0).max(600_000).default(60_000),
   /**
@@ -1962,7 +1965,9 @@ const routeBehaviour = {
    * knowing whether the upstream is alive.
    *
    * `0` disables the deadline — a stream that goes quiet is then the client's
-   * problem to notice, not the proxy's.
+   * problem to notice, not the proxy's. With `firstChunkTimeoutMs` also `0`,
+   * the body is not monitored at all: it is relayed natively, costs no
+   * per-chunk CPU, and produces no `ProxyEvent.stream` report.
    */
   streamIdleTimeoutMs: z.number().int().min(0).max(600_000).default(60_000),
   /**

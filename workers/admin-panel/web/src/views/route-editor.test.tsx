@@ -600,36 +600,73 @@ describe('RouteEditor 超时预设', () => {
     vi.restoreAllMocks();
   });
 
-  it('点 LLM 上游：三个框填上库里的数字，其余框不动', async () => {
+  it('点 LLM（监控）：五个框填上库里的数字，一次配齐 LLM 网关时限', async () => {
     const user = userEvent.setup();
     renderEditor(true, { upstream: 'origin.example.com' });
     await ensureOpen(user, '超时与重试');
 
-    await user.click(screen.getByRole('button', { name: 'LLM 上游' }));
+    await user.click(screen.getByRole('button', { name: 'LLM（监控）' }));
 
     expect(screen.getByLabelText('单次尝试等响应头（毫秒）')).toHaveValue(90000);
     expect(screen.getByLabelText('重试总时限（毫秒）')).toHaveValue(120000);
     expect(screen.getByLabelText('额外重试次数')).toHaveValue(1);
-    // 预设不覆盖的框保持未设置。
-    expect(screen.getByLabelText('等正文第一个字节（毫秒）')).toHaveValue(null);
+    expect(screen.getByLabelText('等正文第一个字节（毫秒）')).toHaveValue(180000);
+    expect(screen.getByLabelText('正文空闲时限（毫秒）')).toHaveValue(180000);
 
     expect(await saveDraft(user)).toMatchObject({
       timeoutMs: 90000,
       totalTimeoutMs: 120000,
       retries: 1,
+      firstChunkTimeoutMs: 180000,
+      streamIdleTimeoutMs: 180000,
     });
   });
 
-  it('点长流式响应：只动正文两个框，响应头时限留在默认', async () => {
+  it('点 LLM 透传：头时限与监控版相同，正文双 0，状态条摊开收益与代价', async () => {
     const user = userEvent.setup();
     renderEditor(true, { upstream: 'origin.example.com' });
     await ensureOpen(user, '超时与重试');
 
-    await user.click(screen.getByRole('button', { name: '长流式响应' }));
+    await user.click(screen.getByRole('button', { name: 'LLM 透传' }));
 
-    expect(screen.getByLabelText('等正文第一个字节（毫秒）')).toHaveValue(180000);
-    expect(screen.getByLabelText('正文空闲时限（毫秒）')).toHaveValue(180000);
-    expect(screen.getByLabelText('单次尝试等响应头（毫秒）')).toHaveValue(null);
+    expect(screen.getByLabelText('单次尝试等响应头（毫秒）')).toHaveValue(90000);
+    expect(screen.getByLabelText('重试总时限（毫秒）')).toHaveValue(120000);
+    expect(screen.getByLabelText('额外重试次数')).toHaveValue(1);
+    expect(screen.getByLabelText('等正文第一个字节（毫秒）')).toHaveValue(0);
+    expect(screen.getByLabelText('正文空闲时限（毫秒）')).toHaveValue(0);
+    expect(await saveDraft(user)).toMatchObject({
+      timeoutMs: 90000,
+      totalTimeoutMs: 120000,
+      retries: 1,
+      firstChunkTimeoutMs: 0,
+      streamIdleTimeoutMs: 0,
+    });
+
+    // 双 0 换了一种运行模式（原生转发、零 per-chunk CPU），这不能只是两个数字框
+    // 里各躺着一个 0 —— 状态条得说清代价：死流不会自动断开。
+    const note = screen.getByRole('alert');
+    expect(note).toHaveTextContent('正文透传已生效');
+    expect(note).toHaveTextContent('不会自动断开');
+  });
+
+  it('双 0 但配了正文改写：状态条点破透传已被架空', async () => {
+    const user = userEvent.setup();
+    renderEditor(true, {
+      upstream: 'origin.example.com',
+      firstChunkTimeoutMs: 0,
+      streamIdleTimeoutMs: 0,
+      bodyRewrite: { rewriteStyles: false },
+    });
+
+    await ensureOpen(user, '超时与重试');
+
+    // 静默失效比不生效更糟：改写管道还在，CPU 照常按 chunk 计费。
+    // bodyRewrite 同时让改写卡自动展开并渲染它自己的警示，页面上有两个 alert ——
+    // 在所有 alert 里认透传那条，而不是假设它是唯一一个。
+    const notes = screen.getAllByRole('alert');
+    const passthrough = notes.find((el) => el.textContent?.includes('配置了镜像或正文改写'));
+    expect(passthrough).toBeDefined();
+    expect(passthrough).toHaveTextContent('照常计费');
   });
 
   it('预设是一锤子买卖：填完之后手改数字照常生效', async () => {
@@ -637,7 +674,7 @@ describe('RouteEditor 超时预设', () => {
     renderEditor(true, { upstream: 'origin.example.com' });
     await ensureOpen(user, '超时与重试');
 
-    await user.click(screen.getByRole('button', { name: 'LLM 上游' }));
+    await user.click(screen.getByRole('button', { name: 'LLM（监控）' }));
     const total = screen.getByLabelText('重试总时限（毫秒）');
     await user.clear(total);
     await user.type(total, '60000');

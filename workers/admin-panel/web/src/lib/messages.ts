@@ -317,10 +317,17 @@ export const t = {
       presetLabel: '套预设',
       presetHint:
         '把一组挑好的数字填进下面的框，之后随便改。预设不跟随配置，改了库里的预设也不会动已发布的路由。',
-      presetLlm: 'LLM 上游',
-      presetLlmDesc: '上游要想很久才回话：OpenAI 类 API、冷启动的 HF Space。',
-      presetStreaming: '长流式响应',
-      presetStreamingDesc: '正文一次流好几分钟：reasoning 模型的 token 流。',
+      presetLlm: 'LLM（监控）',
+      presetLlmDesc:
+        'LLM 网关全套时限：响应头耐心等 90 秒、正文首字节与帧间隔各 3 分钟，保留流监控与日志。适合不差 CPU 限额的路由。',
+      presetPassthrough: 'LLM 透传',
+      presetPassthroughDesc:
+        '免费版跑 LLM 长流式的选择：响应头同样耐心等 90 秒，正文由运行时原生转发，几乎不占 CPU 限额；代价是卡死的流不会自动断开，也不再记录流日志。',
+      /** 两个正文时限都是 0 时，时序卡片里出现的状态条。分「生效」和「被架空」两段。 */
+      passthroughActive:
+        '正文透传已生效——正文由运行时原生转发，几乎不占 CPU 限额；卡死的流不会自动断开，客户端会等到它自己的超时。',
+      passthroughUndermined:
+        '两个正文时限都是 0，但本路由配置了镜像或正文改写——正文仍会经过脚本管道，CPU 照常计费。',
       presetClear: '不套预设',
       presetClearDesc: '把这六个框全清空，回到各自的默认值。',
       rewrite: '响应改写',
@@ -400,12 +407,12 @@ export const t = {
     firstChunkTimeoutMs: {
       label: '等正文第一个字节',
       unit: '毫秒',
-      help: '响应头之后等首字节；模型思考很久属于正常，这里要给够。填 0 表示不设限。',
+      help: '响应头之后等首字节；模型思考很久属于正常，这里要给够。填 0 表示不设限；与下面同为 0 时正文透传，不再监控。',
     },
     streamIdleTimeoutMs: {
       label: '正文空闲时限',
       unit: '毫秒',
-      help: '两个字节之间最长静默；只要还在滴数据就一直转发，没有总时长上限。填 0 表示不设限。',
+      help: '两个字节之间最长静默；只要还在滴数据就一直转发，没有总时长上限。填 0 表示不设限；与上面同为 0 时正文透传，不再监控。',
     },
     retries: {
       label: '额外重试次数',

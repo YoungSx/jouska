@@ -4,6 +4,7 @@
  * own zod schema uses, so a library-side rename breaks the build instead of drifting.
  */
 import { TIMING_PRESETS } from '@jouska/timing-presets';
+import type { TimingPresetName } from '@jouska/timing-presets';
 import { t } from '@/lib/messages';
 import { PRESET_NUMERIC_KEYS } from '@/lib/types';
 import type { RouteDefinition } from '@/lib/types';
@@ -37,6 +38,15 @@ export const NUMERIC_FIELDS: Record<
   retryBackoffMs: { label: t.fields.retryBackoffMs.label, unit: t.fields.retryBackoffMs.unit },
 };
 
+/** 预设按钮的文案：名字查表，不写三元链 —— 加预设时不用改条件。 */
+const TIMING_PRESET_COPY: Record<TimingPresetName, { label: string; description: string }> = {
+  llm: { label: t.fields.sections.presetLlm, description: t.fields.sections.presetLlmDesc },
+  passthrough: {
+    label: t.fields.sections.presetPassthrough,
+    description: t.fields.sections.presetPassthroughDesc,
+  },
+};
+
 /**
  * 预设按钮的元数据：名字与描述进按钮，数字从库里的 TIMING_PRESETS 取。
  *
@@ -44,14 +54,13 @@ export const NUMERIC_FIELDS: Record<
  * 在这里报错，逼着人确认新字段要不要进预设按钮，而不是静默漏掉。
  */
 export const TIMING_PRESET_BUTTONS = (
-  ['llm', 'streaming'] as const satisfies readonly (keyof typeof TIMING_PRESETS)[]
+  ['llm', 'passthrough'] as const satisfies readonly (keyof typeof TIMING_PRESETS)[]
 ).map((name) => ({
   name,
   keys: PRESET_NUMERIC_KEYS[name],
   values: TIMING_PRESETS[name],
-  label: name === 'llm' ? t.fields.sections.presetLlm : t.fields.sections.presetStreaming,
-  description:
-    name === 'llm' ? t.fields.sections.presetLlmDesc : t.fields.sections.presetStreamingDesc,
+  label: TIMING_PRESET_COPY[name].label,
+  description: TIMING_PRESET_COPY[name].description,
 }));
 
 export const BOOLEAN_KEYS = [

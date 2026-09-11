@@ -266,8 +266,14 @@ export const PRESET_NUMERIC_KEYS: Record<
   TimingPresetName,
   readonly (keyof typeof NUMERIC_BOUNDS)[]
 > = {
-  llm: ['timeoutMs', 'totalTimeoutMs', 'retries'],
-  streaming: ['firstChunkTimeoutMs', 'streamIdleTimeoutMs'],
+  llm: ['timeoutMs', 'totalTimeoutMs', 'retries', 'firstChunkTimeoutMs', 'streamIdleTimeoutMs'],
+  passthrough: [
+    'timeoutMs',
+    'totalTimeoutMs',
+    'retries',
+    'firstChunkTimeoutMs',
+    'streamIdleTimeoutMs',
+  ],
 };
 
 /** boolean 字段的 schema 默认值，用来在表单上显示"默认 X"。 */
