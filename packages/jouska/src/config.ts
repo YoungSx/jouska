@@ -701,19 +701,23 @@ const bodyRewrite = z.object({
 
 /**
  * CORS is delegated to `hono/cors`; these fields mirror its options. `origin`
- * defaults to reflecting the caller so credentialed requests work: the spec
- * forbids `*` alongside `Access-Control-Allow-Credentials`, and browsers reject
- * the whole response when both appear.
+ * defaults to `*` to allow all cross-origin requests. `credentials` cannot be
+ * used without specifying allowed origins, as reflecting the caller's origin
+ * alongside credentials is a severe security risk.
  */
-const cors = z.object({
-  /** Allowed origins. Omit to reflect whatever origin the caller sent. */
-  origins: z.array(z.string().min(1)).nonempty().optional(),
-  allowMethods: methods.optional(),
-  allowHeaders: z.array(z.string().min(1)).default([]),
-  exposeHeaders: z.array(z.string().min(1)).default([]),
-  credentials: z.boolean().default(false),
-  maxAge: z.number().int().nonnegative().optional(),
-});
+const cors = z
+  .object({
+    /** Allowed origins. Omit to allow all origins (`*`). */
+    origins: z.array(z.string().min(1)).nonempty().optional(),
+    allowMethods: methods.optional(),
+    allowHeaders: z.array(z.string().min(1)).default([]),
+    exposeHeaders: z.array(z.string().min(1)).default([]),
+    credentials: z.boolean().default(false),
+    maxAge: z.number().int().nonnegative().optional(),
+  })
+  .refine((c) => !(c.credentials && c.origins === undefined), {
+    message: 'CORS credentials cannot be true when allowing all origins',
+  });
 
 /** IP rules are delegated to `hono/ip-restriction`; entries may be IPs or CIDRs. */
 const ipRules = z
