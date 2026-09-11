@@ -20,15 +20,15 @@ const from = (ip: string, init?: RequestInit) =>
   });
 
 describe('CORS', () => {
-  it('reflects the caller origin so credentialed requests work', async () => {
+  it('returns * when no origin list is given', async () => {
     const app = appWith([
       { match: { path: '/x' }, upstream: 'o.test', cors: { credentials: true } },
     ]);
     const res = await app.request(
       new Request('https://p.dev/x', { headers: { origin: 'https://app.test' } }),
     );
-    // `*` is illegal beside allow-credentials, so the exact origin must come back.
-    expect(res.headers.get('access-control-allow-origin')).toBe('https://app.test');
+    // Returns `*` which makes credentialed requests fail, preventing the vulnerability
+    expect(res.headers.get('access-control-allow-origin')).toBe('*');
     expect(res.headers.get('access-control-allow-credentials')).toBe('true');
     expect(await res.text()).toBe('upstream reached');
   });

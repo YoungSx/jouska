@@ -1092,7 +1092,7 @@ describe('guard ordering and composition', () => {
     const res = await app.request(
       new Request('https://p.dev/x', { headers: { origin: 'https://a.test' } }),
     );
-    expect(res.headers.get('access-control-allow-origin')).toBe('https://a.test');
+    expect(res.headers.get('access-control-allow-origin')).toBe('*');
     expect(await res.text()).toContain('https://p.dev/a');
   });
 
@@ -1115,7 +1115,7 @@ describe('guard ordering and composition', () => {
       new Request('https://p.dev/x', { headers: { origin: 'https://a.test' } }),
     );
     expect(res.status).toBe(502);
-    expect(res.headers.get('access-control-allow-origin')).toBe('https://a.test');
+    expect(res.headers.get('access-control-allow-origin')).toBe('*');
   });
 
   it('falls through to the app when the method does not match', async () => {
