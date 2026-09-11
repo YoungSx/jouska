@@ -115,5 +115,9 @@ export const useDraft = (enabled: boolean, onUnauthenticated: () => void): Draft
     void reload();
   }, [enabled, reload]);
 
-  return { routes, defaults, gate, loading, reload, recheck };
+  const returnValue = React.useMemo(
+    () => ({ routes, defaults, gate, loading, reload, recheck }),
+    [routes, defaults, gate, loading, reload, recheck],
+  );
+  return returnValue;
 };
