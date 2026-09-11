@@ -13,13 +13,13 @@ import { hostMatches } from '../router.js';
  */
 
 /**
- * Builds `hono/cors` options. When no origin list is given the caller's origin
- * is reflected, which is what makes credentialed requests work — `*` is illegal
- * next to `Access-Control-Allow-Credentials` and browsers reject the response.
+ * Builds `hono/cors` options. When no origin list is given, `*` is used to allow
+ * all cross-origin requests. (The schema prevents omitting origins when
+ * `credentials` is true).
  */
 export const corsMiddleware = (config: CorsConfig): MiddlewareHandler =>
   honoCors({
-    origin: config.origins ?? ((origin) => origin),
+    origin: config.origins ?? '*',
     ...(config.allowMethods ? { allowMethods: [...config.allowMethods] } : {}),
     allowHeaders: config.allowHeaders,
     exposeHeaders: config.exposeHeaders,
