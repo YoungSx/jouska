@@ -257,7 +257,7 @@ const App = () => {
 
   /* ---------- 预览页拿到的门。 ---------- */
 
-  const previewForPage = (() => {
+  const previewForPage = React.useMemo(() => {
     switch (draft.gate.kind) {
       case 'empty':
         // 门已经知道草稿是空的；把这份事实交给预览页的空态分支。
@@ -269,10 +269,10 @@ const App = () => {
       default:
         return null;
     }
-  })();
+  }, [draft.gate]);
 
   /** 每条路由命中的危险字段路径，行内就地标出。 */
-  const dangersByRoute: Record<string, readonly string[]> = (() => {
+  const dangersByRoute = React.useMemo<Record<string, readonly string[]>>(() => {
     const gate = draft.gate;
     if (gate.kind !== 'dirty' && gate.kind !== 'blocked' && gate.kind !== 'clean') {
       return {};
@@ -282,7 +282,7 @@ const App = () => {
       paths[routeId] = risks.map((risk) => risk.path);
     }
     return paths;
-  })();
+  }, [draft.gate]);
 
   /* ---------- 会话的三种非登录态。 ---------- */
 
