@@ -83,106 +83,113 @@ const detailOf = (error: unknown): string | undefined => {
 };
 
 /** 时间轴卡：一张 revision。无快照的卡不可勾选，说明行写明原因。 */
-const RevisionCard = ({
-  entry,
-  role,
-  isAdmin,
-  onToggleSelect,
-  onRollback,
-}: {
-  readonly entry: RevisionEntry;
-  /** 这张卡在当前对比里的位置：未选中 / 只选了它 / 原始侧 / 较新侧。 */
-  readonly role: 'none' | 'only' | 'older' | 'newer';
-  readonly isAdmin: boolean;
-  readonly onToggleSelect: () => void;
-  readonly onRollback: () => void;
-}) => {
-  const hasSnapshot = entry.snapshot === 'full';
-  const selected = role !== 'none';
-  return (
-    <li className="relative flex gap-3">
-      {/* 轨道：竖线 + 圆点。圆点是整条时间轴的视觉锚，正在服务的版本换主色。 */}
-      <div className="flex flex-col items-center pt-5" aria-hidden>
-        <span
-          className={
-            entry.live
-              ? 'bg-primary size-3 rounded-full ring-4 ring-primary/20'
-              : 'bg-border size-3 rounded-full ring-4 ring-transparent'
-          }
-        />
-        <span className="bg-border w-px grow" />
-      </div>
+const RevisionCard = React.memo(
+  ({
+    entry,
+    role,
+    isAdmin,
+    onToggleSelect,
+    onRollback,
+  }: {
+    readonly entry: RevisionEntry;
+    /** 这张卡在当前对比里的位置：未选中 / 只选了它 / 原始侧 / 较新侧。 */
+    readonly role: 'none' | 'only' | 'older' | 'newer';
+    readonly isAdmin: boolean;
+    readonly onToggleSelect: (revision: number) => void;
+    readonly onRollback: (entry: RevisionEntry) => void;
+  }) => {
+    // ⚡ Bolt Performance Optimization:
+    // We use React.memo on RevisionCard alongside stable callbacks passed from HistoryView.
+    // By passing `entry.revision` and `entry` through the child components instead of
+    // wrapping them in inline arrow functions inside the parent map, we avoid
+    // invalidating the memoization check for all unaffected cards when the selection changes.
+    const hasSnapshot = entry.snapshot === 'full';
+    const selected = role !== 'none';
+    return (
+      <li className="relative flex gap-3">
+        {/* 轨道：竖线 + 圆点。圆点是整条时间轴的视觉锚，正在服务的版本换主色。 */}
+        <div className="flex flex-col items-center pt-5" aria-hidden>
+          <span
+            className={
+              entry.live
+                ? 'bg-primary size-3 rounded-full ring-4 ring-primary/20'
+                : 'bg-border size-3 rounded-full ring-4 ring-transparent'
+            }
+          />
+          <span className="bg-border w-px grow" />
+        </div>
 
-      <Card className={selected ? 'w-full ring-2 ring-primary/40' : 'w-full'}>
-        <CardHeader>
-          <div className="flex flex-wrap items-center gap-2">
-            {hasSnapshot ? (
-              <Checkbox
-                checked={selected}
-                onCheckedChange={onToggleSelect}
-                aria-label={t.history.diff.selectLabel(entry.revision)}
-              />
-            ) : (
-              // 占位让所有卡的 revision 号对齐一列；无快照的卡本来就选不了。
-              <span className="size-4 shrink-0" aria-hidden />
+        <Card className={selected ? 'w-full ring-2 ring-primary/40' : 'w-full'}>
+          <CardHeader>
+            <div className="flex flex-wrap items-center gap-2">
+              {hasSnapshot ? (
+                <Checkbox
+                  checked={selected}
+                  onCheckedChange={() => onToggleSelect(entry.revision)}
+                  aria-label={t.history.diff.selectLabel(entry.revision)}
+                />
+              ) : (
+                // 占位让所有卡的 revision 号对齐一列；无快照的卡本来就选不了。
+                <span className="size-4 shrink-0" aria-hidden />
+              )}
+              <CardTitle className="font-mono" role="heading" aria-level={3}>
+                #{entry.revision}
+              </CardTitle>
+              {entry.live && (
+                <Badge>
+                  <TimerIcon aria-hidden />
+                  {t.history.liveBadge}
+                </Badge>
+              )}
+              {entry.rollbackOf !== null && (
+                <Badge variant="secondary">{t.history.rolledBackFrom(entry.rollbackOf)}</Badge>
+              )}
+              {!hasSnapshot && <Badge variant="outline">{t.history.snapshotNone}</Badge>}
+              {role === 'only' && (
+                <Badge variant="secondary">{t.history.diff.selected(entry.revision)}</Badge>
+              )}
+              {role === 'older' && <Badge variant="secondary">{t.history.diff.olderSide}</Badge>}
+              {role === 'newer' && <Badge variant="secondary">{t.history.diff.newerSide}</Badge>}
+            </div>
+            <CardDescription className="flex flex-wrap items-baseline gap-x-1.5">
+              <span>{timeAgo(entry.at)}</span>
+              <span aria-hidden>·</span>
+              {/* 确切时间是要被逐字符核对的数据：等宽 + 等宽数字，整列才对得齐。 */}
+              <span className="font-mono tabular-nums">{timeExact(entry.at)}</span>
+              <span aria-hidden>·</span>
+              <span className="font-mono break-all">{entry.actor}</span>
+            </CardDescription>
+            {isAdmin && hasSnapshot && (
+              <CardAction>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={entry.live}
+                  title={entry.live ? t.history.rollback.errors.already_live : undefined}
+                  onClick={() => onRollback(entry)}
+                >
+                  <RotateCcwIcon aria-hidden />
+                  {t.history.rollback.action}
+                </Button>
+              </CardAction>
             )}
-            <CardTitle className="font-mono" role="heading" aria-level={3}>
-              #{entry.revision}
-            </CardTitle>
-            {entry.live && (
-              <Badge>
-                <TimerIcon aria-hidden />
-                {t.history.liveBadge}
-              </Badge>
+          </CardHeader>
+          <CardContent className="flex flex-col gap-1">
+            <p className="text-muted-foreground text-xs">
+              {entry.routeCount === null
+                ? t.history.routesUnknown
+                : t.history.routes(entry.routeCount)}
+            </p>
+            {entry.note !== null && <p className="text-foreground text-sm">{entry.note}</p>}
+            {!hasSnapshot && (
+              <p className="text-muted-foreground text-xs">{t.history.snapshotNoneReason}</p>
             )}
-            {entry.rollbackOf !== null && (
-              <Badge variant="secondary">{t.history.rolledBackFrom(entry.rollbackOf)}</Badge>
-            )}
-            {!hasSnapshot && <Badge variant="outline">{t.history.snapshotNone}</Badge>}
-            {role === 'only' && (
-              <Badge variant="secondary">{t.history.diff.selected(entry.revision)}</Badge>
-            )}
-            {role === 'older' && <Badge variant="secondary">{t.history.diff.olderSide}</Badge>}
-            {role === 'newer' && <Badge variant="secondary">{t.history.diff.newerSide}</Badge>}
-          </div>
-          <CardDescription className="flex flex-wrap items-baseline gap-x-1.5">
-            <span>{timeAgo(entry.at)}</span>
-            <span aria-hidden>·</span>
-            {/* 确切时间是要被逐字符核对的数据：等宽 + 等宽数字，整列才对得齐。 */}
-            <span className="font-mono tabular-nums">{timeExact(entry.at)}</span>
-            <span aria-hidden>·</span>
-            <span className="font-mono break-all">{entry.actor}</span>
-          </CardDescription>
-          {isAdmin && hasSnapshot && (
-            <CardAction>
-              <Button
-                variant="outline"
-                size="sm"
-                disabled={entry.live}
-                title={entry.live ? t.history.rollback.errors.already_live : undefined}
-                onClick={onRollback}
-              >
-                <RotateCcwIcon aria-hidden />
-                {t.history.rollback.action}
-              </Button>
-            </CardAction>
-          )}
-        </CardHeader>
-        <CardContent className="flex flex-col gap-1">
-          <p className="text-muted-foreground text-xs">
-            {entry.routeCount === null
-              ? t.history.routesUnknown
-              : t.history.routes(entry.routeCount)}
-          </p>
-          {entry.note !== null && <p className="text-foreground text-sm">{entry.note}</p>}
-          {!hasSnapshot && (
-            <p className="text-muted-foreground text-xs">{t.history.snapshotNoneReason}</p>
-          )}
-        </CardContent>
-      </Card>
-    </li>
-  );
-};
+          </CardContent>
+        </Card>
+      </li>
+    );
+  },
+);
 
 /** 相邻两个 revision 断档时的说明行：那次发布只改了线上，没写成面板记录。 */
 const GapRow = ({ before, after }: { readonly before: number; readonly after: number }) => (
@@ -308,7 +315,7 @@ export const HistoryView = ({ isAdmin, onConfigChanged }: HistoryViewProps) => {
     }
   }, [complete]);
 
-  const toggleSelect = (revision: number): void => {
+  const toggleSelect = React.useCallback((revision: number): void => {
     setSelection((current) => {
       if (current.includes(revision)) {
         return current.filter((value) => value !== revision);
@@ -317,7 +324,7 @@ export const HistoryView = ({ isAdmin, onConfigChanged }: HistoryViewProps) => {
       const next = [...current, revision];
       return next.length > 2 ? next.slice(next.length - 2) : next;
     });
-  };
+  }, []);
 
   const roleOf = (revision: number): 'none' | 'only' | 'older' | 'newer' => {
     if (pair !== null) {
@@ -499,8 +506,8 @@ export const HistoryView = ({ isAdmin, onConfigChanged }: HistoryViewProps) => {
                   entry={entry}
                   role={roleOf(entry.revision)}
                   isAdmin={isAdmin}
-                  onToggleSelect={() => toggleSelect(entry.revision)}
-                  onRollback={() => setRollbackTarget(entry)}
+                  onToggleSelect={toggleSelect}
+                  onRollback={setRollbackTarget}
                 />
               </React.Fragment>
             ))}

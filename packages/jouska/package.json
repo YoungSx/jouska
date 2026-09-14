@@ -41,7 +41,7 @@
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test": "vitest run",
     "test:watch": "vitest",
-    "prepublishOnly": "node -e \"console.error('publishing is disabled: the package name is not final yet \u2014 see scripts.prepublishOnly'); process.exit(1)\""
+    "prepublishOnly": "node -e \"console.error('publishing is disabled: the package name is not final yet — see scripts.prepublishOnly'); process.exit(1)\""
   },
   "peerDependencies": {
     "hono": "^4.13.5"
