@@ -342,8 +342,17 @@ export const RevisionDiff = ({
   if (entries.length === 0) {
     return <p className="text-muted-foreground text-sm">{t.history.diff.empty}</p>;
   }
-  const { routes, defaults, other } = blocksOf(entries);
-  const moved = entries.some((entry) => entry.kind === 'moved');
+
+  // ⚡ Bolt Performance Optimization:
+  // Memoizing these computations prevents O(N log N) sorting and O(N) array traversals
+  // on every render of the RevisionDiff component when `entries` is unchanged.
+  const { routes, defaults, other, moved } = React.useMemo(() => {
+    return {
+      ...blocksOf(entries),
+      moved: entries.some((entry) => entry.kind === 'moved'),
+    };
+  }, [entries]);
+
   return (
     <div className="flex flex-col gap-5">
       {routes.length > 0 && (
