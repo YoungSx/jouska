@@ -128,7 +128,7 @@ export const DomainsView = () => {
                 <a
                   href={bindUrl(data.accountId, data.script ?? 'jouska')}
                   target="_blank"
-                  rel="noreferrer"
+                  rel="noopener noreferrer"
                 />
               }
             >
