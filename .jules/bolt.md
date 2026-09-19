@@ -14,6 +14,7 @@
 
 **Learning:** Derived state computations like large array sorts (e.g. `blocksOf` which iterates, buckets, and sorts `entries` with O(N log N) complexity) in heavily used components such as `RevisionDiff` can become performance bottlenecks if not memoized, particularly when the components handle large data structures returned from APIs that are immutable until new data is fetched.
 **Action:** Use `React.useMemo` to memoize expensive derived state, especially when it involves O(N) array traversals or O(N log N) sorting on data that is provided via props and rarely changes (like fetched API lists/diffs) to prevent unnecessary recomputations on unrelated component re-renders.
+
 ## 2024-11-20 - Memoize derived state computations with O(N log N) in `useRouteDraft`
 
 **Learning:** Computations like `stableStringify(definition)` (which iterates and sorts all object keys with O(N log N) complexity) ran synchronously on every render of the `useRouteDraft` hook to calculate the `dirty` state. This can become a performance bottleneck since `useRouteDraft` re-renders every time an unrelated state changes (like typing into the `id` field or expanding an accordion).

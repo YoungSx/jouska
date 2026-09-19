@@ -205,24 +205,26 @@ describe('weighted traffic split', () => {
     // Same IP, same bucket — two fresh apps, one host. A second request through
     // a *new* app instance proves the assignment comes from the request alone,
     // not from any state the first call left behind.
-    const hosts: string[] = [];
-    for (let i = 0; i < 2; i += 1) {
-      const { app, requests } = appWith([splitRoute(false)], () => ok('ok'));
-      await app.request('https://p.dev/x', {
-        headers: { 'cf-connecting-ip': '203.0.113.7' },
-      });
-      hosts.push(new URL(requests[0]!.url).host);
-    }
+    const hosts = await Promise.all(
+      Array.from({ length: 2 }).map(async () => {
+        const { app, requests } = appWith([splitRoute(false)], () => ok('ok'));
+        await app.request('https://p.dev/x', {
+          headers: { 'cf-connecting-ip': '203.0.113.7' },
+        });
+        return new URL(requests[0]!.url).host;
+      }),
+    );
     expect(hosts[0]).toBe(hosts[1]);
   });
 
   it('sends callers with no IP to one stable bucket', async () => {
-    const hosts: string[] = [];
-    for (let i = 0; i < 3; i += 1) {
-      const { app, requests } = appWith([splitRoute(false)], () => ok('ok'));
-      await app.request('https://p.dev/x');
-      hosts.push(new URL(requests[0]!.url).host);
-    }
+    const hosts = await Promise.all(
+      Array.from({ length: 3 }).map(async () => {
+        const { app, requests } = appWith([splitRoute(false)], () => ok('ok'));
+        await app.request('https://p.dev/x');
+        return new URL(requests[0]!.url).host;
+      }),
+    );
     // No randomness: every IP-less request lands in the same bucket.
     expect(new Set(hosts).size).toBe(1);
   });
@@ -471,9 +473,7 @@ describe('passive outlier ejection', () => {
       (req) => (req.url.startsWith('https://a.test/') ? new Error('down') : ok('backup')),
     );
     // /x learns a.test is dead.
-    for (let i = 0; i < 3; i += 1) {
-      await app.request('https://p.dev/x');
-    }
+    await Promise.all(Array.from({ length: 3 }).map(() => app.request('https://p.dev/x')));
     const res = await app.request('https://p.dev/x');
     expect(new URL(requests[requests.length - 1]!.url).host).toBe('b.test');
     // /y shares the upstream, not the memory: it gives a.test its own chance.

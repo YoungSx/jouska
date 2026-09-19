@@ -104,9 +104,11 @@ beforeEach(async () => {
   await applyD1Migrations(testEnv.DB, TEST_MIGRATIONS);
   // mcp_tokens before users: its foreign keys are ON DELETE RESTRICT, so a
   // leftover token row would refuse the users wipe rather than cascade.
-  for (const table of ['audit_log', 'mcp_tokens', 'routes', 'settings', 'users']) {
-    await testEnv.DB.prepare(`DELETE FROM ${table}`).run();
-  }
+  await Promise.all(
+    ['audit_log', 'mcp_tokens', 'routes', 'settings', 'users'].map((table) =>
+      testEnv.DB.prepare(`DELETE FROM ${table}`).run(),
+    ),
+  );
   // One request through the door on an empty table provisions the sole admin, so
   // every test below starts from "exactly one admin exists, and it is root".
   const boot = await get('/api/auth/me', asRoot);
