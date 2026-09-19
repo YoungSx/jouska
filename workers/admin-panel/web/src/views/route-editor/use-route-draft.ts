@@ -113,11 +113,12 @@ export const useRouteDraft = ({
     () => stableStringify(initialDefinition),
     [initialDefinition],
   );
+
+  const currentSignature = React.useMemo(() => stableStringify(definition), [definition]);
+
   // 键顺序不算改动，所以脏检查用稳定序列化。
   const dirty =
-    stableStringify(definition) !== initialSignature ||
-    id !== initialId ||
-    enabled !== initialEnabled;
+    currentSignature !== initialSignature || id !== initialId || enabled !== initialEnabled;
 
   /**
    * 进一次编辑页读一次：绑定可能在上次编辑之后变了；服务端有 60s 缓存兜底。
@@ -381,9 +382,8 @@ export const useRouteDraft = ({
       return;
     }
     if (nextTab === 'json') {
-      const signature = stableStringify(definition);
-      if (jsonSignature.current !== signature) {
-        jsonSignature.current = signature;
+      if (jsonSignature.current !== currentSignature) {
+        jsonSignature.current = currentSignature;
         setJsonText(JSON.stringify(definition, null, 2));
         setJsonError(null);
       }
@@ -430,7 +430,7 @@ export const useRouteDraft = ({
    */
   const escapeJson = () => {
     setJsonText(JSON.stringify(definition, null, 2));
-    jsonSignature.current = stableStringify(definition);
+    jsonSignature.current = currentSignature;
     setJsonError(null);
   };
 
