@@ -785,13 +785,18 @@ describe('signed links', () => {
       const c = s[i] === 'A' ? 'B' : 'A';
       return s.slice(0, i) + c + s.slice(i + 1);
     };
-    for (const tampered of [flip(sig, 0), flip(sig, sig.length - 1)]) {
-      const res = await app.fetch(new Request(`https://p.dev/x?sig=${tampered}&exp=${farFuture}`), {
-        KEY: secret,
-      });
-      expect(res.status).toBe(403);
-      expect(((await res.json()) as Record<string, string>).error).toBe('signed_link_invalid');
-    }
+    await Promise.all(
+      [flip(sig, 0), flip(sig, sig.length - 1)].map(async (tampered) => {
+        const res = await app.fetch(
+          new Request(`https://p.dev/x?sig=${tampered}&exp=${farFuture}`),
+          {
+            KEY: secret,
+          },
+        );
+        expect(res.status).toBe(403);
+        expect(((await res.json()) as Record<string, string>).error).toBe('signed_link_invalid');
+      }),
+    );
   });
 
   it('refuses a signature minted for a different path', async () => {
