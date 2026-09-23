@@ -271,8 +271,16 @@ const App = () => {
     }
   })();
 
-  /** 每条路由命中的危险字段路径，行内就地标出。 */
-  const dangersByRoute: Record<string, readonly string[]> = (() => {
+  /**
+   * 每条路由命中的危险字段路径，行内就地标出。
+   *
+   * [Bolt ⚡]: 性能优化 - 使用 useMemo 缓存 dangersByRoute 的计算结果。
+   * 之前的实现会在组件每次 render 时重复执行 Object.entries 和 Array.map。
+   * 考虑到 App.tsx 可能因为 view 切换、编辑器弹窗等状态变化频繁重绘，
+   * 将此依赖于 draft.gate 的计算 memo 化，有效减少无意义的循环消耗并确保传递给下层的引用稳定。
+   * 预期影响: 在 draft.gate 不变的情况下，避免了每次 render 重建一个字典带来的对象分配开销与下层重绘触发。
+   */
+  const dangersByRoute: Record<string, readonly string[]> = React.useMemo(() => {
     const gate = draft.gate;
     if (gate.kind !== 'dirty' && gate.kind !== 'blocked' && gate.kind !== 'clean') {
       return {};
@@ -282,7 +290,7 @@ const App = () => {
       paths[routeId] = risks.map((risk) => risk.path);
     }
     return paths;
-  })();
+  }, [draft.gate]);
 
   /* ---------- 会话的三种非登录态。 ---------- */
 
