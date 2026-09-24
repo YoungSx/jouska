@@ -18,6 +18,7 @@ import { publishDraft } from '../publish.js';
 import { requireAdmin } from '../middleware.js';
 import {
   audit,
+  countRoutes,
   deleteRoute,
   getRevision,
   getRoute,
@@ -25,6 +26,7 @@ import {
   listAllRoutes,
   listAudit,
   listEnabledRoutes,
+  listRouteIds,
   putSetting,
   reorderRoutes,
   restoreDraftFromSnapshot,
@@ -84,8 +86,7 @@ configRoutes.put('/routes/:id', requireAdmin, async (c) => {
     return c.json({ error: 'invalid_input', detail: 'enabled must be a boolean' }, 400);
   }
   // New routes append at the end; position is managed, not authored.
-  const position =
-    existing === undefined ? (await listAllRoutes(c.env.DB)).length : existing.position;
+  const position = existing === undefined ? await countRoutes(c.env.DB) : existing.position;
   const user = c.get('user');
   await upsertRoute(c.env.DB, id, body.definition, enabled, position, user.subject);
   await audit(
@@ -122,7 +123,7 @@ configRoutes.put('/routes-order', requireAdmin, async (c) => {
     return c.json({ error: 'invalid_input', detail: 'ids must be an array of route ids' }, 400);
   }
   const ids = body.ids as string[];
-  const known = new Set((await listAllRoutes(c.env.DB)).map((r) => r.id));
+  const known = new Set(await listRouteIds(c.env.DB));
   // A permutation, checked as one: right length, all known, and no duplicates.
   // Without the duplicate check `['a','a']` passes the first two and leaves
   // some other route unpositioned — the table has no uniqueness constraint on
