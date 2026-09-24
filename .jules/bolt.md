@@ -19,3 +19,8 @@
 
 **Learning:** Computations like `stableStringify(definition)` (which iterates and sorts all object keys with O(N log N) complexity) ran synchronously on every render of the `useRouteDraft` hook to calculate the `dirty` state. This can become a performance bottleneck since `useRouteDraft` re-renders every time an unrelated state changes (like typing into the `id` field or expanding an accordion).
 **Action:** Use `React.useMemo` to memoize expensive derived states, particularly when computing stable serialization recursively over an object (`stableStringify`) in forms or editors that are heavily used and updated.
+
+## 2024-05-24 - Avoid fetching and parsing full rows for count/existence
+
+**Learning:** In D1 queries, `listAllRoutes` fetches and parses the JSON definitions of all routes. Using it just to count rows or extract IDs is extremely inefficient.
+**Action:** Created `countRoutes` and `listRouteIds` in `store.ts` to perform lightweight SQL queries for these specific needs, skipping unnecessary JSON parsing and large payload transfers.

@@ -12,11 +12,13 @@ import { previewDraft } from '../preview.js';
 import type { AppEnv } from '../env.js';
 import {
   audit,
+  countRoutes,
   deleteRoute,
   getRoute,
   getSetting,
   listAllRoutes,
   listAudit,
+  listRouteIds,
   putSetting,
   reorderRoutes,
   resolveMcpToken,
@@ -269,8 +271,7 @@ const callTool = async (
     const enabled =
       args.enabled === undefined ? (existing?.enabled ?? true) : strictBoolean(args.enabled);
     if (enabled === undefined) return inputError('enabled must be a boolean');
-    const position =
-      existing === undefined ? (await listAllRoutes(env.DB)).length : existing.position;
+    const position = existing === undefined ? await countRoutes(env.DB) : existing.position;
     await upsertRoute(env.DB, id, definition, enabled, position, actor);
     await audit(env.DB, actor, existing === undefined ? 'route.create' : 'route.update', id, {
       via: 'mcp',
@@ -298,7 +299,7 @@ const callTool = async (
       return inputError('ids must be an array of route ids');
     }
     const ids = args.ids as string[];
-    const known = new Set((await listAllRoutes(env.DB)).map((route) => route.id));
+    const known = new Set(await listRouteIds(env.DB));
     if (
       ids.length !== known.size ||
       new Set(ids).size !== ids.length ||
