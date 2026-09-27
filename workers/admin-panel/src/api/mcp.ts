@@ -15,6 +15,7 @@ import {
   deleteRoute,
   getRoute,
   getSetting,
+  countRoutes,
   listAllRoutes,
   listAudit,
   putSetting,
@@ -269,8 +270,7 @@ const callTool = async (
     const enabled =
       args.enabled === undefined ? (existing?.enabled ?? true) : strictBoolean(args.enabled);
     if (enabled === undefined) return inputError('enabled must be a boolean');
-    const position =
-      existing === undefined ? (await listAllRoutes(env.DB)).length : existing.position;
+    const position = existing === undefined ? await countRoutes(env.DB) : existing.position;
     await upsertRoute(env.DB, id, definition, enabled, position, actor);
     await audit(env.DB, actor, existing === undefined ? 'route.create' : 'route.update', id, {
       via: 'mcp',
