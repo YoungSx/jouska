@@ -21,5 +21,6 @@
 **Action:** Use `React.useMemo` to memoize expensive derived states, particularly when computing stable serialization recursively over an object (`stableStringify`) in forms or editors that are heavily used and updated.
 
 ## 2024-05-19 - Replace listAllRoutes().length with countRoutes()
+
 **Learning:** In D1/SQLite, determining the length of a large collection by fetching all rows (e.g., `listAllRoutes().length`) requires full query execution, JSON deserialization (if parsed in JS), and significant memory allocation for an array of full objects.
 **Action:** When only the count of records is needed (e.g., to determine the next position index), always implement and use a dedicated `COUNT(*)` query (`countRoutes`) to keep memory allocation O(1) and reduce DB bandwidth.
