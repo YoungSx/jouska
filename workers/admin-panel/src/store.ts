@@ -74,6 +74,17 @@ export interface RouteListEntry {
   readonly updatedBy: string;
 }
 
+/**
+ * ⚡ Bolt Performance Optimization: countRoutes
+ * Instead of fetching all route definitions (which parses JSON for every row),
+ * this queries just the count. Impact: O(N) memory allocation drops to O(1),
+ * saving significant serialization time and DB bandwidth when appending routes.
+ */
+export const countRoutes = async (db: D1Database): Promise<number> => {
+  const count = await db.prepare('SELECT COUNT(*) as count FROM routes').first<{ count: number }>();
+  return count?.count ?? 0;
+};
+
 export const listAllRoutes = async (db: D1Database): Promise<RouteListEntry[]> => {
   const { results } = await db
     .prepare(

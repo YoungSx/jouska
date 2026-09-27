@@ -22,6 +22,7 @@ import {
   getRevision,
   getRoute,
   getSetting,
+  countRoutes,
   listAllRoutes,
   listAudit,
   listEnabledRoutes,
@@ -84,8 +85,7 @@ configRoutes.put('/routes/:id', requireAdmin, async (c) => {
     return c.json({ error: 'invalid_input', detail: 'enabled must be a boolean' }, 400);
   }
   // New routes append at the end; position is managed, not authored.
-  const position =
-    existing === undefined ? (await listAllRoutes(c.env.DB)).length : existing.position;
+  const position = existing === undefined ? await countRoutes(c.env.DB) : existing.position;
   const user = c.get('user');
   await upsertRoute(c.env.DB, id, body.definition, enabled, position, user.subject);
   await audit(
