@@ -310,7 +310,8 @@ export const matchUrl = (
         continue;
       }
     }
-    if (methods !== undefined && !methods.some((m) => m.toUpperCase() === requestMethod)) {
+    // Methods are uppercased during config parsing, so we can check directly
+    if (methods !== undefined && !methods.includes(requestMethod)) {
       continue;
     }
     if (!conditionsHold(route, url, headers)) {
