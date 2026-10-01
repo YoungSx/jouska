@@ -24,3 +24,8 @@
 
 **Learning:** In D1/SQLite, determining the length of a large collection by fetching all rows (e.g., `listAllRoutes().length`) requires full query execution, JSON deserialization (if parsed in JS), and significant memory allocation for an array of full objects.
 **Action:** When only the count of records is needed (e.g., to determine the next position index), always implement and use a dedicated `COUNT(*)` query (`countRoutes`) to keep memory allocation O(1) and reduce DB bandwidth.
+
+## 2024-05-14 - React.memo Optimization
+
+**Learning:** Found an un-memoized `RouteRow` component rendering inside a large list. The `RoutesView` maps over all the routes, but `RouteRow` isn't memoized. Changes in the parent context (like deleting a route, re-ordering, etc) can cause un-necessary re-renders of all rows.
+**Action:** Use `React.memo` for list components. Ensure callbacks are stable or pass relevant state to children directly.
