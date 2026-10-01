@@ -1,3 +1,4 @@
+import * as React from 'react';
 import {
   ArrowDownIcon,
   ArrowUpIcon,
@@ -186,6 +187,8 @@ interface RouteTableProps {
   readonly onMove: (index: number, direction: -1 | 1) => void;
 }
 
+const EMPTY_DANGERS: readonly string[] = [];
+
 const RouteTable = ({
   routes,
   isAdmin,
@@ -219,7 +222,7 @@ const RouteTable = ({
             index={index}
             total={routes.length}
             isAdmin={isAdmin}
-            dangers={dangersByRoute[route.id] ?? []}
+            dangers={dangersByRoute[route.id] ?? EMPTY_DANGERS}
             onEdit={onEdit}
             onDuplicate={onDuplicate}
             onDelete={onDelete}
@@ -243,122 +246,124 @@ interface RouteRowProps {
   readonly onMove: (index: number, direction: -1 | 1) => void;
 }
 
-const RouteRow = ({
-  route,
-  index,
-  total,
-  isAdmin,
-  dangers,
-  onEdit,
-  onDuplicate,
-  onDelete,
-  onMove,
-}: RouteRowProps) => {
-  const usable = isUsableDefinition(route.definition);
+const RouteRow = React.memo(
+  ({
+    route,
+    index,
+    total,
+    isAdmin,
+    dangers,
+    onEdit,
+    onDuplicate,
+    onDelete,
+    onMove,
+  }: RouteRowProps) => {
+    const usable = isUsableDefinition(route.definition);
 
-  return (
-    <TableRow className={route.enabled ? undefined : 'opacity-60'}>
-      <TableCell className="text-muted-foreground tabular text-xs">{index + 1}</TableCell>
+    return (
+      <TableRow className={route.enabled ? undefined : 'opacity-60'}>
+        <TableCell className="text-muted-foreground tabular text-xs">{index + 1}</TableCell>
 
-      <TableCell className="font-mono text-xs">{route.id}</TableCell>
+        <TableCell className="font-mono text-xs">{route.id}</TableCell>
 
-      {usable ? (
-        <>
-          <TableCell className="font-mono text-xs">{matchSummary(route.definition)}</TableCell>
-          <TableCell className="font-mono text-xs">{upstreamSummary(route.definition)}</TableCell>
-        </>
-      ) : (
-        <TableCell colSpan={2}>
-          <Tooltip>
-            <TooltipTrigger
-              render={
-                <Badge variant="destructive">
-                  <TriangleAlertIcon />
-                  {t.routes.corrupt}
-                </Badge>
-              }
-            />
-            <TooltipContent>{t.routes.corruptHint}</TooltipContent>
-          </Tooltip>
-        </TableCell>
-      )}
-
-      <TableCell>
-        <div className="flex items-center gap-1.5">
-          <Badge variant={route.enabled ? 'default' : 'secondary'}>
-            {route.enabled ? t.routes.enabled : t.routes.disabled}
-          </Badge>
-          {dangers.length > 0 && (
+        {usable ? (
+          <>
+            <TableCell className="font-mono text-xs">{matchSummary(route.definition)}</TableCell>
+            <TableCell className="font-mono text-xs">{upstreamSummary(route.definition)}</TableCell>
+          </>
+        ) : (
+          <TableCell colSpan={2}>
             <Tooltip>
               <TooltipTrigger
                 render={
-                  <Badge variant="destructive" aria-label={t.preview.dangerTitle}>
+                  <Badge variant="destructive">
                     <TriangleAlertIcon />
-                    {dangers.length}
+                    {t.routes.corrupt}
                   </Badge>
                 }
               />
-              <TooltipContent className="max-w-72">
-                <p className="font-medium">{t.preview.dangerTitle}</p>
-                <ul className="mt-1 list-disc pl-4">
-                  {dangers.map((path) => (
-                    <li key={path} className="font-mono text-xs">
-                      {path}
-                    </li>
-                  ))}
-                </ul>
-              </TooltipContent>
+              <TooltipContent>{t.routes.corruptHint}</TooltipContent>
             </Tooltip>
-          )}
-        </div>
-      </TableCell>
-
-      <TableCell className="text-muted-foreground text-xs">
-        <Tooltip>
-          <TooltipTrigger render={<span>{timeAgo(route.updatedAt)}</span>} />
-          <TooltipContent>
-            {t.routes.updatedBy(route.updatedBy, timeExact(route.updatedAt))}
-          </TooltipContent>
-        </Tooltip>
-      </TableCell>
-
-      <TableCell>
-        {isAdmin && (
-          <DropdownMenu>
-            <DropdownMenuTrigger
-              render={
-                <Button variant="ghost" size="icon-sm" aria-label={t.routes.rowMenu(route.id)}>
-                  <MoreHorizontalIcon />
-                </Button>
-              }
-            />
-            <DropdownMenuContent align="end" className="min-w-44">
-              <DropdownMenuItem onClick={() => onEdit(route)} disabled={!usable}>
-                <PencilIcon />
-                {t.routes.edit}
-              </DropdownMenuItem>
-              <DropdownMenuItem onClick={() => onDuplicate(route)} disabled={!usable}>
-                <CopyIcon />
-                {t.routes.duplicate}
-              </DropdownMenuItem>
-              <DropdownMenuSeparator />
-              <DropdownMenuItem onClick={() => onMove(index, -1)} disabled={index === 0}>
-                <ArrowUpIcon />
-                {t.routes.moveUp}
-              </DropdownMenuItem>
-              <DropdownMenuItem onClick={() => onMove(index, 1)} disabled={index === total - 1}>
-                <ArrowDownIcon />
-                {t.routes.moveDown}
-              </DropdownMenuItem>
-              <DropdownMenuSeparator />
-              <DropdownMenuItem variant="destructive" onClick={() => onDelete(route)}>
-                <Trash2Icon />
-                {t.routes.remove}
-              </DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
+          </TableCell>
         )}
-      </TableCell>
-    </TableRow>
-  );
-};
+
+        <TableCell>
+          <div className="flex items-center gap-1.5">
+            <Badge variant={route.enabled ? 'default' : 'secondary'}>
+              {route.enabled ? t.routes.enabled : t.routes.disabled}
+            </Badge>
+            {dangers.length > 0 && (
+              <Tooltip>
+                <TooltipTrigger
+                  render={
+                    <Badge variant="destructive" aria-label={t.preview.dangerTitle}>
+                      <TriangleAlertIcon />
+                      {dangers.length}
+                    </Badge>
+                  }
+                />
+                <TooltipContent className="max-w-72">
+                  <p className="font-medium">{t.preview.dangerTitle}</p>
+                  <ul className="mt-1 list-disc pl-4">
+                    {dangers.map((path) => (
+                      <li key={path} className="font-mono text-xs">
+                        {path}
+                      </li>
+                    ))}
+                  </ul>
+                </TooltipContent>
+              </Tooltip>
+            )}
+          </div>
+        </TableCell>
+
+        <TableCell className="text-muted-foreground text-xs">
+          <Tooltip>
+            <TooltipTrigger render={<span>{timeAgo(route.updatedAt)}</span>} />
+            <TooltipContent>
+              {t.routes.updatedBy(route.updatedBy, timeExact(route.updatedAt))}
+            </TooltipContent>
+          </Tooltip>
+        </TableCell>
+
+        <TableCell>
+          {isAdmin && (
+            <DropdownMenu>
+              <DropdownMenuTrigger
+                render={
+                  <Button variant="ghost" size="icon-sm" aria-label={t.routes.rowMenu(route.id)}>
+                    <MoreHorizontalIcon />
+                  </Button>
+                }
+              />
+              <DropdownMenuContent align="end" className="min-w-44">
+                <DropdownMenuItem onClick={() => onEdit(route)} disabled={!usable}>
+                  <PencilIcon />
+                  {t.routes.edit}
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={() => onDuplicate(route)} disabled={!usable}>
+                  <CopyIcon />
+                  {t.routes.duplicate}
+                </DropdownMenuItem>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem onClick={() => onMove(index, -1)} disabled={index === 0}>
+                  <ArrowUpIcon />
+                  {t.routes.moveUp}
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={() => onMove(index, 1)} disabled={index === total - 1}>
+                  <ArrowDownIcon />
+                  {t.routes.moveDown}
+                </DropdownMenuItem>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem variant="destructive" onClick={() => onDelete(route)}>
+                  <Trash2Icon />
+                  {t.routes.remove}
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          )}
+        </TableCell>
+      </TableRow>
+    );
+  },
+);
