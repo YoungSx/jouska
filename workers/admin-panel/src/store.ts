@@ -85,6 +85,11 @@ export const countRoutes = async (db: D1Database): Promise<number> => {
   return count?.count ?? 0;
 };
 
+export const listRouteIds = async (db: D1Database): Promise<string[]> => {
+  const { results } = await db.prepare('SELECT id FROM routes').all<{ id: string }>();
+  return results.map((r) => r.id);
+};
+
 export const listAllRoutes = async (db: D1Database): Promise<RouteListEntry[]> => {
   const { results } = await db
     .prepare(
