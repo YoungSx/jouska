@@ -26,6 +26,7 @@ import {
   listAllRoutes,
   listAudit,
   listEnabledRoutes,
+  listRouteIds,
   putSetting,
   reorderRoutes,
   restoreDraftFromSnapshot,
@@ -122,7 +123,7 @@ configRoutes.put('/routes-order', requireAdmin, async (c) => {
     return c.json({ error: 'invalid_input', detail: 'ids must be an array of route ids' }, 400);
   }
   const ids = body.ids as string[];
-  const known = new Set((await listAllRoutes(c.env.DB)).map((r) => r.id));
+  const known = new Set(await listRouteIds(c.env.DB));
   // A permutation, checked as one: right length, all known, and no duplicates.
   // Without the duplicate check `['a','a']` passes the first two and leaves
   // some other route unpositioned — the table has no uniqueness constraint on

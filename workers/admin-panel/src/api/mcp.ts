@@ -18,6 +18,7 @@ import {
   countRoutes,
   listAllRoutes,
   listAudit,
+  listRouteIds,
   putSetting,
   reorderRoutes,
   resolveMcpToken,
@@ -298,7 +299,7 @@ const callTool = async (
       return inputError('ids must be an array of route ids');
     }
     const ids = args.ids as string[];
-    const known = new Set((await listAllRoutes(env.DB)).map((route) => route.id));
+    const known = new Set(await listRouteIds(env.DB));
     if (
       ids.length !== known.size ||
       new Set(ids).size !== ids.length ||
