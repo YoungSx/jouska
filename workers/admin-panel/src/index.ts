@@ -7,6 +7,7 @@
  * and its API cannot drift apart on CORS or cookies.
  */
 import { Hono } from 'hono';
+import { secureHeaders } from 'hono/secure-headers';
 import { authRoutes } from './api/auth.js';
 import { configRoutes } from './api/config.js';
 import { domainRoutes } from './api/domains.js';
@@ -18,6 +19,10 @@ import { requireSameOrigin, requireUser } from './middleware.js';
 import type { AppEnv } from './env.js';
 
 const app = new Hono<AppEnv>();
+
+// Apply security headers globally for baseline protection
+// (XSS, Clickjacking, MIME-sniffing, etc.)
+app.use('*', secureHeaders());
 
 app.onError((error, c) => {
   console.error('admin-panel: unhandled error', error);
