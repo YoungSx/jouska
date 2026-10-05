@@ -781,12 +781,14 @@ describe('signed links', () => {
     // The flip must actually change the character — overwriting with 'A' is a
     // no-op when that char is already 'A' (~3% of HMAC rolls), and the test
     // would then verify a perfectly valid signature.
+    // Furthermore, flipping the last character might not change the decoded bytes
+    // due to base64 padding discarding the lowest bits. We flip the second to last.
     const flip = (s: string, i: number) => {
       const c = s[i] === 'A' ? 'B' : 'A';
       return s.slice(0, i) + c + s.slice(i + 1);
     };
     await Promise.all(
-      [flip(sig, 0), flip(sig, sig.length - 1)].map(async (tampered) => {
+      [flip(sig, 0), flip(sig, sig.length - 2)].map(async (tampered) => {
         const res = await app.fetch(
           new Request(`https://p.dev/x?sig=${tampered}&exp=${farFuture}`),
           {
