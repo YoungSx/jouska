@@ -26,5 +26,6 @@
 **Action:** When only the count of records is needed (e.g., to determine the next position index), always implement and use a dedicated `COUNT(*)` query (`countRoutes`) to keep memory allocation O(1) and reduce DB bandwidth.
 
 ## 2024-05-19 - Use listRouteIds() instead of listAllRoutes() when only IDs are needed
+
 **Learning:** Fetching all routes via `listAllRoutes` parses the `definition` column (JSON deserialization) and allocates an array of full RouteListEntry objects. In endpoints that only validate IDs (like `routes-order` and `reorder_routes` in MCP), this adds unnecessary O(N) processing and memory overhead.
 **Action:** When only checking existence or validating a list of IDs, always create and use a targeted database query like `listRouteIds` (`SELECT id FROM routes`) to bypass parsing and reduce memory allocation to simple strings.
