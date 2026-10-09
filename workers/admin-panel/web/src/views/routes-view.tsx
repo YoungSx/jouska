@@ -9,6 +9,7 @@ import {
   Trash2Icon,
   TriangleAlertIcon,
 } from 'lucide-react';
+import * as React from 'react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import {
@@ -95,6 +96,11 @@ export const RoutesView = ({
   onMove,
   onSaveDefaults,
 }: RoutesViewProps) => {
+  // ⚡ Bolt Performance Optimization:
+  // Memoizing this derived state prevents JSON string serialization
+  // from running synchronously on every render of the RoutesView table.
+  const defaultsKey = React.useMemo(() => JSON.stringify(defaults), [defaults]);
+
   const enabledCount = routes.filter((route) => route.enabled).length;
 
   return (
@@ -159,7 +165,7 @@ export const RoutesView = ({
 
       {/* key 让服务端的 defaults 变化重挂卡片，编辑器内的本地状态随之重置。 */}
       <DefaultsCard
-        key={JSON.stringify(defaults)}
+        key={defaultsKey}
         defaults={defaults}
         isAdmin={isAdmin}
         onSave={onSaveDefaults}
