@@ -24,3 +24,8 @@
 
 **Learning:** In D1/SQLite, determining the length of a large collection by fetching all rows (e.g., `listAllRoutes().length`) requires full query execution, JSON deserialization (if parsed in JS), and significant memory allocation for an array of full objects.
 **Action:** When only the count of records is needed (e.g., to determine the next position index), always implement and use a dedicated `COUNT(*)` query (`countRoutes`) to keep memory allocation O(1) and reduce DB bandwidth.
+
+## 2024-11-20 - Memoize JSON.stringify computations for React component keys
+
+**Learning:** `JSON.stringify` (and particularly the O(N log N) `stableStringify`) can become a performance bottleneck when executed synchronously on every render, especially when used to compute a `key` string for child components (e.g., `<DefaultsCard key={JSON.stringify(defaults)} />`). While `JSON.stringify` alone is O(N), its continuous recalculation causes unnecessary CPU cycles when unrelated state changes.
+**Action:** Use `React.useMemo(() => JSON.stringify(data), [data])` to cache serialization results that depend on data that is only updated via referentially-fresh state (like data fetched from an API), eliminating recomputations on every render.
