@@ -19,7 +19,7 @@ import { hostMatches } from '../router.js';
  */
 export const corsMiddleware = (config: CorsConfig): MiddlewareHandler =>
   honoCors({
-    origin: config.origins ?? ((origin) => origin),
+    origin: config.origins ?? '*',
     ...(config.allowMethods ? { allowMethods: [...config.allowMethods] } : {}),
     allowHeaders: config.allowHeaders,
     exposeHeaders: config.exposeHeaders,
