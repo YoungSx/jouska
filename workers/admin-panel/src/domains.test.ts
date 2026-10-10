@@ -145,9 +145,11 @@ const domains = async (appEnv: AppEnv, auth: Record<string, string>): Promise<Do
 
 beforeEach(async () => {
   await applyD1Migrations(testEnv.DB, TEST_MIGRATIONS);
-  for (const table of ['audit_log', 'routes', 'settings', 'mcp_tokens', 'users']) {
-    await testEnv.DB.prepare(`DELETE FROM ${table}`).run();
-  }
+  await Promise.all(
+    ['audit_log', 'routes', 'settings', 'mcp_tokens', 'users'].map((table) =>
+      testEnv.DB.prepare(`DELETE FROM ${table}`).run(),
+    ),
+  );
   __resetDomainCache();
 });
 

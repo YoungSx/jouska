@@ -54,9 +54,11 @@ const VALID_ROUTE = { match: { host: 'a.example.com', path: '/' }, upstream: 'up
 
 beforeEach(async () => {
   await applyD1Migrations(testEnv.DB, TEST_MIGRATIONS);
-  for (const table of ['audit_log', 'routes', 'settings', 'mcp_tokens', 'users']) {
-    await testEnv.DB.prepare(`DELETE FROM ${table}`).run();
-  }
+  await Promise.all(
+    ['audit_log', 'routes', 'settings', 'mcp_tokens', 'users'].map((table) =>
+      testEnv.DB.prepare(`DELETE FROM ${table}`).run(),
+    ),
+  );
   await testEnv.CONFIG_KV.delete('routes');
 });
 

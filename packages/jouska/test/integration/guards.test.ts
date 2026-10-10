@@ -515,7 +515,9 @@ describe('access control', () => {
       const { impl, certsCalls } = jwksFetch([jwk]);
       const app = appWithAccess({ cloudflare: { team: 'acme', audience: 'app-audience' } }, impl);
       const token = await sign(validClaims());
+      // eslint-disable-next-line no-await-in-loop
       for (let i = 0; i < 3; i += 1) {
+        // eslint-disable-next-line no-await-in-loop
         const res = await app.request(
           new Request('https://p.dev/x', { headers: { 'cf-access-jwt-assertion': token } }),
         );

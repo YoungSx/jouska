@@ -170,10 +170,12 @@ describe('retry budget', () => {
     const second = await app.request('https://p.dev/x');
     const third = await app.request('https://p.dev/x');
 
-    for (const res of [first, second, third]) {
-      expect(res.status).toBe(504);
-      expect(await res.json()).toEqual({ error: 'upstream_timeout', upstream: 'o.test' });
-    }
+    await Promise.all(
+      [first, second, third].map(async (res) => {
+        expect(res.status).toBe(504);
+        expect(await res.json()).toEqual({ error: 'upstream_timeout', upstream: 'o.test' });
+      }),
+    );
     // 6 per request without the budget; 4 with it. The first walk is allowed one
     // retry — the budget counts retries performed, and it had performed none —
     // then spends it on itself and is refused from there on.
@@ -284,11 +286,15 @@ describe('in-flight fuse', () => {
 
     // Five callers in a row hang up mid-request. A seat leaked on any one of
     // them would fuse the route shut from that point on.
+    // Abort signal testing in a loop needs sequential execution to control
+    // the concurrent pending promise count properly. We disable eslint here.
     for (let i = 0; i < 5; i += 1) {
       const controller = new AbortController();
       const pending = app.fetch(new Request('https://p.dev/x', { signal: controller.signal }));
+      // eslint-disable-next-line no-await-in-loop
       await up.seated(i + 1);
       controller.abort();
+      // eslint-disable-next-line no-await-in-loop
       const res = await pending;
       expect(res.status).toBe(499);
       expect(events.at(-1)!.outcome).toBe('client_closed');

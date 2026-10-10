@@ -98,9 +98,11 @@ const insertUser = async (
 
 beforeEach(async () => {
   await applyD1Migrations(testEnv.DB, TEST_MIGRATIONS);
-  for (const table of ['audit_log', 'routes', 'settings', 'users']) {
-    await testEnv.DB.prepare(`DELETE FROM ${table}`).run();
-  }
+  await Promise.all(
+    ['audit_log', 'routes', 'settings', 'users'].map((table) =>
+      testEnv.DB.prepare(`DELETE FROM ${table}`).run(),
+    ),
+  );
 });
 
 describe('Access off', () => {
@@ -111,11 +113,13 @@ describe('Access off', () => {
     // out, not softly downgraded to something an attacker can reach.
     const appEnv = envWith({});
 
-    for (const path of ['/api/auth/me', '/api/routes', '/api/users']) {
-      const res = await request('GET', path, appEnv);
-      // /me answers its own shape: 200 with a null user, so the SPA can render.
-      expect(path === '/api/auth/me' ? 200 : 401).toBe(res.status);
-    }
+    await Promise.all(
+      ['/api/auth/me', '/api/routes', '/api/users'].map(async (path) => {
+        const res = await request('GET', path, appEnv);
+        // /me answers its own shape: 200 with a null user, so the SPA can render.
+        expect(res.status).toBe(path === '/api/auth/me' ? 200 : 401);
+      }),
+    );
     expect(await userCount()).toBe(0);
   });
 

@@ -335,7 +335,9 @@ describe('passive outlier ejection', () => {
       (req) => (req.url.startsWith('https://a.test/') ? new Error('down') : ok('from b')),
     );
     // Three requests each pay for the dead primary before it is ejected.
+    // eslint-disable-next-line no-await-in-loop
     for (let i = 0; i < 3; i += 1) {
+      // eslint-disable-next-line no-await-in-loop
       const res = await app.request('https://p.dev/x');
       expect(res.status).toBe(200);
     }
@@ -361,7 +363,9 @@ describe('passive outlier ejection', () => {
       (req) => (req.url.startsWith('https://a.test/') ? new Error('down') : ok('b')),
       events,
     );
+    // eslint-disable-next-line no-await-in-loop
     for (let i = 0; i < 4; i += 1) {
+      // eslint-disable-next-line no-await-in-loop
       await app.request('https://p.dev/x');
     }
     // Nothing was skipped while the memory was still counting; the request
