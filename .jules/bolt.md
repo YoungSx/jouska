@@ -24,3 +24,8 @@
 
 **Learning:** In D1/SQLite, determining the length of a large collection by fetching all rows (e.g., `listAllRoutes().length`) requires full query execution, JSON deserialization (if parsed in JS), and significant memory allocation for an array of full objects.
 **Action:** When only the count of records is needed (e.g., to determine the next position index), always implement and use a dedicated `COUNT(*)` query (`countRoutes`) to keep memory allocation O(1) and reduce DB bandwidth.
+## 2024-05-19 - Use targeted queries instead of fetching all rows to determine existence
+
+**Learning:** When validating if an item exists or is part of a list, fetching the entire list (like `listAllRoutes`) only to map `r.id` fetches unneeded row data and performs potentially massive JSON deserializations.
+
+**Action:** Add targeted queries like `listRouteIds` that return only the needed columns to avoid network transfer, memory allocation and CPU overhead.
