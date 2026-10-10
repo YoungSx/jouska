@@ -286,11 +286,13 @@ describe('MCP transport conformance', () => {
   it('answers 405 to the methods this revision removed, not 404', async () => {
     // A 404 reads as "no MCP endpoint here" and sends a dual-era client off to
     // probe the deprecated HTTP+SSE transport. 405 says the endpoint exists.
-    for (const method of ['GET', 'DELETE', 'PUT', 'OPTIONS']) {
-      const res = await bare('/mcp', { method });
-      expect(res.status).toBe(405);
-      expect(res.headers.get('allow')).toBe('POST');
-    }
+    await Promise.all(
+      ['GET', 'DELETE', 'PUT', 'OPTIONS'].map(async (method) => {
+        const res = await bare('/mcp', { method });
+        expect(res.status).toBe(405);
+        expect(res.headers.get('allow')).toBe('POST');
+      }),
+    );
   });
 
   it('refuses a body that is not application/json before parsing it', async () => {

@@ -117,9 +117,11 @@ const seedHistory = async (auth: Record<string, string>): Promise<void> => {
 describe('revision history and rollback', () => {
   beforeEach(async () => {
     await applyD1Migrations(testEnv.DB, TEST_MIGRATIONS);
-    for (const table of ['audit_log', 'routes', 'settings', 'users', 'revisions']) {
-      await testEnv.DB.prepare(`DELETE FROM ${table}`).run();
-    }
+    await Promise.all(
+      ['audit_log', 'routes', 'settings', 'users', 'revisions'].map((table) =>
+        testEnv.DB.prepare(`DELETE FROM ${table}`).run(),
+      ),
+    );
     await testEnv.CONFIG_KV.delete('routes');
     __resetConfigCache();
   });
@@ -451,8 +453,12 @@ describe('revision history and rollback', () => {
   it('prunes history down to the retention window', async () => {
     const auth = await signInAdmin();
     // KEEP_REVISIONS is 50; 52 publishes must leave 3..52.
+    // Sequential execution required since publish reads/writes shared state.
+    // eslint-disable-next-line no-await-in-loop
     for (let i = 1; i <= 52; i += 1) {
+      // eslint-disable-next-line no-await-in-loop
       await putRoute(auth, 'churn', routeFor('c.example.com', `c${i}.internal.example.com`));
+      // eslint-disable-next-line no-await-in-loop
       const res = await publish(auth);
       expect(res.status).toBe(200);
     }

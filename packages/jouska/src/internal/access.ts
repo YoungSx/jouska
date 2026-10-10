@@ -140,10 +140,11 @@ const checkKey = async (config: AccessConfig, request: Request): Promise<AccessV
     return refused(401, 'too_long');
   }
   const digest = await sha256Hex(presented);
-  for (const configured of config.keys ?? []) {
-    if (await digestsMatch(digest, configured)) {
-      return { ok: true };
-    }
+  const results = await Promise.all(
+    (config.keys ?? []).map((configured) => digestsMatch(digest, configured)),
+  );
+  if (results.some(Boolean)) {
+    return { ok: true };
   }
   return refused(401, 'invalid');
 };

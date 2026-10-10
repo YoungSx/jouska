@@ -118,9 +118,11 @@ const publishThenDirty = async (auth: Record<string, string>): Promise<void> => 
 describe('draft discard', () => {
   beforeEach(async () => {
     await applyD1Migrations(testEnv.DB, TEST_MIGRATIONS);
-    for (const table of ['audit_log', 'routes', 'settings', 'users', 'revisions']) {
-      await testEnv.DB.prepare(`DELETE FROM ${table}`).run();
-    }
+    await Promise.all(
+      ['audit_log', 'routes', 'settings', 'users', 'revisions'].map((table) =>
+        testEnv.DB.prepare(`DELETE FROM ${table}`).run(),
+      ),
+    );
     await testEnv.CONFIG_KV.delete('routes');
   });
 

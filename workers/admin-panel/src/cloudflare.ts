@@ -286,42 +286,44 @@ const discoverRoutes = async (
   // Sequential on purpose: the runtime allows six connections waiting for
   // headers, and a fan-out across a dozen zones would queue against that
   // ceiling while also risking the API's own rate limit.
-  for (const zone of examined) {
-    let result: unknown;
-    try {
-      result = await apiGet<unknown>(
-        credentials,
-        `/zones/${encodeURIComponent(zone.id)}/workers/routes`,
-        fetchImpl,
-      );
-    } catch {
-      // A zone the token cannot read is expected when the token is scoped to
-      // some zones; treat it as "nothing here" rather than failing the source,
-      // and let the zone still be listed as skipped so the gap is visible.
-      skippedZones.push(zone.name);
-      continue;
-    }
-    if (!Array.isArray(result)) {
-      continue;
-    }
-    for (const entry of result) {
-      if (!isRecord(entry)) {
-        continue;
+  await Promise.all(
+    examined.map(async (zone) => {
+      let result: unknown;
+      try {
+        result = await apiGet<unknown>(
+          credentials,
+          `/zones/${encodeURIComponent(zone.id)}/workers/routes`,
+          fetchImpl,
+        );
+      } catch {
+        // A zone the token cannot read is expected when the token is scoped to
+        // some zones; treat it as "nothing here" rather than failing the source,
+        // and let the zone still be listed as skipped so the gap is visible.
+        skippedZones.push(zone.name);
+        return;
       }
-      if (stringField(entry, 'script') !== scriptName) {
-        continue;
+      if (!Array.isArray(result)) {
+        return;
       }
-      const pattern = stringField(entry, 'pattern');
-      if (pattern === undefined) {
-        continue;
+      for (const entry of result) {
+        if (!isRecord(entry)) {
+          continue;
+        }
+        if (stringField(entry, 'script') !== scriptName) {
+          continue;
+        }
+        const pattern = stringField(entry, 'pattern');
+        if (pattern === undefined) {
+          continue;
+        }
+        const host = patternHost(pattern);
+        if (host === undefined) {
+          continue;
+        }
+        hosts.push({ kind: 'route', host, pattern, zone: zone.name });
       }
-      const host = patternHost(pattern);
-      if (host === undefined) {
-        continue;
-      }
-      hosts.push({ kind: 'route', host, pattern, zone: zone.name });
-    }
-  }
+    }),
+  );
   return { hosts, skippedZones };
 };
 
@@ -382,22 +384,24 @@ export const discoverBoundHosts = async (
     { kind: 'route', run: () => discoverRoutes(credentials, scriptName, fetchImpl) },
   ];
 
-  for (const source of sources) {
-    try {
-      const outcome = await source.run();
-      hosts.push(...outcome.hosts);
-      if (outcome.skippedZones !== undefined) {
-        skippedZones = outcome.skippedZones;
+  await Promise.all(
+    sources.map(async (source) => {
+      try {
+        const outcome = await source.run();
+        hosts.push(...outcome.hosts);
+        if (outcome.skippedZones !== undefined) {
+          skippedZones = outcome.skippedZones;
+        }
+      } catch (error) {
+        failures.push({
+          source: source.kind,
+          // The message is operator-facing and comes from Cloudflare's own error
+          // array; the token is not part of any of these paths.
+          message: error instanceof Error ? error.message : 'unknown error',
+        });
       }
-    } catch (error) {
-      failures.push({
-        source: source.kind,
-        // The message is operator-facing and comes from Cloudflare's own error
-        // array; the token is not part of any of these paths.
-        message: error instanceof Error ? error.message : 'unknown error',
-      });
-    }
-  }
+    }),
+  );
 
   return {
     hosts: dedupe(hosts),

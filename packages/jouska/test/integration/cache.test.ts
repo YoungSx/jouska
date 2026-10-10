@@ -319,11 +319,12 @@ describe('the configurable key', () => {
     const first = await fetchWith(app, '/a.css?utm_source=newsletter');
     expect(first.headers.get(CACHE_STATE_HEADER)).toBe('miss');
     revision = 1;
-    for (let index = 2; index <= 20; index += 1) {
+    const fetches = Array.from({ length: 19 }, (_, i) => i + 2).map(async (index) => {
       const response = await fetchWith(app, `/a.css?utm_source=variant-${index}`);
       expect(response.headers.get(CACHE_STATE_HEADER)).toBe('hit');
       expect(await response.text()).toBe('body{--r:0}');
-    }
+    });
+    await Promise.all(fetches);
     expect(trips).toBe(1);
   });
 
@@ -354,12 +355,14 @@ describe('the configurable key', () => {
 
   it('refuses the same varying response while headers stay unconfigured', async () => {
     const app = appWith(cachedRoute(), memoryStore());
-    for (const language of ['zh', 'en']) {
-      const response = await fetchWith(app, '/lang.css', {
-        headers: { 'accept-language': language },
-      });
-      expect(response.headers.get(CACHE_STATE_HEADER)).toBe('miss');
-    }
+    await Promise.all(
+      ['zh', 'en'].map(async (language) => {
+        const response = await fetchWith(app, '/lang.css', {
+          headers: { 'accept-language': language },
+        });
+        expect(response.headers.get(CACHE_STATE_HEADER)).toBe('miss');
+      }),
+    );
     expect(trips).toBe(2);
   });
 
@@ -612,9 +615,11 @@ describe('the cold-miss lock', () => {
     const responses = await burst(app, 50);
     expect(trips).toBe(1);
     // Every visitor gets the same bytes, whichever path delivered them.
-    for (const response of responses) {
-      expect(await response.text()).toBe('body{--r:0}');
-    }
+    await Promise.all(
+      responses.map(async (response) => {
+        expect(await response.text()).toBe('body{--r:0}');
+      }),
+    );
   });
 
   it('degrades to per-request fetching when the route opts out', async () => {
@@ -794,10 +799,11 @@ describe('negative caching', () => {
 
   it('does not cache 404s at all when no window was named', async () => {
     const app = appWith(cachedRoute(), memoryStore());
-    for (let i = 0; i < 3; i += 1) {
+    const fetchesMissing = Array.from({ length: 3 }).map(async () => {
       const response = await fetchWith(app, '/missing');
       expect(response.headers.get(CACHE_STATE_HEADER)).toBe('miss');
-    }
+    });
+    await Promise.all(fetchesMissing);
     expect(trips).toBe(3);
   });
 

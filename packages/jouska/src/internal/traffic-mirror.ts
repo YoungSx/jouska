@@ -96,13 +96,13 @@ const pumpBody = async (stream: ReadableStream<Uint8Array>): Promise<Uint8Array 
   const chunks: Uint8Array[] = [];
   let total = 0;
   try {
-    for (;;) {
+    while (true) {
+      // eslint-disable-next-line no-await-in-loop
       const { done, value } = await reader.read();
-      if (done) {
-        break;
-      }
+      if (done) break;
       total += value.byteLength;
       if (total > MIRROR_BODY_MAX_BYTES) {
+        // eslint-disable-next-line no-await-in-loop
         await reader.cancel();
         return undefined;
       }

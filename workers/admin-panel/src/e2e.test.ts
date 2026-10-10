@@ -100,9 +100,11 @@ describe('admin panel end-to-end', () => {
     // `revisions` belongs here too: publish writes a row per revision, and a
     // leftover row makes the next test's counter start one higher — the
     // "revision 2" assertion below would red on the whole-file run only.
-    for (const table of ['audit_log', 'routes', 'settings', 'mcp_tokens', 'users', 'revisions']) {
-      await testEnv.DB.prepare(`DELETE FROM ${table}`).run();
-    }
+    await Promise.all(
+      ['audit_log', 'routes', 'settings', 'mcp_tokens', 'users', 'revisions'].map((table) =>
+        testEnv.DB.prepare(`DELETE FROM ${table}`).run(),
+      ),
+    );
     // D1 is not the only durable state: publish writes KV, and a leftover
     // document would make the "nothing stored" assertions below lie.
     await testEnv.CONFIG_KV.delete('routes');
@@ -334,12 +336,14 @@ describe('admin panel end-to-end', () => {
       auth,
     );
 
-    for (const path of ['/api/preview', '/api/publish']) {
-      const res =
-        path === '/api/preview' ? await get(path, auth) : await call('POST', path, {}, auth);
-      const body = (await res.json()) as { issues?: { routeId?: string }[] };
-      expect(body.issues?.some((i) => i.routeId === 'bad')).toBe(true);
-    }
+    await Promise.all(
+      ['/api/preview', '/api/publish'].map(async (path) => {
+        const res =
+          path === '/api/preview' ? await get(path, auth) : await call('POST', path, {}, auth);
+        const body = (await res.json()) as { issues?: { routeId?: string }[] };
+        expect(body.issues?.some((i) => i.routeId === 'bad')).toBe(true);
+      }),
+    );
     // Nothing half-broken was stored to KV.
     const kv = (await testEnv.CONFIG_KV.get('routes', { type: 'json' })) as {
       routes?: unknown[];
