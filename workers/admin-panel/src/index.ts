@@ -14,10 +14,12 @@ import { mcpRoutes } from './api/mcp.js';
 import { mcpTokenRoutes } from './api/mcp-tokens.js';
 import { revisionRoutes } from './api/revisions.js';
 import { userRoutes } from './api/users.js';
-import { requireSameOrigin, requireUser } from './middleware.js';
+import { requireSameOrigin, requireUser, securityHeaders } from './middleware.js';
 import type { AppEnv } from './env.js';
 
 const app = new Hono<AppEnv>();
+
+app.use('*', securityHeaders);
 
 app.onError((error, c) => {
   console.error('admin-panel: unhandled error', error);
