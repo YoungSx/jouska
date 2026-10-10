@@ -1079,7 +1079,7 @@ describe('guard ordering and composition', () => {
               match: { path: '/' },
               upstream: 'o.test',
               bodyRewrite: {},
-              cors: { credentials: true },
+              cors: { credentials: true, origins: ['https://app.test'] },
             },
           ],
         }),
@@ -1090,9 +1090,9 @@ describe('guard ordering and composition', () => {
       }),
     );
     const res = await app.request(
-      new Request('https://p.dev/x', { headers: { origin: 'https://a.test' } }),
+      new Request('https://p.dev/x', { headers: { origin: 'https://app.test' } }),
     );
-    expect(res.headers.get('access-control-allow-origin')).toBe('https://a.test');
+    expect(res.headers.get('access-control-allow-origin')).toBe('https://app.test');
     expect(await res.text()).toContain('https://p.dev/a');
   });
 
@@ -1104,7 +1104,13 @@ describe('guard ordering and composition', () => {
       '*',
       jouska({
         config: defineConfig({
-          routes: [{ match: { path: '/' }, upstream: 'o.test', cors: { credentials: true } }],
+          routes: [
+            {
+              match: { path: '/' },
+              upstream: 'o.test',
+              cors: { credentials: true, origins: ['https://app.test'] },
+            },
+          ],
         }),
         fetchImpl: async () => {
           throw new Error('down');
@@ -1112,10 +1118,10 @@ describe('guard ordering and composition', () => {
       }),
     );
     const res = await app.request(
-      new Request('https://p.dev/x', { headers: { origin: 'https://a.test' } }),
+      new Request('https://p.dev/x', { headers: { origin: 'https://app.test' } }),
     );
     expect(res.status).toBe(502);
-    expect(res.headers.get('access-control-allow-origin')).toBe('https://a.test');
+    expect(res.headers.get('access-control-allow-origin')).toBe('https://app.test');
   });
 
   it('falls through to the app when the method does not match', async () => {
@@ -1364,7 +1370,7 @@ describe('defaults are validated exactly as a route is', () => {
     // `cors` is a cohesive unit, and merging halves of two of them would yield a
     // policy neither the table nor the route wrote.
     const config = defineConfig({
-      defaults: { cors: { credentials: true, maxAge: 600 } },
+      defaults: { cors: { credentials: true, maxAge: 600, origins: ['https://app.test'] } },
       routes: [{ match: { path: '/a' }, upstream: 'o.test', cors: { allowHeaders: ['x-a'] } }],
     });
     expect(config.routes[0].cors).toEqual({

@@ -20,17 +20,28 @@ const from = (ip: string, init?: RequestInit) =>
   });
 
 describe('CORS', () => {
-  it('reflects the caller origin so credentialed requests work', async () => {
+  it('throws a configuration error if credentials are true but no origins are specified', async () => {
+    expect(() =>
+      appWith([{ match: { path: '/x' }, upstream: 'o.test', cors: { credentials: true } }]),
+    ).toThrow('CORS credentials cannot be true when allowing all origins');
+  });
+
+  it('answers a credentialed preflight with the configured origin', async () => {
     const app = appWith([
-      { match: { path: '/x' }, upstream: 'o.test', cors: { credentials: true } },
+      {
+        match: { path: '/x' },
+        upstream: 'o.test',
+        cors: { credentials: true, origins: ['https://app.test'] },
+      },
     ]);
     const res = await app.request(
-      new Request('https://p.dev/x', { headers: { origin: 'https://app.test' } }),
+      new Request('https://p.dev/x', {
+        method: 'OPTIONS',
+        headers: { origin: 'https://app.test' },
+      }),
     );
-    // `*` is illegal beside allow-credentials, so the exact origin must come back.
     expect(res.headers.get('access-control-allow-origin')).toBe('https://app.test');
     expect(res.headers.get('access-control-allow-credentials')).toBe('true');
-    expect(await res.text()).toBe('upstream reached');
   });
 
   it('answers a preflight without contacting the upstream', async () => {

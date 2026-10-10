@@ -373,6 +373,14 @@ describe('guard config', () => {
     });
   });
 
+  it('refuses CORS with credentials but no origins', () => {
+    expect(() => {
+      defineConfig({
+        routes: [{ match: { path: '/a' }, upstream: 'o.test', cors: { credentials: true } }],
+      });
+    }).toThrow('CORS credentials cannot be true when allowing all origins');
+  });
+
   it('rejects an ip block with no rules', () => {
     expect(() =>
       defineConfig({ routes: [{ match: { path: '/a' }, upstream: 'o.test', ip: {} }] }),
