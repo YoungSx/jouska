@@ -24,3 +24,8 @@
 
 **Learning:** In D1/SQLite, determining the length of a large collection by fetching all rows (e.g., `listAllRoutes().length`) requires full query execution, JSON deserialization (if parsed in JS), and significant memory allocation for an array of full objects.
 **Action:** When only the count of records is needed (e.g., to determine the next position index), always implement and use a dedicated `COUNT(*)` query (`countRoutes`) to keep memory allocation O(1) and reduce DB bandwidth.
+
+## 2024-05-19 - Use targeted query `listRouteIds` instead of full object extraction
+
+**Learning:** When generating a set of IDs for validation (e.g. `reorder_routes`), fetching the full object rows using `listAllRoutes` introduces significant O(N) memory allocation and JSON deserialization overhead, compared to querying just the `id` column.
+**Action:** Use targeted queries (e.g., `listRouteIds`) when you only need specific columns to prevent extracting and mapping over large datasets in JavaScript.
