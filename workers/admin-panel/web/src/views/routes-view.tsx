@@ -1,3 +1,4 @@
+import * as React from 'react';
 import {
   ArrowDownIcon,
   ArrowUpIcon,
@@ -97,6 +98,11 @@ export const RoutesView = ({
 }: RoutesViewProps) => {
   const enabledCount = routes.filter((route) => route.enabled).length;
 
+  // ⚡ Bolt Performance Optimization:
+  // Memoize defaults serialization to prevent expensive synchronous JSON.stringify
+  // on every render of RoutesView when defaults hasn't changed.
+  const defaultsKey = React.useMemo(() => JSON.stringify(defaults), [defaults]);
+
   return (
     <div className="flex flex-col gap-6">
       <Card>
@@ -159,7 +165,7 @@ export const RoutesView = ({
 
       {/* key 让服务端的 defaults 变化重挂卡片，编辑器内的本地状态随之重置。 */}
       <DefaultsCard
-        key={JSON.stringify(defaults)}
+        key={defaultsKey}
         defaults={defaults}
         isAdmin={isAdmin}
         onSave={onSaveDefaults}
