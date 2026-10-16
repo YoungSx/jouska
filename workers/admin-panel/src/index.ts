@@ -7,6 +7,7 @@
  * and its API cannot drift apart on CORS or cookies.
  */
 import { Hono } from 'hono';
+import { secureHeaders } from 'hono/secure-headers';
 import { authRoutes } from './api/auth.js';
 import { configRoutes } from './api/config.js';
 import { domainRoutes } from './api/domains.js';
@@ -23,6 +24,8 @@ app.onError((error, c) => {
   console.error('admin-panel: unhandled error', error);
   return c.json({ error: 'internal_error' }, 500);
 });
+
+app.use('*', secureHeaders());
 
 app.get('/api/health', (c) => c.json({ ok: true, build: c.env.BUILD_ID ?? 'dev' }));
 
