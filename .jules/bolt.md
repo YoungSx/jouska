@@ -24,3 +24,8 @@
 
 **Learning:** In D1/SQLite, determining the length of a large collection by fetching all rows (e.g., `listAllRoutes().length`) requires full query execution, JSON deserialization (if parsed in JS), and significant memory allocation for an array of full objects.
 **Action:** When only the count of records is needed (e.g., to determine the next position index), always implement and use a dedicated `COUNT(*)` query (`countRoutes`) to keep memory allocation O(1) and reduce DB bandwidth.
+
+## 2024-10-23 - Targeted database queries over full fetches for validation
+
+**Learning:** When validating if an ID exists in the database (e.g., checking if a permutation of IDs is valid), querying the entire row (`listAllRoutes`) causes significant unnecessary overhead. It pulls the full JSON definitions from D1, serializes/deserializes them, and allocates memory for large objects only to map them down to their `id` property.
+**Action:** When validating existence or extracting a specific property across many rows, always use targeted queries (e.g., `SELECT id FROM table`, `listRouteIds`) to avoid O(N) memory allocation and reduce data transfer costs.
