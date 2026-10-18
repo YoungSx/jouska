@@ -1,0 +1,94 @@
+--- workers/admin-panel/src/discard.test.ts
++++ workers/admin-panel/src/discard.test.ts
+@@ -118,9 +118,9 @@
+       expect(row?.revision).toBe(1);
+
+       // Emptied by the rest of the test suite.
+-      for (const table of ['audit_log', 'routes', 'settings', 'users', 'revisions']) {
+-        await testEnv.DB.prepare(`DELETE FROM ${table}`).run();
+-      }
++      await Promise.all(['audit_log', 'routes', 'settings', 'users', 'revisions'].map(table =>
++        testEnv.DB.prepare(`DELETE FROM ${table}`).run()
++      ));
+     });
+
+     it('clears draft routes absent from the live snapshot', async () => {
+--- workers/admin-panel/src/cloudflare.ts
++++ workers/admin-panel/src/cloudflare.ts
+@@ -289,8 +289,10 @@
+   );
+   const keys: McpKeyRow[] = await res.json();
+
+-  for (const k of keys) {
+-    await store.write(`mcp-tokens:${k.subject}:${k.id}`, { exp: k.exp });
+-  }
++  await Promise.all(keys.map(k =>
++    store.write(`mcp-tokens:${k.subject}:${k.id}`, { exp: k.exp })
++  ));
+ }
+
+ export async function syncDomains(
+@@ -384,9 +386,9 @@
+     if (res.status === 200) {
+       const keys: McpKeyRow[] = await res.json();
+-      for (const k of keys) {
+-        await store.write(`mcp-tokens:${k.subject}:${k.id}`, { exp: k.exp });
+-      }
++      await Promise.all(keys.map(k =>
++        store.write(`mcp-tokens:${k.subject}:${k.id}`, { exp: k.exp })
++      ));
+     }
+   }
+--- workers/admin-panel/src/history.test.ts
++++ workers/admin-panel/src/history.test.ts
+@@ -118,9 +118,9 @@
+       expect(res.status).toBe(200);
+
+       // Test runner does not isolate the DB across suites, clean up.
+-      for (const table of ['audit_log', 'routes', 'settings', 'users', 'revisions']) {
+-        await testEnv.DB.prepare(`DELETE FROM ${table}`).run();
+-      }
++      await Promise.all(['audit_log', 'routes', 'settings', 'users', 'revisions'].map(table =>
++        testEnv.DB.prepare(`DELETE FROM ${table}`).run()
++      ));
+     });
+
+     it('preserves history down to the limit even when pruning fires', async () => {
+@@ -452,10 +452,13 @@
+       await putRoute(auth, 'anchor', routeFor('a.example.com', 'a.internal.example.com'));
+       await publish(auth);
+
++      // Note: we might have to run publish sequentially so we loop, wait and then test
+       for (let i = 1; i <= 52; i += 1) {
+         await putRoute(auth, 'churn', routeFor('c.example.com', `c${i}.internal.example.com`));
+         const res = await publish(auth);
+         expect(res.status).toBe(200);
+       }
+
+--- workers/admin-panel/src/e2e.test.ts
++++ workers/admin-panel/src/e2e.test.ts
+@@ -101,9 +101,9 @@
+     const auth = await provision(testEnv);
+
+-    for (const id of ['a', 'b', 'c']) {
+-      await putRoute(auth, id, routeFor(`${id}.example.com`, `${id}.internal.example.com`));
+-    }
++    await Promise.all(['a', 'b', 'c'].map(id =>
++      putRoute(auth, id, routeFor(`${id}.example.com`, `${id}.internal.example.com`))
++    ));
+
+     await expectAudit(
+       auth,
+@@ -335,11 +335,13 @@
+       await putRoute(auth, 'bad', routeFor('a.example.com', 'a.internal.example.com'));
+       await testEnv.DB.prepare("UPDATE routes SET definition = '}' WHERE id = 'bad'").run();
+
++      await Promise.all(['/api/preview', '/api/publish'].map(async (path) => {
+-      for (const path of ['/api/preview', '/api/publish']) {
+         const res =
+           path === '/api/preview' ? await get(path, auth) : await call('POST', path, {}, auth);
+         const body = (await res.json()) as { issues?: { routeId?: string }[] };
+         expect(body.issues?.some((i) => i.routeId === 'bad')).toBe(true);
+-      }
++      }));
+     });
