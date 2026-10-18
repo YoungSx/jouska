@@ -24,3 +24,8 @@
 
 **Learning:** In D1/SQLite, determining the length of a large collection by fetching all rows (e.g., `listAllRoutes().length`) requires full query execution, JSON deserialization (if parsed in JS), and significant memory allocation for an array of full objects.
 **Action:** When only the count of records is needed (e.g., to determine the next position index), always implement and use a dedicated `COUNT(*)` query (`countRoutes`) to keep memory allocation O(1) and reduce DB bandwidth.
+
+## 2024-10-18 - Use listRouteIds instead of listAllRoutes when validating ids
+
+**Learning:** Checking against known route IDs using `(await listAllRoutes(c.env.DB)).map((r) => r.id)` allocates large amounts of memory (O(N) full objects) and requires deserializing the JSON `definition` column for every route.
+**Action:** When performing permutation checks or validations that only need route IDs, use `listRouteIds()` which only selects the `id` column, saving significant memory allocation and JSON parsing overhead.
