@@ -782,7 +782,7 @@ describe('signed links', () => {
     // no-op when that char is already 'A' (~3% of HMAC rolls), and the test
     // would then verify a perfectly valid signature.
     const flip = (s: string, i: number) => {
-      const c = s[i] === 'A' ? 'B' : 'A';
+      const c = s[i] === '_' ? 'A' : '_';
       return s.slice(0, i) + c + s.slice(i + 1);
     };
     await Promise.all(
