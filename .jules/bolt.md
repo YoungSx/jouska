@@ -26,5 +26,6 @@
 **Action:** When only the count of records is needed (e.g., to determine the next position index), always implement and use a dedicated `COUNT(*)` query (`countRoutes`) to keep memory allocation O(1) and reduce DB bandwidth.
 
 ## 2024-05-19 - Replace listAllRoutes().map(r => r.id) with listRouteIds()
+
 **Learning:** In D1/SQLite, determining the full list of route IDs by fetching all rows (e.g., `listAllRoutes().map(r => r.id)`) requires full query execution, JSON deserialization (if parsed in JS) for the `definition` column, and significant memory allocation for an array of full objects. This degrades performance significantly when verifying existence or checking permutations during reordering.
 **Action:** When only the IDs of records are needed (e.g., to determine known routes for reordering validation), implement and use a dedicated query (`listRouteIds`) that selects only the `id` column. This keeps memory allocation much lower and reduces DB serialization bandwidth.
