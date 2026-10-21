@@ -26,5 +26,6 @@
 **Action:** When only the count of records is needed (e.g., to determine the next position index), always implement and use a dedicated `COUNT(*)` query (`countRoutes`) to keep memory allocation O(1) and reduce DB bandwidth.
 
 ## 2024-05-20 - Replace listAllRoutes().map with listRouteIds()
+
 **Learning:** When validating inputs against the full set of existing items (like in route reordering endpoints using `const known = new Set(await listAllRoutes(db).map(r => r.id))`), fetching all rows with large JSON structures from D1 forces excessive memory allocation and slow deserialization just to discard everything but the IDs.
 **Action:** When you only need to check existence or build sets of IDs, implement and use a specialized query like `listRouteIds()` (`SELECT id FROM routes`) instead of mapping over the results of `listAllRoutes()`. This changes memory allocation and network bandwidth for large definitions from O(N) to O(1).
