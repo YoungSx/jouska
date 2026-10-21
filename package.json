@@ -40,5 +40,8 @@
     "esbuild@0.28.1": true,
     "workerd@1.20260815.1": true,
     "workerd@1.20260825.1": true
+  },
+  "dependencies": {
+    "hono": "^4.13.13"
   }
 }
