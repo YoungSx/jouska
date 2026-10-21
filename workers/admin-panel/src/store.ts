@@ -85,6 +85,18 @@ export const countRoutes = async (db: D1Database): Promise<number> => {
   return count?.count ?? 0;
 };
 
+/**
+ * ⚡ Bolt Performance Optimization: listRouteIds
+ * Instead of fetching all route definitions (which parses JSON for every row),
+ * this queries just the route IDs. Impact: O(N) memory allocation drops to O(1)
+ * regarding large JSON columns, saving significant serialization time and DB
+ * bandwidth when we only need to check existence or validate sets.
+ */
+export const listRouteIds = async (db: D1Database): Promise<string[]> => {
+  const { results } = await db.prepare('SELECT id FROM routes').all<{ id: string }>();
+  return results.map((r) => r.id);
+};
+
 export const listAllRoutes = async (db: D1Database): Promise<RouteListEntry[]> => {
   const { results } = await db
     .prepare(
